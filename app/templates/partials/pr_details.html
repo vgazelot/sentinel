@@ -1,0 +1,51 @@
+{% if error %}
+<div class="pr-panel">
+    <div class="pr-error">⚠ {{ error }}</div>
+    <button class="btn btn-ghost" onclick="document.getElementById('pr-details-{{ item.id }}').innerHTML = ''">Close</button>
+</div>
+{% else %}
+<div class="pr-panel">
+    <div class="pr-head">
+        <div class="pr-facts">
+            <span class="tag tag-pr">{{ pr.author }}</span>
+            <span class="diffstat"><span class="add">+{{ pr.additions }}</span> <span class="del">−{{ pr.deletions }}</span> · {{ pr.changed_files }} file{{ 's' if pr.changed_files != 1 }}</span>
+            {% if pr.checks.failed %}<span class="check-pill fail">✗ {{ pr.checks.failed }} failed</span>{% endif %}
+            {% if pr.checks.pending %}<span class="check-pill pend">⏳ {{ pr.checks.pending }} running</span>{% endif %}
+            {% if pr.checks.ok %}<span class="check-pill ok">✓ {{ pr.checks.ok }} passed</span>{% endif %}
+            {% if not (pr.checks.ok or pr.checks.failed or pr.checks.pending) %}<span class="check-pill pend">no checks</span>{% endif %}
+            {% if pr.mergeable_state == 'dirty' %}<span class="check-pill fail">conflicts</span>{% endif %}
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-accent" hx-post="/api/items/{{ item.id }}/approve"
+                    hx-target="#items" hx-swap="innerHTML"
+                    hx-disabled-elt="this">Approve ✓</button>
+            <button class="btn btn-ghost" onclick="document.getElementById('pr-details-{{ item.id }}').innerHTML = ''">Close</button>
+        </div>
+    </div>
+
+    {% if pr.body %}
+    <details class="pr-body">
+        <summary>Description</summary>
+        <pre>{{ pr.body }}</pre>
+    </details>
+    {% endif %}
+
+    {% for f in pr.files %}
+    <div class="pr-file">
+        <div class="pr-file-head">
+            <span class="filename">{{ f.filename }}</span>
+            <span class="diffstat"><span class="add">+{{ f.additions }}</span> <span class="del">−{{ f.deletions }}</span></span>
+        </div>
+        {% if f.lines %}
+        <pre class="pr-diff">{% for l in f.lines %}<span class="l-{{ l.cls }}">{{ l.text }}</span>
+{% endfor %}</pre>
+        {% else %}
+        <div class="pr-nodiff">no diff available ({{ f.status }})</div>
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% if pr.files_truncated %}
+    <div class="pr-nodiff">… more files on <a href="{{ item.url }}/files" target="_blank">GitHub</a></div>
+    {% endif %}
+</div>
+{% endif %}

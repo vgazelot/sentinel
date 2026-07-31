@@ -1,0 +1,17 @@
+{% for t in todos %}
+<div class="todo-item {% if t.done %}done{% endif %}">
+    <span class="todo-text" hx-post="/api/todos/{{ t.id }}/toggle"
+          hx-target="#todos" hx-swap="innerHTML" title="Click to toggle">{{ t.text }}</span>
+    <button class="todo-delete" hx-delete="/api/todos/{{ t.id }}"
+            hx-target="#todos" hx-swap="innerHTML" title="Delete">×</button>
+</div>
+{% else %}
+<div class="empty-state"><span class="glyph">📝</span>Nothing on the list.</div>
+{% endfor %}
+
+{% if todos | selectattr('done') | list %}
+<div class="mt-2 text-end">
+    <button class="btn btn-ghost" hx-post="/api/todos/clear-done"
+            hx-target="#todos" hx-swap="innerHTML">Clear done</button>
+</div>
+{% endif %}

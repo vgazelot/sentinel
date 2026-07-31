@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Sentinel — Settings{% endblock %}
+{% block content %}
+<div class="section-title">Watchers</div>
+<div id="watchers" hx-get="/partials/watchers" hx-trigger="every 30s" hx-swap="innerHTML">
+    {% include "partials/watchers.html" %}
+</div>
+
+<div class="section-title">Push notifications</div>
+{% if not push_enabled %}
+<div class="error-banner">VAPID keys missing from <code>.env</code> — generate them with
+    <code>docker compose run --rm sentinel python gen_vapid.py</code> then restart.</div>
+{% endif %}
+<div class="panel">
+    <p class="mb-2">Registered subscriptions: <strong>{{ subscriptions | length }}</strong></p>
+    <p class="mb-3"><small class="text-muted-2">Subscribe from <strong>Chrome or Firefox</strong> on
+        <code>http://localhost:8300</code> (never 127.0.0.1 — the service worker origin depends on it).</small></p>
+    <div class="d-flex gap-2 flex-wrap">
+        <button id="btn-subscribe" class="btn btn-accent" {% if not push_enabled %}disabled{% endif %}>Subscribe this browser</button>
+        <button id="btn-unsubscribe" class="btn btn-ghost danger">Unsubscribe</button>
+        <button id="btn-test" class="btn btn-ghost info">Send test notification</button>
+    </div>
+    <div id="push-status" class="mt-2 item-meta"></div>
+</div>
+{% endblock %}

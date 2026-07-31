@@ -1,0 +1,38 @@
+<span id="pending-count" hidden>{{ pending | length }}</span>
+
+{% for watcher, error in errors.items() %}
+<div class="error-banner">⚠ <strong>{{ watcher }}</strong> — {{ error }}</div>
+{% endfor %}
+
+<div class="section-title">Pending <span class="count-pill pending">{{ pending | length }}</span></div>
+{% if pending %}
+    {% for item in pending %}{% include "partials/item_row.html" %}{% endfor %}
+{% else %}
+<div class="empty-state"><span class="glyph">✓</span>All clear — nothing needs your attention.</div>
+{% endif %}
+
+{% if snoozed %}
+<div class="section-title">Snoozed <span class="count-pill snoozed">{{ snoozed | length }}</span></div>
+{% for item in snoozed %}
+<div class="item-card dimmed">
+    <div>
+        <a href="{{ item.url }}" target="_blank" class="item-title">{{ item.title }}</a>
+        <div class="item-meta">until {{ item.snooze_until | localdt }}</div>
+    </div>
+    <button class="btn btn-ghost info" hx-post="/api/items/{{ item.id }}/unsnooze"
+            hx-target="#items" hx-swap="innerHTML">Wake up</button>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if acked %}
+<div class="section-title">Acknowledged <span class="count-pill acked">{{ acked | length }}</span></div>
+{% for item in acked %}
+<div class="item-card dimmed">
+    <div>
+        <a href="{{ item.url }}" target="_blank" class="item-title">{{ item.title }}</a>
+        <div class="item-meta">{% if item.ack_forever %}forever{% else %}until it changes{% endif %}</div>
+    </div>
+</div>
+{% endfor %}
+{% endif %}

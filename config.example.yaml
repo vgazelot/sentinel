@@ -1,0 +1,34 @@
+watchers:
+  # Watches PRs where your review is requested (directly or via a team)
+  github_reviews:
+    enabled: true
+    interval_seconds: 180
+    login: your-github-username
+    orgs: [your-org, another-org]
+
+  # Generic Atlassian Statuspage watcher — works with any status page exposing
+  # /api/v2/summary.json (Scaleway, OVHcloud, GitHub, Cloudflare, ...).
+  # Filtering: components = an affected component must match (substring);
+  # keywords = additional AND restriction, matched at word start (gra → GRA1, not degraded)
+  statuspage:
+    enabled: true
+    interval_seconds: 300
+    instances:
+      # Scaleway components = product names without region (region only appears in the title)
+      - name: scaleway
+        url: https://status.scaleway.com/api/v2/summary.json
+        components: [Instances, Object Storage, Load Balancer]
+        keywords: []
+        include_maintenances: true
+      # OVH component granularity = datacenter; adjust to the DCs actually hosting your infra.
+      # Maintenances excluded: very noisy (rack-by-rack notifications)
+      - name: ovh-baremetal
+        url: https://bare-metal-servers.status-ovhcloud.com/api/v2/summary.json
+        components: [GRA, RBX, SBG]
+        keywords: []
+        include_maintenances: false
+      - name: ovh-network
+        url: https://network.status-ovhcloud.com/api/v2/summary.json
+        components: []
+        keywords: [france, europe, gra, rbx, sbg]
+        include_maintenances: false

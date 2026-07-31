@@ -1,0 +1,12 @@
+.env
+config.yaml
+data/
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+.venv/
+.vscode/
+.idea/

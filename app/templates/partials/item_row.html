@@ -1,0 +1,35 @@
+{% set is_pr = item.watcher == 'github_reviews' %}
+<div class="item-card {{ 'src-pr' if is_pr else 'src-status' }} {% if item.severity in ('major', 'critical') %}sev-{{ item.severity }}{% endif %}">
+    <div>
+        <div>
+            <span class="tag {{ 'tag-pr' if is_pr else 'tag-status' }}">
+                {{ 'PR' if is_pr else item.watcher.split(':')[-1] }}
+            </span>
+            {% if item.severity and item.severity not in ('none',) %}
+            <span class="tag tag-sev tag-sev-{{ item.severity }}">{{ item.severity }}</span>
+            {% endif %}
+            <a href="{{ item.url }}" target="_blank" class="item-title">{{ item.title }}</a>
+        </div>
+        <div class="item-meta">first seen {{ item.first_seen | localdt }} · updated {{ item.last_seen | localdt }}</div>
+    </div>
+    <div class="btn-group">
+        {% if is_pr %}
+        <button class="btn btn-ghost info" title="Show diff and approve"
+                onclick="togglePrDetails({{ item.id }})">Review ▾</button>
+        {% endif %}
+        <button class="btn btn-ghost ok" title="Silence until it changes"
+                hx-post="/api/items/{{ item.id }}/ack" hx-target="#items" hx-swap="innerHTML">Ack</button>
+        <button class="btn btn-ghost ok" title="Silence forever"
+                hx-post="/api/items/{{ item.id }}/ack" hx-vals='{"mode": "forever"}'
+                hx-target="#items" hx-swap="innerHTML">Ack ∞</button>
+        <button type="button" class="btn btn-ghost info dropdown-toggle" data-bs-toggle="dropdown">Snooze</button>
+        <ul class="dropdown-menu dropdown-menu-end">
+            {% for label, val in [('30 minutes', '30m'), ('1 hour', '1h'), ('4 hours', '4h'), ('Tomorrow 9am', 'tomorrow')] %}
+            <li><a class="dropdown-item" href="#" hx-post="/api/items/{{ item.id }}/snooze"
+                   hx-vals='{"duration": "{{ val }}"}' hx-target="#items" hx-swap="innerHTML">{{ label }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {# hx-preserve: keeps the panel open when the 15s poll refreshes #items #}
+    {% if is_pr %}<div class="pr-details" id="pr-details-{{ item.id }}" hx-preserve></div>{% endif %}
+</div>

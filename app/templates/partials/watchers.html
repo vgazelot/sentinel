@@ -1,0 +1,17 @@
+<div style="overflow-x: auto;">
+<table class="sentinel-table">
+    <thead><tr><th>Watcher</th><th>Interval</th><th>Last run</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for w in watchers %}
+    <tr>
+        <td>{{ w.name }}</td>
+        <td class="text-muted-2">{{ w.interval }}s</td>
+        <td class="text-muted-2">{{ w.last_run | localdt }}</td>
+        <td>{% if w.last_error %}<span class="text-danger-2">{{ w.last_error }}</span>{% else %}<span class="text-ok">OK</span>{% endif %}</td>
+        <td class="text-end"><button class="btn btn-ghost" hx-post="/api/watchers/{{ w.name }}/run"
+                    hx-target="#watchers" hx-swap="innerHTML">Run now</button></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>

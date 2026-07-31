@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Sentinel — History{% endblock %}
+{% block content %}
+<div class="section-title">Notification history</div>
+<div style="overflow-x: auto;">
+<table class="sentinel-table">
+    <thead>
+    <tr><th>When</th><th>Reason</th><th>Watcher</th><th>Title</th><th>State</th></tr>
+    </thead>
+    <tbody>
+    {% for n in notifications %}
+    <tr>
+        <td class="text-nowrap">{{ n.sent_at | localdt }}</td>
+        <td><span class="reason-pill reason-{{ n.reason }}">{{ n.reason.replace('_', ' ') }}</span></td>
+        <td><small class="text-muted-2">{{ n.watcher }}</small></td>
+        <td><a href="{{ n.url }}" target="_blank">{{ n.title }}</a>
+            {% if n.body %}<div class="item-meta">{{ n.body }}</div>{% endif %}</td>
+        <td><small class="text-muted-2">{{ n.state }}</small></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="text-muted-2">No notifications yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Sentinel — Todo{% endblock %}
+{% block content %}
+<div class="section-title">Todo</div>
+<form hx-post="/api/todos" hx-target="#todos" hx-swap="innerHTML"
+      hx-on::after-request="this.reset(); this.querySelector('input').focus()">
+    <input type="text" name="text" class="todo-input" placeholder="Add something… (Enter)"
+           autocomplete="off" autofocus maxlength="300">
+</form>
+<div id="todos">
+    {% include "partials/todos.html" %}
+</div>
+{% endblock %}
