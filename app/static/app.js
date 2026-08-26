@@ -52,9 +52,36 @@ async function subscribePush() {
     pushStatus('Subscribed ✔ — try the "Send test notification" button.');
 }
 
-async function unsubscribePush() {
+async function browserSubscription() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
     const reg = await navigator.serviceWorker.getRegistration('/sw.js');
-    const sub = reg && (await reg.pushManager.getSubscription());
+    return reg ? reg.pushManager.getSubscription() : null;
+}
+
+// Re-registers this browser's current subscription (idempotent): the one stored server-side may be
+// stale after a permission reset or a push-service key rotation, while FCM keeps returning 201.
+async function ensureRegistered(sub) {
+    await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sub.toJSON()),
+    });
+}
+
+async function syncPushState() {
+    const sub = await browserSubscription();
+    if (!sub) {
+        pushStatus(Notification.permission === 'denied'
+            ? 'This browser is not subscribed — notifications are blocked in the browser site settings.'
+            : 'This browser is not subscribed.');
+        return;
+    }
+    await ensureRegistered(sub);
+    pushStatus('This browser is subscribed ✔');
+}
+
+async function unsubscribePush() {
+    const sub = await browserSubscription();
     if (!sub) { pushStatus('No subscription on this browser.'); return; }
     await fetch('/api/push/subscribe', {
         method: 'DELETE',
@@ -66,8 +93,12 @@ async function unsubscribePush() {
 }
 
 async function testPush() {
+    const sub = await browserSubscription();
+    if (!sub) { pushStatus('This browser is not subscribed — click "Subscribe this browser" first.'); return; }
+    await ensureRegistered(sub);
     const res = await (await fetch('/api/push/test', { method: 'POST' })).json();
-    pushStatus(`Notification sent to ${res.sent} subscription(s).`);
+    pushStatus(`Push sent to ${res.sent} subscription(s), this browser included. Nothing shown? `
+        + 'Check the OS notification settings for your browser (macOS: System Settings → Notifications → Google Chrome → Allow).');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -77,4 +108,5 @@ document.addEventListener('DOMContentLoaded', () => {
     if (sub) sub.addEventListener('click', () => subscribePush().catch((e) => pushStatus('Error: ' + e)));
     if (unsub) unsub.addEventListener('click', () => unsubscribePush().catch((e) => pushStatus('Error: ' + e)));
     if (test) test.addEventListener('click', () => testPush().catch((e) => pushStatus('Error: ' + e)));
+    if (sub) syncPushState().catch((e) => pushStatus('Error: ' + e));
 });

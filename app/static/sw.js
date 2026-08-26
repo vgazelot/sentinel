@@ -18,3 +18,14 @@ self.addEventListener('notificationclick', (event) => {
         return clients.openWindow(url);
     }));
 });
+
+// browser rotated the subscription (key/endpoint change): resubscribe and re-register server-side
+self.addEventListener('pushsubscriptionchange', (event) => {
+    const key = event.oldSubscription && event.oldSubscription.options.applicationServerKey;
+    event.waitUntil(self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key })
+        .then((sub) => fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sub.toJSON()),
+        })));
+});

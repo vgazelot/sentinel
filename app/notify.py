@@ -18,7 +18,7 @@ def send_push(title: str, body: str, url: str, tag: str | None = None) -> int:
     sent = 0
     for sub in db.subscriptions():
         try:
-            webpush(
+            resp = webpush(
                 subscription_info={
                     "endpoint": sub["endpoint"],
                     "keys": json.loads(sub["keys_json"]),
@@ -28,6 +28,7 @@ def send_push(title: str, body: str, url: str, tag: str | None = None) -> int:
                 # fresh dict on every call: pywebpush mutates it (adds aud/exp)
                 vapid_claims={"sub": f"mailto:{config.VAPID_CLAIM_EMAIL}"},
             )
+            log.info("push accepted by %s (%s)", sub["endpoint"].split("/")[2], resp.status_code)
             sent += 1
         except WebPushException as e:
             status = e.response.status_code if e.response is not None else None
