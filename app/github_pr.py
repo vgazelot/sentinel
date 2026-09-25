@@ -97,11 +97,15 @@ def _patch_lines(patch: str | None) -> list[dict] | None:
     return lines
 
 
-def approve(repo: str, number: int):
+def submit_review(repo: str, number: int, event: str, body: str = ""):
+    """event: APPROVE | COMMENT | REQUEST_CHANGES (COMMENT and REQUEST_CHANGES require a body)."""
+    payload = {"event": event}
+    if body:
+        payload["body"] = body
     r = requests.post(
         f"{API}/repos/{repo}/pulls/{number}/reviews",
         headers=_headers(),
-        json={"event": "APPROVE"},
+        json=payload,
         timeout=15,
     )
     if r.status_code >= 400:

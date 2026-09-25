@@ -1,0 +1,21 @@
+{# Claude's second opinion — button, then polling while the bridge runs, then the rendered verdict #}
+<div class="claude-review" id="claude-review-{{ item.id }}"
+     {% if review and review.status == 'running' %}hx-get="/api/items/{{ item.id }}/review" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+    {% if review and review.status == 'running' %}
+    <span class="claude-status"><span class="spinner"></span> Claude is reviewing… started {{ review.started_at | localdt }} (usually 2–5 min)</span>
+    {% else %}
+    <button type="button" class="btn btn-ghost claude" hx-post="/api/items/{{ item.id }}/review/run"
+            hx-target="#claude-review-{{ item.id }}" hx-swap="outerHTML"
+            title="Ask Claude Code for a devil's advocate review (read-only, nothing is posted on GitHub)">
+        ⚖ {{ 'Ask Claude again' if review else "Ask Claude — devil's advocate" }}
+    </button>
+    {% if review and review.status == 'error' %}
+    <span class="pr-error">⚠ {{ review.error }}</span>
+    {% elif review %}
+    <details class="claude-verdict" open>
+        <summary>Claude's verdict · {{ review.finished_at | localdt }}</summary>
+        <div class="md-body">{{ review.output | md | safe }}</div>
+    </details>
+    {% endif %}
+    {% endif %}
+</div>

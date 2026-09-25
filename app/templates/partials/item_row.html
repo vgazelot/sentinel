@@ -14,7 +14,7 @@
     </div>
     <div class="btn-group">
         {% if is_pr %}
-        <button class="btn btn-ghost info" title="Show diff and approve"
+        <button class="btn btn-ghost info" title="Diff, checks, approve / comment"
                 onclick="togglePrDetails({{ item.id }})">Review ▾</button>
         {% endif %}
         <button class="btn btn-ghost ok" title="Silence until it changes"

@@ -399,3 +399,64 @@ body {
 .text-muted-2 { color: var(--muted); }
 .text-ok { color: var(--ok); }
 .text-danger-2 { color: var(--danger); }
+
+/* --- PR actions + Claude review ---------------------------------------------- */
+.pr-hide { color: var(--muted); }
+.pr-notice { color: var(--ok); font-size: 0.85rem; margin-bottom: 0.5rem; }
+
+.pr-review { margin-bottom: 0.6rem; }
+.pr-comment {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 0.82rem;
+    padding: 0.45rem 0.6rem;
+    resize: vertical;
+    margin-bottom: 0.45rem;
+}
+.pr-comment:focus { outline: none; border-color: var(--accent); }
+.pr-comment::placeholder { color: var(--muted); }
+.pr-actions { display: flex; gap: 0.45rem; flex-wrap: wrap; align-items: center; }
+
+.claude-review {
+    border-top: 1px dashed var(--border);
+    padding-top: 0.6rem;
+    margin-bottom: 0.4rem;
+}
+.btn-ghost.claude { border-color: rgba(124, 92, 255, 0.5); color: #a48fff; }
+.btn-ghost.claude:hover { background: var(--accent-soft); border-color: var(--accent); color: #c4b5ff; }
+.claude-status { color: var(--muted); font-size: 0.82rem; display: inline-flex; align-items: center; gap: 0.5rem; }
+.spinner {
+    width: 0.8rem; height: 0.8rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.claude-verdict { margin-top: 0.5rem; }
+.claude-verdict summary { cursor: pointer; color: #a48fff; font-size: 0.82rem; font-weight: 600; }
+.md-body {
+    background: var(--surface-2);
+    border: 1px solid rgba(124, 92, 255, 0.35);
+    border-radius: 8px;
+    padding: 0.7rem 0.9rem;
+    margin-top: 0.4rem;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    max-height: 560px;
+    overflow: auto;
+}
+.md-body h1, .md-body h2, .md-body h3 { font-size: 0.95rem; margin: 0.8rem 0 0.4rem; color: var(--text); }
+.md-body h1:first-child, .md-body h2:first-child, .md-body h3:first-child { margin-top: 0; }
+.md-body p, .md-body ul, .md-body ol { margin-bottom: 0.5rem; }
+.md-body code { background: #0d1117; color: var(--sky); padding: 0.05rem 0.3rem; border-radius: 4px; font-size: 0.78rem; }
+.md-body pre { background: #0d1117; border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.7rem; font-size: 0.76rem; white-space: pre-wrap; }
+.md-body pre code { background: none; padding: 0; color: var(--text); }
+.md-body table { width: 100%; font-size: 0.8rem; margin-bottom: 0.6rem; }
+.md-body th, .md-body td { border: 1px solid var(--border); padding: 0.25rem 0.5rem; }
+.md-body a { color: var(--sky); }
+.md-body blockquote { border-left: 3px solid var(--accent); padding-left: 0.6rem; color: var(--muted); }

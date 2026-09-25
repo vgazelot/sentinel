@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.sentinel-claude-bridge</string>
+    <!-- any Python ≥ 3.8 (stdlib only); /usr/bin/python3 works too once the Xcode license is accepted -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/path/to/sentinel/contrib/claude-bridge/bridge.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd has a minimal PATH: add the dirs of claude, node and gh; BRIDGE_CWD = where your CLAUDE.md/skills load from -->
+        <key>CLAUDE_BIN</key>
+        <string>/path/to/bin/claude</string>
+        <key>BRIDGE_CWD</key>
+        <string>/path/to/your/workspace</string>
+        <key>PATH</key>
+        <string>/path/to/node/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/sentinel-claude-bridge.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/sentinel-claude-bridge.err</string>
+</dict>
+</plist>

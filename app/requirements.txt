@@ -5,3 +5,4 @@ pywebpush==2.0.*
 requests==2.32.*
 PyYAML==6.0.*
 cryptography>=42
+Markdown==3.7.*

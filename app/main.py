@@ -11,6 +11,7 @@ from flask import Flask, jsonify, make_response, render_template, request, send_
 import config
 import db
 import engine
+import claude_review
 import github_pr
 import notify
 from watchers import build_watchers
@@ -43,6 +44,11 @@ scheduler.add_job(
 )
 scheduler.start()
 log.info("scheduler started, watchers: %s", list(WATCHERS))
+
+
+@app.template_filter("md")
+def md(value: str | None) -> str:
+    return claude_review.render(value or "")
 
 
 @app.template_filter("localdt")
@@ -169,19 +175,28 @@ def _pr_item(item_id: int):
     return row, payload
 
 
+def _pr_panel(item_id: int, row, payload: dict, **ctx):
+    """Panel rendered in place (HX-Retarget): diff + actions, or the error alone if GitHub is unreachable."""
+    if "pr" not in ctx and payload.get("repo"):
+        try:
+            ctx["pr"] = github_pr.details(payload["repo"], payload["number"])
+        except Exception as e:
+            ctx.setdefault("error", str(e))
+    elif not payload.get("repo"):
+        ctx.setdefault("error", "repo/number not in payload yet — wait for the next fetch")
+    resp = make_response(render_template("partials/pr_details.html", item=row,
+                                         review=db.get_review(item_id),
+                                         claude_enabled=claude_review.enabled(), **ctx))
+    resp.headers["HX-Retarget"] = f"#pr-details-{item_id}"
+    return resp
+
+
 @app.get("/api/items/<int:item_id>/pr")
 def api_pr_details(item_id: int):
     row, payload = _pr_item(item_id)
     if not row:
         return "not found", 404
-    if not payload.get("repo"):
-        return render_template("partials/pr_details.html", item=row,
-                               error="repo/number not in payload yet — wait for the next fetch")
-    try:
-        pr = github_pr.details(payload["repo"], payload["number"])
-    except Exception as e:
-        return render_template("partials/pr_details.html", item=row, error=str(e))
-    return render_template("partials/pr_details.html", item=row, pr=pr)
+    return _pr_panel(item_id, row, payload)
 
 
 @app.post("/api/items/<int:item_id>/approve")
@@ -190,18 +205,56 @@ def api_approve(item_id: int):
     if not row:
         return "not found", 404
     try:
-        github_pr.approve(payload["repo"], payload["number"])
+        github_pr.submit_review(payload["repo"], payload["number"], "APPROVE",
+                                (request.form.get("body") or "").strip())
     except Exception as e:
-        # re-render the panel with the error instead of replacing the list
-        resp = make_response(render_template("partials/pr_details.html", item=row,
-                                             error=f"Approve failed — {e}"))
-        resp.headers["HX-Retarget"] = f"#pr-details-{item_id}"
-        return resp
+        return _pr_panel(item_id, row, payload, error=f"Approve failed — {e}")
     # approved → the review request disappears on the next fetch; ack ∞ meanwhile
     db.set_state(item_id, "acked", ack_forever=1,
                  acked_fingerprint=row["fingerprint"], snooze_until=None)
     log.info("PR approved via dashboard: %s#%s", payload["repo"], payload["number"])
     return partial_items()
+
+
+@app.post("/api/items/<int:item_id>/comment")
+def api_comment(item_id: int):
+    row, payload = _pr_item(item_id)
+    if not row:
+        return "not found", 404
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        return _pr_panel(item_id, row, payload, error="Comment failed — write something first")
+    try:
+        github_pr.submit_review(payload["repo"], payload["number"], "COMMENT", body)
+    except Exception as e:
+        return _pr_panel(item_id, row, payload, error=f"Comment failed — {e}")
+    log.info("PR comment via dashboard: %s#%s", payload["repo"], payload["number"])
+    # the review request stays open → the item stays pending, only the panel is refreshed
+    return _pr_panel(item_id, row, payload, notice="Comment posted ✔")
+
+
+# --- API Claude review -----------------------------------------------------------
+def _review_partial(item_id: int, row):
+    return render_template("partials/claude_review.html", item=row, review=db.get_review(item_id))
+
+
+@app.get("/api/items/<int:item_id>/review")
+def api_review(item_id: int):
+    row, _ = _pr_item(item_id)
+    if not row:
+        return "not found", 404
+    return _review_partial(item_id, row)
+
+
+@app.post("/api/items/<int:item_id>/review/run")
+def api_review_run(item_id: int):
+    row, _ = _pr_item(item_id)
+    if not row:
+        return "not found", 404
+    if not claude_review.enabled():
+        return "CLAUDE_BRIDGE_URL not configured", 503
+    claude_review.start(item_id, row["url"])
+    return _review_partial(item_id, row)
 
 
 def _snooze_until(duration: str) -> str | None:

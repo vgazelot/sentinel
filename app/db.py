@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS todos (
     created_at TEXT NOT NULL,
     done_at TEXT
 );
+CREATE TABLE IF NOT EXISTS reviews (
+    item_id INTEGER PRIMARY KEY REFERENCES items(id),
+    status TEXT NOT NULL,
+    output TEXT,
+    error TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
 CREATE TABLE IF NOT EXISTS watcher_state (
     watcher TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -187,3 +195,26 @@ def watcher_states() -> dict:
     for r in rows:
         out.setdefault(r["watcher"], {})[r["key"]] = r["value"]
     return out
+
+
+# --- Claude reviews ------------------------------------------------------------
+def get_review(item_id: int):
+    with connect() as conn:
+        return conn.execute("SELECT * FROM reviews WHERE item_id = ?", (item_id,)).fetchone()
+
+
+def start_review(item_id: int):
+    with connect() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO reviews (item_id, status, output, error, started_at, finished_at)
+               VALUES (?, 'running', NULL, NULL, ?, NULL)""",
+            (item_id, now()),
+        )
+
+
+def finish_review(item_id: int, output: str | None = None, error: str | None = None):
+    with connect() as conn:
+        conn.execute(
+            "UPDATE reviews SET status = ?, output = ?, error = ?, finished_at = ? WHERE item_id = ?",
+            ("error" if error else "done", output, error, now(), item_id),
+        )

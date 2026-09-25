@@ -10,7 +10,7 @@
 
 ## What it does
 
-- 👀 **GitHub review requests** — polls PRs where your review is requested (directly or via a team) across your orgs. Inline review panel on the dashboard: diff, CI checks, one-click **Approve**.
+- 👀 **GitHub review requests** — polls PRs where your review is requested (directly or via a team) across your orgs. Inline review panel on the dashboard: diff, CI checks, one-click **Approve** or **Comment**, and an optional **Ask Claude** button for a second opinion.
 - 🚦 **Status pages** — watches any [Atlassian Statuspage](https://www.atlassian.com/software/statuspage) API (Scaleway, OVHcloud, GitHub, Cloudflare, …) with component/keyword filters, so you only hear about incidents that affect *your* infra.
 - 🔔 **Web Push notifications** — native OS notifications through your browser (Chrome/Firefox), no third-party service.
 - ✅ **Ack / snooze workflow** — every item nags you exactly once, then stays silent until something actually changes.
@@ -84,6 +84,7 @@ Environment variables (`.env`):
 | `VAPID_PRIVATE_KEY` / `VAPID_PUBLIC_KEY` | Web Push keys — generate with `docker compose run --rm sentinel python gen_vapid.py` |
 | `VAPID_CLAIM_EMAIL` | Contact email embedded in push claims (any address you own) |
 | `TZ` | Timezone for local time display and "snooze until tomorrow 9am" (default `UTC`) |
+| `CLAUDE_BRIDGE_URL` | Optional — URL of the host-side [Claude bridge](#ask-claude-optional) (`http://host.docker.internal:8301`). Empty = button hidden |
 
 ## Fallback notifier (macOS, optional)
 
@@ -95,6 +96,22 @@ brew install terminal-notifier
 cp contrib/host-notifier/com.example.sentinel-notifier.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.example.sentinel-notifier.plist
 ```
+
+## Ask Claude (optional)
+
+The PR panel can ask [Claude Code](https://claude.com/claude-code) for a devil's advocate review, next to your own. Claude Code runs on the **host** (that's where your skills, repos and `gh` auth live), so `contrib/claude-bridge/` is a stdlib-only HTTP server that the container calls on `127.0.0.1:8301`. It runs `claude -p` read-only — no Edit/Write tools, Bash limited to inspection commands, GitHub-posting `gh` subcommands denied — and the verdict is stored in SQLite and rendered in the panel.
+
+```bash
+# 1. the bridge, kept alive by launchd (edit the plist: python3, claude binary, workspace dir)
+cp contrib/claude-bridge/com.example.sentinel-claude-bridge.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.example.sentinel-claude-bridge.plist
+curl http://127.0.0.1:8301/healthz
+
+# 2. the button
+echo CLAUDE_BRIDGE_URL=http://host.docker.internal:8301 >> .env && docker compose up -d
+```
+
+`BRIDGE_PROMPT` (env, `{url}` placeholder) replaces the default review prompt — point it at your own skill, e.g. `/my-review-skill {url}`. `BRIDGE_CWD` is the directory Claude starts in (its `CLAUDE.md` and skills apply).
 
 ## Architecture
 

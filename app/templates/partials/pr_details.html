@@ -1,12 +1,7 @@
-{% if error %}
-<div class="pr-panel">
-    <div class="pr-error">⚠ {{ error }}</div>
-    <button class="btn btn-ghost" onclick="document.getElementById('pr-details-{{ item.id }}').innerHTML = ''">Close</button>
-</div>
-{% else %}
 <div class="pr-panel">
     <div class="pr-head">
         <div class="pr-facts">
+            {% if pr %}
             <span class="tag tag-pr">{{ pr.author }}</span>
             <span class="diffstat"><span class="add">+{{ pr.additions }}</span> <span class="del">−{{ pr.deletions }}</span> · {{ pr.changed_files }} file{{ 's' if pr.changed_files != 1 }}</span>
             {% if pr.checks.failed %}<span class="check-pill fail">✗ {{ pr.checks.failed }} failed</span>{% endif %}
@@ -14,15 +9,32 @@
             {% if pr.checks.ok %}<span class="check-pill ok">✓ {{ pr.checks.ok }} passed</span>{% endif %}
             {% if not (pr.checks.ok or pr.checks.failed or pr.checks.pending) %}<span class="check-pill pend">no checks</span>{% endif %}
             {% if pr.mergeable_state == 'dirty' %}<span class="check-pill fail">conflicts</span>{% endif %}
+            {% endif %}
         </div>
-        <div class="btn-group">
-            <button class="btn btn-accent" hx-post="/api/items/{{ item.id }}/approve"
-                    hx-target="#items" hx-swap="innerHTML"
-                    hx-disabled-elt="this">Approve ✓</button>
-            <button class="btn btn-ghost" onclick="document.getElementById('pr-details-{{ item.id }}').innerHTML = ''">Close</button>
-        </div>
+        <button class="btn btn-ghost pr-hide" title="Collapse this panel (the PR stays untouched)"
+                onclick="togglePrDetails({{ item.id }})">▴ Hide panel</button>
     </div>
 
+    {% if error %}<div class="pr-error">⚠ {{ error }}</div>{% endif %}
+    {% if notice %}<div class="pr-notice">{{ notice }}</div>{% endif %}
+
+    {% if pr %}
+    <form class="pr-review">
+        <textarea name="body" class="pr-comment" rows="2"
+                  placeholder="Review message — optional for approve, required for comment"></textarea>
+        <div class="pr-actions">
+            <button type="button" class="btn btn-accent" hx-post="/api/items/{{ item.id }}/approve"
+                    hx-target="#items" hx-swap="innerHTML" hx-disabled-elt="this"
+                    title="Submit an APPROVE review on GitHub (with the message if any)">Approve PR ✓</button>
+            <button type="button" class="btn btn-ghost info" hx-post="/api/items/{{ item.id }}/comment"
+                    hx-target="#items" hx-swap="innerHTML" hx-disabled-elt="this"
+                    title="Post the message as a review comment on GitHub — the PR stays pending here">Comment 💬</button>
+        </div>
+    </form>
+    {% if claude_enabled %}{% include "partials/claude_review.html" %}{% endif %}
+    {% endif %}
+
+    {% if pr %}
     {% if pr.body %}
     <details class="pr-body">
         <summary>Description</summary>
@@ -47,5 +59,5 @@
     {% if pr.files_truncated %}
     <div class="pr-nodiff">… more files on <a href="{{ item.url }}/files" target="_blank">GitHub</a></div>
     {% endif %}
+    {% endif %}
 </div>
-{% endif %}
