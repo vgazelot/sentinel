@@ -1,35 +1,37 @@
 {% set is_pr = item.watcher == 'github_reviews' %}
-<div class="item-card {{ 'src-pr' if is_pr else 'src-status' }} {% if item.severity in ('major', 'critical') %}sev-{{ item.severity }}{% endif %}">
-    <div>
-        <div>
-            <span class="tag {{ 'tag-pr' if is_pr else 'tag-status' }}">
-                {{ 'PR' if is_pr else item.watcher.split(':')[-1] }}
-            </span>
-            {% if item.severity and item.severity not in ('none',) %}
-            <span class="tag tag-sev tag-sev-{{ item.severity }}">{{ item.severity }}</span>
-            {% endif %}
-            <a href="{{ item.url }}" target="_blank" class="item-title">{{ item.title }}</a>
-        </div>
-        <div class="item-meta">first seen {{ item.first_seen | localdt }} · updated {{ item.last_seen | localdt }}</div>
+{% set parts = item.title.split(' — ', 1) if is_pr else [item.title] %}
+<article class="row {{ 'src-pr' if is_pr else 'src-status' }} {% if item.severity in ('major', 'critical') %}sev-{{ item.severity }}{% endif %}">
+    <div class="row-kind">
+        {% if is_pr %}{{ 'draft' if item.severity == 'draft' else 'review' }}
+        {% else %}{{ item.severity if item.severity and item.severity != 'none' else 'incident' }}{% endif %}
     </div>
-    <div class="btn-group">
+    <div class="row-body">
+        <div>
+            {% if is_pr %}<span class="ref">{{ parts[0] }}</span>{% else %}<span class="ref">{{ item.watcher.split(':')[-1] }}</span>{% endif %}
+            <a href="{{ item.url }}" target="_blank" class="row-title">{{ parts[-1] }}</a>
+        </div>
+        <div class="row-meta">first seen {{ item.first_seen | localdt }} · updated {{ item.last_seen | localdt }}</div>
+    </div>
+    <div class="row-age" title="first seen {{ item.first_seen | localdt }}">{{ item.first_seen | age }}</div>
+    <div class="row-actions">
         {% if is_pr %}
-        <button class="btn btn-ghost info" title="Diff, checks, approve / comment"
-                onclick="togglePrDetails({{ item.id }})">Review ▾</button>
+        <button class="btn btn-primary" title="Diff, checks, approve / comment" onclick="togglePrDetails({{ item.id }})">Review</button>
         {% endif %}
-        <button class="btn btn-ghost ok" title="Silence until it changes"
+        <button class="btn" title="Silence until it changes"
                 hx-post="/api/items/{{ item.id }}/ack" hx-target="#items" hx-swap="innerHTML">Ack</button>
-        <button class="btn btn-ghost ok" title="Silence forever"
+        <button class="btn" title="Silence forever"
                 hx-post="/api/items/{{ item.id }}/ack" hx-vals='{"mode": "forever"}'
                 hx-target="#items" hx-swap="innerHTML">Ack ∞</button>
-        <button type="button" class="btn btn-ghost info dropdown-toggle" data-bs-toggle="dropdown">Snooze</button>
-        <ul class="dropdown-menu dropdown-menu-end">
-            {% for label, val in [('30 minutes', '30m'), ('1 hour', '1h'), ('4 hours', '4h'), ('Tomorrow 9am', 'tomorrow')] %}
-            <li><a class="dropdown-item" href="#" hx-post="/api/items/{{ item.id }}/snooze"
-                   hx-vals='{"duration": "{{ val }}"}' hx-target="#items" hx-swap="innerHTML">{{ label }}</a></li>
-            {% endfor %}
-        </ul>
+        <details class="menu">
+            <summary class="btn">Snooze</summary>
+            <div class="menu-list">
+                {% for label, val in [('30 minutes', '30m'), ('1 hour', '1h'), ('4 hours', '4h'), ('Tomorrow 9am', 'tomorrow')] %}
+                <button hx-post="/api/items/{{ item.id }}/snooze" hx-vals='{"duration": "{{ val }}"}'
+                        hx-target="#items" hx-swap="innerHTML">{{ label }}</button>
+                {% endfor %}
+            </div>
+        </details>
     </div>
     {# hx-preserve: keeps the panel open when the 15s poll refreshes #items #}
     {% if is_pr %}<div class="pr-details" id="pr-details-{{ item.id }}" hx-preserve></div>{% endif %}
-</div>
+</article>

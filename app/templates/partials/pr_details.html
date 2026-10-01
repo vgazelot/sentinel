@@ -1,40 +1,65 @@
-<div class="pr-panel">
+{% macro thread(t, item) -%}
+<div class="thread" id="thread-{{ t.id }}">
+    {% for c in t.comments %}
+    <div class="comment">
+        <div class="comment-head"><span class="comment-user">{{ c.user }}</span> <span class="row-meta">{{ c.created_at | age }} ago{% if loop.first and t.start_line %} · lines {{ t.start_line }}–{{ t.line }}{% endif %}{% if loop.first and t.outdated %} · outdated{% endif %}</span> <a class="comment-link" href="{{ c.url }}" target="_blank" title="Open on GitHub">↗</a></div>
+        <div class="md-body comment-body">{{ c.html | safe }}</div>
+    </div>
+    {% endfor %}
+    <details class="reply">
+        <summary class="btn btn-quiet">Reply</summary>
+        <form class="reply-form" hx-post="/api/items/{{ item.id }}/reply" hx-target="#items" hx-swap="innerHTML" hx-disabled-elt="find button">
+            <input type="hidden" name="comment_id" value="{{ t.id }}">
+            <textarea name="body" class="field" rows="2" placeholder="Reply on GitHub" required></textarea>
+            <button class="btn">Post reply</button>
+        </form>
+    </details>
+</div>
+{%- endmacro %}
+<div class="pr-panel" data-item="{{ item.id }}"{% if pr %} data-blob="{{ item.url.split('/pull/')[0] }}/blob/{{ pr.head_sha }}"{% endif %}>
     <div class="pr-head">
         <div class="pr-facts">
             {% if pr %}
-            <span class="tag tag-pr">{{ pr.author }}</span>
+            <span class="pr-author">{{ pr.author }}</span>
             <span class="diffstat"><span class="add">+{{ pr.additions }}</span> <span class="del">−{{ pr.deletions }}</span> · {{ pr.changed_files }} file{{ 's' if pr.changed_files != 1 }}</span>
-            {% if pr.checks.failed %}<span class="check-pill fail">✗ {{ pr.checks.failed }} failed</span>{% endif %}
-            {% if pr.checks.pending %}<span class="check-pill pend">⏳ {{ pr.checks.pending }} running</span>{% endif %}
-            {% if pr.checks.ok %}<span class="check-pill ok">✓ {{ pr.checks.ok }} passed</span>{% endif %}
-            {% if not (pr.checks.ok or pr.checks.failed or pr.checks.pending) %}<span class="check-pill pend">no checks</span>{% endif %}
-            {% if pr.mergeable_state == 'dirty' %}<span class="check-pill fail">conflicts</span>{% endif %}
+            {% if pr.checks.failed %}<span class="mark fail">{{ pr.checks.failed }} failed</span>{% endif %}
+            {% if pr.checks.pending %}<span class="mark pend">{{ pr.checks.pending }} running</span>{% endif %}
+            {% if pr.checks.ok %}<span class="mark ok">{{ pr.checks.ok }} passed</span>{% endif %}
+            {% if not (pr.checks.ok or pr.checks.failed or pr.checks.pending) %}<span class="mark none">no checks</span>{% endif %}
+            {% if pr.mergeable_state == 'dirty' %}<span class="mark fail">conflicts</span>{% endif %}
+            {% for rv in pr.reviews %}<span class="mark {{ 'ok' if rv.state == 'approved' else 'fail' }}" title="{{ rv.state.replace('_', ' ') }} by {{ rv.user }}">{{ 'approved' if rv.state == 'approved' else 'changes' }} · {{ rv.user }}</span>{% endfor %}
             {% endif %}
         </div>
-        <button class="btn btn-ghost pr-hide" title="Collapse this panel (the PR stays untouched)"
-                onclick="togglePrDetails({{ item.id }})">▴ Hide panel</button>
+        <button class="btn btn-quiet" title="Collapse this panel (the PR stays untouched)"
+                onclick="togglePrDetails({{ item.id }})">Hide panel ▴</button>
     </div>
 
-    {% if error %}<div class="pr-error">⚠ {{ error }}</div>{% endif %}
-    {% if notice %}<div class="pr-notice">{{ notice }}</div>{% endif %}
+    {% if error %}<div class="notice notice-error">{{ error }}</div>{% endif %}
+    {% if notice %}<div class="notice notice-ok">{{ notice }}</div>{% endif %}
 
     {% if pr %}
-    <form class="pr-review">
-        <textarea name="body" class="pr-comment" rows="2"
-                  placeholder="Review message — optional for approve, required for comment"></textarea>
+    <form class="pr-review" id="pr-review-{{ item.id }}">
+        <input type="hidden" name="head_sha" value="{{ pr.head_sha }}">
+        <textarea name="body" class="field" rows="2" id="pr-message-{{ item.id }}"
+                  placeholder="Review summary — optional for approve, required for comment / request changes unless line comments are queued"></textarea>
         <div class="pr-actions">
-            <button type="button" class="btn btn-accent" hx-post="/api/items/{{ item.id }}/approve"
+            <button type="button" class="btn btn-primary" hx-post="/api/items/{{ item.id }}/approve"
+                    hx-vals='js:{comments: pendingJson({{ item.id }})}'
                     hx-target="#items" hx-swap="innerHTML" hx-disabled-elt="this"
-                    title="Submit an APPROVE review on GitHub (with the message if any)">Approve PR ✓</button>
-            <button type="button" class="btn btn-ghost info" hx-post="/api/items/{{ item.id }}/comment"
+                    title="Submit an APPROVE review on GitHub with the summary and the queued line comments">Approve PR</button>
+            <button type="button" class="btn" hx-post="/api/items/{{ item.id }}/comment"
+                    hx-vals='js:{comments: pendingJson({{ item.id }})}'
                     hx-target="#items" hx-swap="innerHTML" hx-disabled-elt="this"
-                    title="Post the message as a review comment on GitHub — the PR stays pending here">Comment 💬</button>
+                    title="Submit a COMMENT review on GitHub — the PR stays pending here">Comment</button>
+            <button type="button" class="btn btn-danger" hx-post="/api/items/{{ item.id }}/request-changes"
+                    hx-vals='js:{comments: pendingJson({{ item.id }})}'
+                    hx-target="#items" hx-swap="innerHTML" hx-disabled-elt="this"
+                    title="Submit a REQUEST CHANGES review on GitHub">Request changes</button>
+            <span class="pending-count" id="pending-count-{{ item.id }}" hidden></span>
         </div>
     </form>
     {% if claude_enabled %}{% include "partials/claude_review.html" %}{% endif %}
-    {% endif %}
 
-    {% if pr %}
     {% if pr.body %}
     <details class="pr-body">
         <summary>Description</summary>
@@ -42,17 +67,31 @@
     </details>
     {% endif %}
 
+    <p class="row-meta pr-hint">Click a line number to comment it, shift-click another to comment a range. Comments are queued and sent with Approve, Comment or Request changes.</p>
+
     {% for f in pr.files %}
-    <div class="pr-file">
+    <div class="pr-file" data-path="{{ f.filename }}">
         <div class="pr-file-head">
             <span class="filename">{{ f.filename }}</span>
             <span class="diffstat"><span class="add">+{{ f.additions }}</span> <span class="del">−{{ f.deletions }}</span></span>
         </div>
         {% if f.lines %}
-        <pre class="pr-diff">{% for l in f.lines %}<span class="l-{{ l.cls }}">{{ l.text }}</span>
-{% endfor %}</pre>
+        <div class="pr-diff">
+            {%- for l in f.lines -%}
+            <div class="dl l-{{ l.cls }}" {% if l.line %}data-side="{{ l.side }}" data-line="{{ l.line }}"{% endif %}>
+                <span class="ln">{{ l.old or '' }}</span><span class="ln">{{ l.new or '' }}</span>{% if l.line %}<button type="button" class="dl-add" title="Comment this line (shift-click for a range)">+</button>{% else %}<span class="dl-add"></span>{% endif %}<span class="dl-text">{{ l.text }}</span>
+            </div>
+            {%- if l.threads %}<div class="dl-threads">{% for t in l.threads %}{{ thread(t, item) }}{% endfor %}</div>{% endif -%}
+            {%- endfor -%}
+        </div>
         {% else %}
         <div class="pr-nodiff">no diff available ({{ f.status }})</div>
+        {% endif %}
+        {% if f.other_threads %}
+        <div class="dl-threads dl-threads-outdated">
+            <div class="row-meta">Comments on lines not shown above</div>
+            {% for t in f.other_threads %}{{ thread(t, item) }}{% endfor %}
+        </div>
         {% endif %}
     </div>
     {% endfor %}

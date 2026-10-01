@@ -12,7 +12,8 @@
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- launchd has a minimal PATH: add the dirs of claude, node and gh; BRIDGE_CWD = where your CLAUDE.md/skills load from -->
+        <!-- launchd has a minimal PATH: add the dirs of claude, node and gh; BRIDGE_CWD = where your CLAUDE.md/skills load from.
+             Optional: BRIDGE_PROMPT / BRIDGE_PROMPT_QUICK ({url} placeholder) and BRIDGE_MODEL / BRIDGE_MODEL_QUICK per mode -->
         <key>CLAUDE_BIN</key>
         <string>/path/to/bin/claude</string>
         <key>BRIDGE_CWD</key>

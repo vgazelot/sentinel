@@ -13,6 +13,7 @@ import db
 import engine
 import claude_review
 import github_pr
+import my_prs
 import notify
 from watchers import build_watchers
 
@@ -21,6 +22,7 @@ log = logging.getLogger("sentinel")
 
 app = Flask(__name__)
 db.init()
+db.fail_stale_reviews()
 
 WATCHERS = build_watchers(config.load())
 
@@ -42,6 +44,13 @@ scheduler.add_job(
     engine.wake_snoozed, "interval", seconds=60, id="wake_snoozed",
     coalesce=True, max_instances=1, misfire_grace_time=120,
 )
+GH_CFG = config.load().get("watchers", {}).get("github_reviews", {})
+if GH_CFG.get("login"):
+    scheduler.add_job(
+        my_prs.refresh, "interval", seconds=GH_CFG.get("interval_seconds", 180), id=my_prs.NAME,
+        args=[GH_CFG["login"], GH_CFG.get("orgs", [])], coalesce=True, max_instances=1,
+        misfire_grace_time=300, next_run_time=datetime.now(timezone.utc) + timedelta(seconds=8),
+    )
 scheduler.start()
 log.info("scheduler started, watchers: %s", list(WATCHERS))
 
@@ -49,6 +58,34 @@ log.info("scheduler started, watchers: %s", list(WATCHERS))
 @app.template_filter("md")
 def md(value: str | None) -> str:
     return claude_review.render(value or "")
+
+
+@app.template_filter("age")
+def age(value: str | None) -> str:
+    """Compact age for ledger columns: 35 min, 3 h, 12 d, 4 mo."""
+    if not value:
+        return "—"
+    then = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    secs = int((datetime.now(timezone.utc) - then).total_seconds())
+    if secs < 3600:
+        return f"{max(secs // 60, 1)} min"
+    if secs < 86400:
+        return f"{secs // 3600} h"
+    if secs < 86400 * 60:
+        return f"{secs // 86400} d"
+    return f"{secs // (86400 * 30)} mo"
+
+
+@app.context_processor
+def inject_counts():
+    return {"nav_pending": db.pending_count(), "nav_my_prs": len(my_prs.load()["prs"])}
+
+
+@app.template_filter("elapsed")
+def elapsed(value: str) -> str:
+    started = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    secs = int((datetime.now(timezone.utc) - started).total_seconds())
+    return f"{secs // 60} min {secs % 60:02d} s" if secs >= 60 else f"{secs} s"
 
 
 @app.template_filter("localdt")
@@ -64,7 +101,8 @@ def localdt(value: str | None) -> str:
 
 def _items_context():
     states = db.watcher_states()
-    errors = {w: s["last_error"] for w, s in states.items() if s.get("last_error")}
+    # inbox banner = watchers only; the My PRs tab reports its own fetch errors
+    errors = {w: s["last_error"] for w, s in states.items() if s.get("last_error") and w in WATCHERS}
     return {
         "pending": db.items_by_state("pending"),
         "snoozed": db.items_by_state("snoozed"),
@@ -91,17 +129,12 @@ def _watchers_context():
 # --- Pages -----------------------------------------------------------------
 @app.get("/")
 def index():
-    return render_template("index.html", active="dashboard", **_items_context())
+    return render_template("index.html", active="inbox", **_items_context())
 
 
-@app.get("/todo")
-def todo_page():
-    return render_template("todo.html", active="todo", todos=db.todos())
-
-
-@app.get("/history")
-def history_page():
-    return render_template("history.html", active="history", notifications=db.history())
+@app.get("/my-prs")
+def my_prs_page():
+    return render_template("my_prs.html", active="my_prs", **_my_prs_context())
 
 
 @app.get("/settings")
@@ -129,6 +162,27 @@ def service_worker():
 @app.get("/partials/items")
 def partial_items():
     return render_template("partials/items.html", **_items_context())
+
+
+def _my_prs_context():
+    key = request.args.get("sort", "updated")
+    desc = request.args.get("dir", "asc") == "desc"
+    data = my_prs.load()
+    prs = my_prs.sort(data["prs"], key, desc)
+    return {"prs": prs, "summary": my_prs.summary(prs), "sort": key, "desc": desc,
+            "last_run": data["last_run"], "last_error": data["last_error"]}
+
+
+@app.get("/partials/my-prs")
+def partial_my_prs():
+    return render_template("partials/my_prs.html", **_my_prs_context())
+
+
+@app.post("/api/my-prs/refresh")
+def api_my_prs_refresh():
+    if GH_CFG.get("login"):
+        my_prs.refresh(GH_CFG["login"], GH_CFG.get("orgs", []))
+    return partial_my_prs()
 
 
 @app.get("/partials/watchers")
@@ -185,7 +239,7 @@ def _pr_panel(item_id: int, row, payload: dict, **ctx):
     elif not payload.get("repo"):
         ctx.setdefault("error", "repo/number not in payload yet — wait for the next fetch")
     resp = make_response(render_template("partials/pr_details.html", item=row,
-                                         review=db.get_review(item_id),
+                                         reviews=db.get_reviews(item_id), modes=claude_review.MODES,
                                          claude_enabled=claude_review.enabled(), **ctx))
     resp.headers["HX-Retarget"] = f"#pr-details-{item_id}"
     return resp
@@ -199,43 +253,78 @@ def api_pr_details(item_id: int):
     return _pr_panel(item_id, row, payload)
 
 
-@app.post("/api/items/<int:item_id>/approve")
-def api_approve(item_id: int):
+def _pending_comments() -> list[dict]:
+    """Line comments queued in the panel, sent as a JSON list in the `comments` form field."""
+    raw = request.form.get("comments") or "[]"
+    try:
+        comments = json.loads(raw)
+    except ValueError:
+        return []
+    return [c for c in comments if isinstance(c, dict) and c.get("path") and c.get("line") and c.get("body")]
+
+
+def _submit_review(item_id: int, event: str):
     row, payload = _pr_item(item_id)
     if not row:
         return "not found", 404
+    body = (request.form.get("body") or "").strip()
+    comments = _pending_comments()
+    label = {"APPROVE": "Approve", "COMMENT": "Comment", "REQUEST_CHANGES": "Request changes"}[event]
+    if event != "APPROVE" and not body and not comments:
+        return _pr_panel(item_id, row, payload, error=f"{label} failed — write a message or add a line comment first")
     try:
-        github_pr.submit_review(payload["repo"], payload["number"], "APPROVE",
-                                (request.form.get("body") or "").strip())
+        github_pr.submit_review(payload["repo"], payload["number"], event, body, comments,
+                                commit_id=request.form.get("head_sha") or None)
     except Exception as e:
-        return _pr_panel(item_id, row, payload, error=f"Approve failed — {e}")
-    # approved → the review request disappears on the next fetch; ack ∞ meanwhile
-    db.set_state(item_id, "acked", ack_forever=1,
-                 acked_fingerprint=row["fingerprint"], snooze_until=None)
-    log.info("PR approved via dashboard: %s#%s", payload["repo"], payload["number"])
-    return partial_items()
+        return _pr_panel(item_id, row, payload, error=f"{label} failed — {e}")
+    log.info("PR review %s via dashboard: %s#%s (%d line comments)", event, payload["repo"], payload["number"], len(comments))
+    # reviewed = out of the inbox now, back only when the PR moves again: ack on the state that
+    # already includes this review (APPROVE/REQUEST_CHANGES also drop the request → resolved next fetch)
+    try:
+        fingerprint = github_pr.updated_at(payload["repo"], payload["number"])
+    except Exception:
+        fingerprint = row["fingerprint"]
+    db.set_state(item_id, "acked", ack_forever=0, acked_fingerprint=fingerprint, snooze_until=None)
+    resp = make_response(partial_items())
+    # tells the page to drop the queued line comments (an error keeps them)
+    resp.headers["HX-Trigger"] = json.dumps({"reviewSubmitted": {"id": item_id}})
+    return resp
+
+
+@app.post("/api/items/<int:item_id>/approve")
+def api_approve(item_id: int):
+    return _submit_review(item_id, "APPROVE")
 
 
 @app.post("/api/items/<int:item_id>/comment")
 def api_comment(item_id: int):
+    return _submit_review(item_id, "COMMENT")
+
+
+@app.post("/api/items/<int:item_id>/request-changes")
+def api_request_changes(item_id: int):
+    return _submit_review(item_id, "REQUEST_CHANGES")
+
+
+@app.post("/api/items/<int:item_id>/reply")
+def api_reply(item_id: int):
     row, payload = _pr_item(item_id)
     if not row:
         return "not found", 404
     body = (request.form.get("body") or "").strip()
     if not body:
-        return _pr_panel(item_id, row, payload, error="Comment failed — write something first")
+        return _pr_panel(item_id, row, payload, error="Reply failed — write something first")
     try:
-        github_pr.submit_review(payload["repo"], payload["number"], "COMMENT", body)
+        github_pr.reply(payload["repo"], payload["number"], int(request.form["comment_id"]), body)
     except Exception as e:
-        return _pr_panel(item_id, row, payload, error=f"Comment failed — {e}")
-    log.info("PR comment via dashboard: %s#%s", payload["repo"], payload["number"])
-    # the review request stays open → the item stays pending, only the panel is refreshed
-    return _pr_panel(item_id, row, payload, notice="Comment posted ✔")
+        return _pr_panel(item_id, row, payload, error=f"Reply failed — {e}")
+    return _pr_panel(item_id, row, payload, notice="Reply posted ✔")
 
 
 # --- API Claude review -----------------------------------------------------------
 def _review_partial(item_id: int, row):
-    return render_template("partials/claude_review.html", item=row, review=db.get_review(item_id))
+    return render_template("partials/claude_review.html", item=row,
+                           reviews=db.get_reviews(item_id), modes=claude_review.MODES)
 
 
 @app.get("/api/items/<int:item_id>/review")
@@ -253,7 +342,10 @@ def api_review_run(item_id: int):
         return "not found", 404
     if not claude_review.enabled():
         return "CLAUDE_BRIDGE_URL not configured", 503
-    claude_review.start(item_id, row["url"])
+    mode = request.form.get("mode", "deep")
+    if mode not in claude_review.MODES:
+        return "unknown review mode", 400
+    claude_review.start(item_id, row["url"], mode)
     return _review_partial(item_id, row)
 
 
@@ -269,37 +361,6 @@ def _snooze_until(duration: str) -> str | None:
         minutes = int(m.group(1)) * (60 if m.group(2) == "h" else 1)
         target = now_local + timedelta(minutes=minutes)
     return target.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-# --- API todos ------------------------------------------------------------------
-def _todos_partial():
-    return render_template("partials/todos.html", todos=db.todos())
-
-
-@app.post("/api/todos")
-def api_add_todo():
-    text = (request.form.get("text") or "").strip()
-    if text:
-        db.add_todo(text[:300])
-    return _todos_partial()
-
-
-@app.post("/api/todos/<int:todo_id>/toggle")
-def api_toggle_todo(todo_id: int):
-    db.toggle_todo(todo_id)
-    return _todos_partial()
-
-
-@app.delete("/api/todos/<int:todo_id>")
-def api_delete_todo(todo_id: int):
-    db.delete_todo(todo_id)
-    return _todos_partial()
-
-
-@app.post("/api/todos/clear-done")
-def api_clear_done_todos():
-    db.clear_done_todos()
-    return _todos_partial()
 
 
 # --- API watchers / notifications ---------------------------------------------

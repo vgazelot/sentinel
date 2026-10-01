@@ -37,20 +37,15 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     keys_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS todos (
-    id INTEGER PRIMARY KEY,
-    text TEXT NOT NULL,
-    done INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    done_at TEXT
-);
 CREATE TABLE IF NOT EXISTS reviews (
-    item_id INTEGER PRIMARY KEY REFERENCES items(id),
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    mode TEXT NOT NULL DEFAULT 'deep',
     status TEXT NOT NULL,
     output TEXT,
     error TEXT,
     started_at TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    PRIMARY KEY (item_id, mode)
 );
 CREATE TABLE IF NOT EXISTS watcher_state (
     watcher TEXT NOT NULL,
@@ -76,6 +71,29 @@ def connect() -> sqlite3.Connection:
 def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn):
+    # reviews: one row per item → one row per (item, mode); SQLite cannot alter a primary key
+    cols = [c["name"] for c in conn.execute("PRAGMA table_info(reviews)")]
+    if "mode" not in cols:
+        conn.executescript("""
+            ALTER TABLE reviews RENAME TO reviews_old;
+            CREATE TABLE reviews (
+                item_id INTEGER NOT NULL REFERENCES items(id),
+                mode TEXT NOT NULL DEFAULT 'deep',
+                status TEXT NOT NULL,
+                output TEXT,
+                error TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                PRIMARY KEY (item_id, mode)
+            );
+            INSERT INTO reviews (item_id, mode, status, output, error, started_at, finished_at)
+                SELECT item_id, 'deep', status, output, error, started_at, finished_at FROM reviews_old;
+            DROP TABLE reviews_old;
+        """)
 
 
 # --- items -----------------------------------------------------------------
@@ -110,16 +128,6 @@ def log_notification(conn, item_id: int, reason: str, title: str, body: str):
     )
 
 
-def history(limit: int = 200):
-    with connect() as conn:
-        return conn.execute(
-            """SELECT n.*, i.url, i.watcher, i.state FROM notifications n
-               JOIN items i ON i.id = n.item_id
-               ORDER BY n.sent_at DESC, n.id DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-
-
 def notifications_since(since: str):
     with connect() as conn:
         return conn.execute(
@@ -150,35 +158,6 @@ def subscriptions():
         return conn.execute("SELECT * FROM push_subscriptions").fetchall()
 
 
-# --- todos --------------------------------------------------------------------
-def todos():
-    with connect() as conn:
-        return conn.execute("SELECT * FROM todos ORDER BY done, id DESC").fetchall()
-
-
-def add_todo(text: str):
-    with connect() as conn:
-        conn.execute("INSERT INTO todos (text, created_at) VALUES (?, ?)", (text, now()))
-
-
-def toggle_todo(todo_id: int):
-    with connect() as conn:
-        conn.execute(
-            "UPDATE todos SET done = 1 - done, done_at = CASE done WHEN 0 THEN ? ELSE NULL END WHERE id = ?",
-            (now(), todo_id),
-        )
-
-
-def delete_todo(todo_id: int):
-    with connect() as conn:
-        conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
-
-
-def clear_done_todos():
-    with connect() as conn:
-        conn.execute("DELETE FROM todos WHERE done = 1")
-
-
 # --- watcher state ------------------------------------------------------------
 def set_watcher_state(watcher: str, key: str, value: str):
     with connect() as conn:
@@ -198,23 +177,34 @@ def watcher_states() -> dict:
 
 
 # --- Claude reviews ------------------------------------------------------------
-def get_review(item_id: int):
+def get_reviews(item_id: int) -> dict:
+    """{mode: row} for this item."""
     with connect() as conn:
-        return conn.execute("SELECT * FROM reviews WHERE item_id = ?", (item_id,)).fetchone()
+        rows = conn.execute("SELECT * FROM reviews WHERE item_id = ?", (item_id,)).fetchall()
+    return {r["mode"]: r for r in rows}
 
 
-def start_review(item_id: int):
+def start_review(item_id: int, mode: str):
     with connect() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO reviews (item_id, status, output, error, started_at, finished_at)
-               VALUES (?, 'running', NULL, NULL, ?, NULL)""",
-            (item_id, now()),
+            """INSERT OR REPLACE INTO reviews (item_id, mode, status, output, error, started_at, finished_at)
+               VALUES (?, ?, 'running', NULL, NULL, ?, NULL)""",
+            (item_id, mode, now()),
         )
 
 
-def finish_review(item_id: int, output: str | None = None, error: str | None = None):
+def finish_review(item_id: int, mode: str, output: str | None = None, error: str | None = None):
     with connect() as conn:
         conn.execute(
-            "UPDATE reviews SET status = ?, output = ?, error = ?, finished_at = ? WHERE item_id = ?",
-            ("error" if error else "done", output, error, now(), item_id),
+            "UPDATE reviews SET status = ?, output = ?, error = ?, finished_at = ? WHERE item_id = ? AND mode = ?",
+            ("error" if error else "done", output, error, now(), item_id, mode),
+        )
+
+
+def fail_stale_reviews():
+    """Called at startup: a restart kills the background threads, their rows would stay 'running' forever."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE reviews SET status = 'error', error = 'interrupted by a Sentinel restart — run it again', finished_at = ? WHERE status = 'running'",
+            (now(),),
         )

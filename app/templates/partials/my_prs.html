@@ -1,0 +1,73 @@
+{% set dir = 'desc' if desc else 'asc' %}
+{% macro th(key, label, numeric=False) -%}
+{% set next = 'desc' if (sort == key and not desc) else 'asc' %}
+<th class="{% if numeric %}num{% endif %} {% if sort == key %}sorted{% endif %}">
+    <a href="/my-prs?sort={{ key }}&dir={{ next }}" hx-get="/partials/my-prs?sort={{ key }}&dir={{ next }}"
+       hx-target="#my-prs" hx-swap="innerHTML" hx-push-url="/my-prs?sort={{ key }}&dir={{ next }}">{{ label }}{% if sort == key %}<span class="sort-dir">{{ '▾' if desc else '▴' }}</span>{% endif %}</a>
+</th>
+{%- endmacro %}
+
+{% if last_error %}<div class="notice notice-error">GitHub — {{ last_error }}</div>{% endif %}
+
+<div class="ledger-head">
+    <h2 class="ledger-title">Open pull requests <span class="ledger-count">{{ summary.total }}</span></h2>
+    <div class="ledger-tools">
+        <span class="row-meta">{% if last_run %}fetched {{ last_run | localdt }}{% else %}not fetched yet{% endif %}</span>
+        <button class="btn btn-quiet" hx-post="/api/my-prs/refresh" hx-target="#my-prs" hx-swap="innerHTML" hx-disabled-elt="this">Refresh</button>
+    </div>
+</div>
+
+<dl class="summary">
+    <div><dt>Awaiting review</dt><dd>{{ summary.awaiting }}</dd></div>
+    <div class="{% if summary.changes %}is-bad{% endif %}"><dt>Changes requested</dt><dd>{{ summary.changes }}</dd></div>
+    <div class="{% if summary.approved %}is-good{% endif %}"><dt>Approved</dt><dd>{{ summary.approved }}</dd></div>
+    <div class="{% if summary.ci_failing %}is-bad{% endif %}"><dt>CI failing</dt><dd>{{ summary.ci_failing }}</dd></div>
+    <div class="{% if summary.conflicting %}is-bad{% endif %}"><dt>Conflicts</dt><dd>{{ summary.conflicting }}</dd></div>
+    <div><dt>Drafts</dt><dd>{{ summary.drafts }}</dd></div>
+</dl>
+
+<div class="table-scroll">
+<table class="ledger-table">
+    <thead>
+    <tr>
+        {{ th('repo', 'Repository') }}
+        {{ th('title', 'Pull request') }}
+        {{ th('ci', 'CI') }}
+        {{ th('review', 'Review') }}
+        <th class="num">Talk</th>
+        {{ th('updated', 'Updated', numeric=True) }}
+        {{ th('created', 'Age', numeric=True) }}
+    </tr>
+    </thead>
+    <tbody>
+    {% for p in prs %}
+    <tr class="{% if p.draft %}is-draft{% endif %}">
+        <td class="cell-repo"><span class="ref">{{ p.repo.split('/')[-1] }} <span class="ref-num">#{{ p.number }}</span></span></td>
+        <td class="cell-title">
+            <a href="{{ p.url }}" target="_blank">{{ p.title }}</a>
+            <div class="row-meta">{% if p.draft %}<span class="mark none">draft</span> {% endif %}{{ p.branch }} · <span class="add">+{{ p.additions }}</span> <span class="del">−{{ p.deletions }}</span>{% for l in p.labels %} · {{ l }}{% endfor %}</div>
+        </td>
+        <td class="cell-state">
+            {% if p.ci == 'failure' %}<span class="mark fail" title="{{ p.ci_failed | join(', ') }}">failing</span>
+            {% elif p.ci == 'pending' %}<span class="mark pend">running</span>
+            {% elif p.ci == 'success' %}<span class="mark ok">passing</span>
+            {% else %}<span class="mark none">—</span>{% endif %}
+            {% if p.mergeable == 'CONFLICTING' %}<span class="mark fail">conflicts</span>{% endif %}
+        </td>
+        <td class="cell-state">
+            {% if p.review == 'APPROVED' %}<span class="mark ok">approved</span>
+            {% elif p.review == 'CHANGES_REQUESTED' %}<span class="mark fail">changes requested</span>
+            {% elif p.draft %}<span class="mark none">—</span>
+            {% elif p.review_requests %}<span class="mark pend">requested</span>
+            {% else %}<span class="mark none">no reviewer</span>{% endif %}
+        </td>
+        <td class="num">{{ p.comments or '' }}</td>
+        <td class="num" title="{{ p.updated_at | localdt }}">{{ p.updated_at | age }}</td>
+        <td class="num" title="opened {{ p.created_at | localdt }}">{{ p.created_at | age }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty">No open pull request.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
