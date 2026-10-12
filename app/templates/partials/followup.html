@@ -37,7 +37,7 @@
                 {% if p.automerge %}<span class="muted">automerge on</span>{% endif %}
             {% elif p.post_checks %}
                 {% set ok = p.post_checks | selectattr('state', 'equalto', 'success') | list %}
-                <span class="pill {{ 'bad' if p.stage == 'failed' else ('warn' if p.stage in ('checking', 'inherited') else 'ok') }}">{{ ok | length }}/{{ p.post_checks | length }} post-merge checks green</span>
+                <span class="pill {{ 'bad' if p.section == 'failed' else ('warn' if p.stage in ('checking', 'inherited', 'failed') else 'ok') }}">{{ ok | length }}/{{ p.post_checks | length }} post-merge checks green</span>
                 {% if p.landed_at and p.stage == 'landed' %}<span class="muted">landed {{ p.landed_at | age }} ago</span>{% endif %}
             {% endif %}
         </div>
