@@ -55,7 +55,8 @@ class TriageTest(SentinelTest):
 
         self.seed("w")
         engine.process("w", [item("t", lane="team", urgency="later")])
-        engine.process("w", [])  # a teammate approved: gone from the search
+        engine.process("w", [])  # a teammate approved: gone from the search, twice in a row
+        engine.process("w", [])
         with db.connect() as conn:
             conn.execute("UPDATE items SET first_seen = ? WHERE external_id = 't'", (db.ago(120),))
         engine.promote_due()
@@ -115,8 +116,21 @@ class TriageTest(SentinelTest):
         self.seed("w")
         engine.process("w", [item("a")])
         engine.process("w", [])
+        engine.process("w", [])
         engine.process("w", [item("a")])
         self.assertEqual(len(self.pushes), 2)
+
+    def test_one_missing_poll_is_not_a_resolution(self):
+        import db
+        import engine
+
+        self.seed("w")
+        engine.process("w", [item("a")])
+        db.set_state(state("a")["id"], "acked", acked_fingerprint="1")
+        engine.process("w", [])  # GitHub search dropped it for one poll
+        engine.process("w", [item("a")])
+        self.assertEqual(len(self.pushes), 1, "no second push")
+        self.assertEqual(state("a")["state"], "acked", "the ack survives")
 
     def test_health_item_after_a_failure_streak(self):
         import db
@@ -130,6 +144,7 @@ class TriageTest(SentinelTest):
         engine.check_health()
         self.assertEqual(len(self.pushes), 1)
         db.record_run("github_reviews")
+        engine.check_health()
         engine.check_health()
         self.assertEqual(state("github_reviews")["state"], "resolved")
 

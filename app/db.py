@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS items (
     lane TEXT NOT NULL DEFAULT 'you',
     urgency TEXT NOT NULL DEFAULT 'now',
     notified_at TEXT,
+    missed INTEGER NOT NULL DEFAULT 0,
     UNIQUE(watcher, external_id)
 );
 CREATE TABLE IF NOT EXISTS notifications (
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     created_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 1,
     UNIQUE(subject, mode)
 );
 CREATE TABLE IF NOT EXISTS watcher_state (
@@ -85,6 +87,7 @@ def init():
     with connect() as conn:
         _migrate_items(conn)
         conn.executescript(SCHEMA)
+        _add_columns(conn, "agent_runs", (("attempts", "INTEGER NOT NULL DEFAULT 1"),))
         _migrate_reviews(conn)
 
 
@@ -93,14 +96,18 @@ def _columns(conn, table: str) -> list[str]:
 
 
 def _migrate_items(conn):
-    """Databases from before the triage: add the lane/urgency columns (CREATE TABLE IF NOT EXISTS won't)."""
-    cols = _columns(conn, "items")
+    """Databases from before the triage: add the new columns (CREATE TABLE IF NOT EXISTS won't)."""
+    _add_columns(conn, "items", (("lane", "TEXT NOT NULL DEFAULT 'you'"), ("urgency", "TEXT NOT NULL DEFAULT 'now'"),
+                                 ("notified_at", "TEXT"), ("missed", "INTEGER NOT NULL DEFAULT 0")))
+
+
+def _add_columns(conn, table: str, columns: tuple):
+    cols = _columns(conn, table)
     if not cols:
-        return
-    for name, ddl in (("lane", "TEXT NOT NULL DEFAULT 'you'"), ("urgency", "TEXT NOT NULL DEFAULT 'now'"),
-                      ("notified_at", "TEXT")):
+        return  # the table does not exist yet: SCHEMA creates it whole
+    for name, ddl in columns:
         if name not in cols:
-            conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 def _migrate_reviews(conn):
@@ -239,16 +246,18 @@ def runs_for(subjects: list[str]) -> dict:
     return out
 
 
-def queue_run(subject: str, mode: str, url: str, context: dict):
-    """(Re)queue a run: one row per subject and mode, the latest one wins."""
+def queue_run(subject: str, mode: str, url: str, context: dict, retry: bool = False):
+    """(Re)queue a run: one row per subject and mode, the latest one wins. `retry` counts one more
+    attempt (an automatic run trying again after an error); anything else starts over at 1."""
     with connect() as conn:
         conn.execute(
             """INSERT INTO agent_runs (subject, mode, status, url, context, created_at)
                VALUES (?, ?, 'queued', ?, ?, ?)
                ON CONFLICT(subject, mode) DO UPDATE SET status = 'queued', url = excluded.url,
                    context = excluded.context, output = NULL, error = NULL,
-                   created_at = excluded.created_at, started_at = NULL, finished_at = NULL""",
-            (subject, mode, url, json.dumps(context), now()),
+                   created_at = excluded.created_at, started_at = NULL, finished_at = NULL,
+                   attempts = CASE WHEN ? THEN attempts + 1 ELSE 1 END""",
+            (subject, mode, url, json.dumps(context), now(), int(retry)),
         )
 
 

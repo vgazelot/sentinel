@@ -16,6 +16,9 @@ from watchers import WatchedItem, Watcher
 log = logging.getLogger("sentinel.engine")
 # more notifications than this from a single pass → one summary push instead of a burst
 STORM = 3
+# GitHub search drops a PR from its results now and then: one absence is not a resolution, or the
+# PR comes back as new — ack and snooze lost, pushed again (17 PRs re-pushed within 30 min, 25 times)
+MISSES = 2
 
 
 def run_watcher(watcher: Watcher):
@@ -65,7 +68,7 @@ def process(watcher_name: str, fetched: list[WatchedItem]):
 
             conn.execute(
                 """UPDATE items SET title = ?, url = ?, severity = ?, payload = ?, fingerprint = ?,
-                                    last_seen = ?, lane = ?, urgency = ? WHERE id = ?""",
+                                    last_seen = ?, lane = ?, urgency = ?, missed = 0 WHERE id = ?""",
                 (it.title, it.url, it.severity, json.dumps(it.payload), it.fingerprint, ts,
                  it.lane, it.urgency, row["id"]),
             )
@@ -103,11 +106,13 @@ def process(watcher_name: str, fetched: list[WatchedItem]):
             # unchanged pending / snoozed: nothing (snooze wake-up and grace have their own jobs)
 
         for ext_id, row in existing.items():
-            if ext_id not in seen and row["state"] != "resolved":
-                conn.execute(
-                    "UPDATE items SET state = 'resolved', resolved_at = ? WHERE id = ?",
-                    (ts, row["id"]),
-                )
+            if ext_id in seen or row["state"] == "resolved":
+                continue
+            if row["missed"] + 1 >= MISSES:
+                conn.execute("UPDATE items SET state = 'resolved', resolved_at = ?, missed = 0 WHERE id = ?",
+                             (ts, row["id"]))
+            else:
+                conn.execute("UPDATE items SET missed = missed + 1 WHERE id = ?", (row["id"],))
 
         if first_pass:
             log.info("%s: first pass, %d item(s) recorded without notification", watcher_name, len(to_notify))
