@@ -83,6 +83,14 @@ def request(subject: str, mode: str, url: str, context: dict | None = None, auto
     return True
 
 
+def settled(run, **context) -> bool:
+    """An automatic run already covers this: done, under way, or failed less than an hour ago
+    (a bridge that was down gets another try, a broken one does not eat the daily cap)."""
+    if not run or any(json.loads(run["context"] or "{}").get(k) != v for k, v in context.items()):
+        return False
+    return run["status"] != "error" or (run["finished_at"] or "") > db.ago(60)
+
+
 def tick():
     """Scheduler job: start queued runs while there is room."""
     if not enabled():

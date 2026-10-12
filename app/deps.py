@@ -125,7 +125,7 @@ def precheck():
     """Scheduler job: one Claude bump check per pending bump, with the PRs of every repository at once."""
     for g in pending_groups():
         subject = f"deps:{g['key']}"
-        if db.get_run(subject, "precheck"):
+        if agents.settled(db.get_run(subject, "precheck")):
             continue  # once per bump; the button re-runs it
         agents.request(subject, "precheck", g["prs"][0]["url"], context(g), auto=True)
 

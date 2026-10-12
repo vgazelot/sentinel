@@ -322,9 +322,8 @@ def _investigate(data: dict):
         if p["stage"] != "failed" or _minutes_since(p["merged_at"]) > AUTO_INVESTIGATE_HOURS * 60:
             continue
         subject = f"{p['repo']}#{p['number']}"
-        current = db.get_run(subject, "followup")
-        if current and json.loads(current["context"] or "{}").get("merge_sha") == p["merge_sha"]:
-            continue
+        if agents.settled(db.get_run(subject, "followup"), merge_sha=p["merge_sha"]):
+            continue  # once per merge commit
         agents.request(subject, "followup", p["url"], context(p), auto=True)
 
 
