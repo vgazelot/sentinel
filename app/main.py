@@ -1,19 +1,21 @@
 """Sentinel — Flask: pages + HTMX partials + API + APScheduler scheduler."""
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
+from flask import Flask, jsonify, make_response, redirect, render_template, request, send_from_directory
 
+import agents
 import config
-import db
-import engine
-import approved_prs
-import claude_review
 import cycle
+import db
+import deps
+import engine
+import followup
 import github_pr
 import my_prs
 import notify
@@ -24,65 +26,57 @@ log = logging.getLogger("sentinel")
 
 app = Flask(__name__)
 db.init()
-db.fail_stale_reviews()
+db.fail_stale_runs()
 
 WATCHERS = build_watchers(config.load())
-CYCLE_CFG = config.load().get("cycle", {})
-APPROVED_CFG = config.load().get(approved_prs.NAME, {})
+GH = config.github()
+CYCLE_CFG = config.load().get(cycle.NAME, {})
+FOLLOWUP_CFG = config.load().get(followup.NAME, {})
+
+
+def _every(func, seconds: int, job_id: str, delay: int = 5, args=None):
+    scheduler.add_job(func, "interval", seconds=seconds, id=job_id, args=args or [], coalesce=True,
+                      max_instances=1, misfire_grace_time=300,
+                      next_run_time=datetime.now(timezone.utc) + timedelta(seconds=delay))
+
 
 scheduler = BackgroundScheduler(timezone="UTC")
 for i, watcher in enumerate(WATCHERS.values()):
-    scheduler.add_job(
-        engine.run_watcher,
-        "interval",
-        seconds=watcher.interval_seconds,
-        args=[watcher],
-        id=watcher.name,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=300,
-        jitter=10,
-        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=5 + i * 3),
-    )
-scheduler.add_job(
-    engine.wake_snoozed, "interval", seconds=60, id="wake_snoozed",
-    coalesce=True, max_instances=1, misfire_grace_time=120,
-)
-GH_CFG = config.load().get("watchers", {}).get("github_reviews", {})
-if GH_CFG.get("login"):
-    scheduler.add_job(
-        my_prs.refresh, "interval", seconds=GH_CFG.get("interval_seconds", 180), id=my_prs.NAME,
-        args=[GH_CFG["login"], GH_CFG.get("orgs", [])], coalesce=True, max_instances=1,
-        misfire_grace_time=300, next_run_time=datetime.now(timezone.utc) + timedelta(seconds=8),
-    )
-if approved_prs.enabled(APPROVED_CFG):
-    scheduler.add_job(
-        approved_prs.refresh, "interval", seconds=APPROVED_CFG.get("interval_seconds", 900),
-        id=approved_prs.NAME, args=[APPROVED_CFG], coalesce=True, max_instances=1,
-        misfire_grace_time=300, next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
-    )
+    _every(engine.run_watcher, watcher.interval_seconds, watcher.name, delay=5 + i * 3, args=[watcher])
+_every(engine.wake_snoozed, 60, "wake_snoozed")
+_every(engine.promote_due, 60, "promote_due", delay=20)
+_every(engine.check_health, 60, "check_health", delay=60)
+if GH["login"]:
+    _every(my_prs.refresh, GH["interval_seconds"], my_prs.NAME, delay=8, args=[GH["login"], GH["orgs"]])
+if followup.enabled(FOLLOWUP_CFG):
+    _every(followup.refresh, FOLLOWUP_CFG.get("interval_seconds", 300), followup.NAME, delay=10, args=[FOLLOWUP_CFG])
 if cycle.enabled(CYCLE_CFG):
-    scheduler.add_job(
-        cycle.refresh, "interval", seconds=CYCLE_CFG.get("interval_seconds", 1800), id=cycle.NAME,
-        args=[CYCLE_CFG], coalesce=True, max_instances=1, misfire_grace_time=600,
-        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=12),
-    )
-scheduler.start()
-log.info("scheduler started, watchers: %s", list(WATCHERS))
+    _every(cycle.refresh, CYCLE_CFG.get("interval_seconds", 1800), cycle.NAME, delay=12, args=[CYCLE_CFG])
+if agents.enabled():
+    _every(agents.tick, 10, "agents", delay=15)
+    if config.agents()["precheck"]:
+        _every(deps.precheck, 300, "precheck", delay=45)
+if os.environ.get("SENTINEL_SCHEDULER", "1") == "1":  # 0 = tests: routes only, no background polling
+    scheduler.start()
+    log.info("scheduler started, watchers: %s", list(WATCHERS))
+
+
+# --- Template filters ----------------------------------------------------------------
+def _parse(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
 @app.template_filter("md")
 def md(value: str | None) -> str:
-    return claude_review.render(value or "")
+    return agents.render(value or "")
 
 
 @app.template_filter("age")
 def age(value: str | None) -> str:
-    """Compact age for ledger columns: 35 min, 3 h, 12 d, 4 mo."""
+    """Compact age: 35 min, 3 h, 12 d, 4 mo."""
     if not value:
         return "—"
-    then = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    secs = int((datetime.now(timezone.utc) - then).total_seconds())
+    secs = int((datetime.now(timezone.utc) - _parse(value)).total_seconds())
     if secs < 3600:
         return f"{max(secs // 60, 1)} min"
     if secs < 86400:
@@ -92,20 +86,9 @@ def age(value: str | None) -> str:
     return f"{secs // (86400 * 30)} mo"
 
 
-@app.context_processor
-def inject_counts():
-    off_track = (sum(1 for r in cycle.load()["big_rocks"] if r["status"] in ("stalled", "behind"))
-                 if cycle.enabled(CYCLE_CFG) else 0)
-    return {"nav_pending": db.pending_count(), "nav_my_prs": len(my_prs.load()["prs"]),
-            "nav_cycle": off_track, "cycle_enabled": cycle.enabled(CYCLE_CFG),
-            "nav_approved": len(approved_prs.load()["open_prs"]) if approved_prs.enabled(APPROVED_CFG) else 0,
-            "approved_enabled": approved_prs.enabled(APPROVED_CFG)}
-
-
 @app.template_filter("elapsed")
 def elapsed(value: str) -> str:
-    started = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    secs = int((datetime.now(timezone.utc) - started).total_seconds())
+    secs = int((datetime.now(timezone.utc) - _parse(value)).total_seconds())
     return f"{secs // 60} min {secs % 60:02d} s" if secs >= 60 else f"{secs} s"
 
 
@@ -114,43 +97,155 @@ def localdt(value: str | None) -> str:
     if not value:
         return "—"
     try:
-        dt = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        return dt.astimezone(ZoneInfo(config.TZ)).strftime("%d/%m %H:%M")
+        return _parse(value).astimezone(ZoneInfo(config.TZ)).strftime("%d/%m %H:%M")
     except ValueError:
         return value
 
 
-def _items_context():
-    states = db.watcher_states()
-    # inbox banner = watchers only; the My PRs tab reports its own fetch errors
-    errors = {w: s["last_error"] for w, s in states.items() if s.get("last_error") and w in WATCHERS}
+@app.template_filter("domid")
+def domid(value: str) -> str:
+    return re.sub(r"[^\w-]", "-", value)
+
+
+@app.template_filter("verdict")
+def verdict(output: str | None) -> tuple[str, str]:
+    return agents.verdict(output)
+
+
+@app.template_filter("headline")
+def headline(output: str | None) -> str:
+    return agents.first_finding(output)
+
+
+@app.template_filter("minutes_left")
+def minutes_left(first_seen: str) -> int:
+    grace = config.triage()["team_grace_minutes"]
+    return max(int(grace - (datetime.now(timezone.utc) - _parse(first_seen)).total_seconds() // 60), 0)
+
+
+@app.context_processor
+def inject_nav():
+    off_track = (sum(1 for r in cycle.load()["big_rocks"] if r["status"] in ("stalled", "behind"))
+                 if cycle.enabled(CYCLE_CFG) else 0)
+    fu = followup.summary(followup.load()["prs"]) if followup.enabled(FOLLOWUP_CFG) else {}
+    attention = [_view(r) for r in db.items(db.ATTENTION)]
+    _clear_by_claude(attention, db.runs_for([v["subject"] for v in attention if v["lane"] == "followup"]))
+    return {"nav_attention": _units([v for v in attention if v["attention"]]),
+            "nav_my_prs": sum(1 for p in my_prs.load()["prs"] if p["action"] in my_prs.PUSHED),
+            "nav_followup": fu.get("failed", 0) + fu.get("reverted", 0) + fu.get("blocked", 0),
+            "nav_cycle": off_track, "cycle_enabled": cycle.enabled(CYCLE_CFG),
+            "followup_enabled": followup.enabled(FOLLOWUP_CFG), "claude_enabled": agents.enabled(),
+            "agent_modes": agents.MODES}
+
+
+# --- View models -------------------------------------------------------------------------
+def _view(row) -> dict:
+    """An item row + its decoded payload, plus what every template needs to render it."""
+    p = json.loads(row["payload"] or "{}")
+    v = dict(row)
+    v["p"] = p
+    v["subject"] = f"{p['repo']}#{p['number']}" if p.get("repo") else p.get("subject", "")
+    v["ref"] = (f"{p['repo'].split('/')[-1]}#{p['number']}" if p.get("repo")
+                else p.get("source") or ("Sentinel" if row["lane"] == "health" else ""))
+    v["headline"] = p.get("title") or p.get("name") or row["title"]
+    v["attention"] = row["state"] == "pending" and (
+        row["urgency"] == "now" or (row["urgency"] == "later" and bool(row["notified_at"])))
+    v["tone"] = _tone(row, p, v["attention"])
+    return v
+
+
+def _tone(row, p: dict, attention: bool) -> str:
+    """Dot colour: hot = waiting on you, bad = something broke, warn = needs a look, ok = good news."""
+    lane = row["lane"]
+    if lane == "health":
+        return "bad"
+    if lane == "followup":
+        return "bad" if p.get("kind") in ("failed", "reverted") else "warn"
+    if lane == "mine":
+        return {"merge": "ok", "threads": "warn", "no-reviewer": "warn", "nudge": "neutral"}.get(p.get("action"), "bad")
+    if lane == "incident":
+        return {"critical": "bad", "major": "bad", "minor": "warn"}.get(row["severity"], "neutral")
+    if lane == "cycle":
+        return "warn"
+    return "hot" if attention else "neutral"
+
+
+def _mine_groups(views: list[dict]) -> list[dict]:
+    """Your PRs on Now, one row per cause: ten PRs red on the same CI job are one problem, not ten."""
+    groups: dict[str, dict] = {}
+    for v in views:
+        action = v["p"].get("action", "")
+        family = (v["p"].get("families") or [""])[0] if action == "ci" else ""
+        key = f"{action}:{family}"
+        label = my_prs.ACTIONS.get(action, action) + (f" — {family}" if family else "")
+        g = groups.setdefault(key, {"key": key, "action": action, "label": label, "tone": v["tone"], "rows": []})
+        g["rows"].append(v)
+    order = list(my_prs.ACTIONS)
+    return sorted(groups.values(), key=lambda g: (order.index(g["action"]) if g["action"] in order else 99, -len(g["rows"])))
+
+
+def _clear_by_claude(views: list[dict], runs: dict):
+    """A post-merge failure Claude traced to something else stops asking for you: it answered the
+    question "did I break it?". It stays on Follow-up and on the radar, verdict attached."""
+    for v in views:
+        run = (runs.get(v["subject"]) or {}).get("followup")
+        if (v["lane"] == "followup" and v["p"].get("kind") == "failed" and run and run["status"] == "done"
+                and agents.verdict(run["output"])[0] == "unrelated"):
+            v["attention"], v["tone"], v["cleared"] = False, "ok", True
+
+
+def _units(attention: list[dict]) -> int:
+    """What the badges count: decisions — every item, except your own PRs which count per cause."""
+    return sum(1 for v in attention if v["lane"] != "mine") + len(_mine_groups([v for v in attention if v["lane"] == "mine"]))
+
+
+SECTIONS = [
+    ("health", "Sentinel needs a hand", ("health",)),
+    ("reviews", "Reviews for you", ("you", "team")),
+    ("mine", "Your pull requests", ("mine",)),
+    ("followup", "After you approved", ("followup",)),
+    ("incidents", "Incidents", ("incident",)),
+    ("cycle", "Cycle", ("cycle",)),
+]
+
+
+def _now_context(notice: str = "", error: str = "") -> dict:
+    views = [_view(r) for r in db.items("state != 'resolved'")]
+    groups = deps.pending_groups()
+    runs = db.runs_for([v["subject"] for v in views if v["subject"]] + [f"deps:{g['key']}" for g in groups])
+    _clear_by_claude(views, runs)
+    attention = [v for v in views if v["attention"]]
+    sections = [{"id": sid, "title": title,
+                 "rows": sorted((v for v in attention if v["lane"] in lanes), key=lambda v: v["first_seen"], reverse=True)}
+                for sid, title, lanes in SECTIONS]
+    pending = [v for v in views if v["state"] == "pending"]
+    fu = followup.load() if followup.enabled(FOLLOWUP_CFG) else {"prs": []}
+    mine = next(s for s in sections if s["id"] == "mine")
+    mine["groups"] = _mine_groups(mine["rows"])
     return {
-        "pending": db.items_by_state("pending"),
-        "snoozed": db.items_by_state("snoozed"),
-        "acked": db.items_by_state("acked"),
-        "errors": errors,
+        "sections": sections,
+        "attention": _units(attention),
+        "dep_groups": groups,
+        "dep_count": sum(len(g["prs"]) for g in groups),
+        "grace": sorted((v for v in pending if v["lane"] == "team" and not v["attention"]), key=lambda v: v["first_seen"]),
+        "radar": sorted((v for v in pending if (v["urgency"] == "quiet" and v["lane"] != "deps") or v.get("cleared")),
+                        key=lambda v: (v["lane"], v["first_seen"])),
+        "snoozed": [v for v in views if v["state"] == "snoozed"],
+        "acked": [v for v in views if v["state"] == "acked"][:40],
+        "runs": runs,
+        "landing": followup.summary(fu["prs"]),
+        # what is moving and fine — a dismissed or stuck one is already an item above
+        "landing_live": [p for p in fu["prs"] if p["stage"] == "checking" or (
+            p["stage"] == "waiting" and not p["dismissed"] and p["waiting_days"] < fu.get("stale_days", 3))][:8],
+        "notice": notice,
+        "error": error,
     }
 
 
-def _watchers_context():
-    states = db.watcher_states()
-    return {
-        "watchers": [
-            {
-                "name": w.name,
-                "interval": w.interval_seconds,
-                "last_run": states.get(w.name, {}).get("last_run"),
-                "last_error": states.get(w.name, {}).get("last_error"),
-            }
-            for w in WATCHERS.values()
-        ]
-    }
-
-
-# --- Pages -----------------------------------------------------------------
+# --- Pages -----------------------------------------------------------------------------
 @app.get("/")
-def index():
-    return render_template("index.html", active="inbox", **_items_context())
+def now_page():
+    return render_template("now.html", active="now", **_now_context())
 
 
 @app.get("/my-prs")
@@ -158,9 +253,15 @@ def my_prs_page():
     return render_template("my_prs.html", active="my_prs", **_my_prs_context())
 
 
+@app.get("/follow-up")
+def followup_page():
+    return render_template("followup.html", active="followup", **_followup_context())
+
+
 @app.get("/approved")
 def approved_page():
-    return render_template("approved.html", active="approved", **_approved_context())
+    # the Approved tab became Follow-up; old pushes still link here
+    return redirect("/follow-up", code=301)
 
 
 @app.get("/cycle")
@@ -172,9 +273,9 @@ def cycle_page():
 def settings_page():
     return render_template(
         "settings.html", active="settings",
-        push_enabled=bool(config.VAPID_PRIVATE_KEY),
-        subscriptions=db.subscriptions(),
-        **_watchers_context(),
+        push_enabled=bool(config.VAPID_PRIVATE_KEY) and not config.PUSH_DISABLED,
+        subscriptions=db.subscriptions(), triage=config.triage(), agent_cfg=config.agents(),
+        bridge=config.CLAUDE_BRIDGE_URL, **_watchers_context(), **_agents_context(),
     )
 
 
@@ -189,18 +290,16 @@ def service_worker():
     return send_from_directory("static", "sw.js", mimetype="application/javascript")
 
 
-# --- Partials HTMX ------------------------------------------------------------
-@app.get("/partials/items")
-def partial_items():
-    return render_template("partials/items.html", **_items_context())
+# --- Partials (polled) --------------------------------------------------------------------
+@app.get("/partials/now")
+def partial_now():
+    return render_template("partials/now.html", **_now_context())
 
 
-def _my_prs_context():
-    key = request.args.get("sort", "updated")
-    desc = request.args.get("dir", "asc") == "desc"
+def _my_prs_context() -> dict:
     data = my_prs.load()
-    prs = my_prs.sort(data["prs"], key, desc)
-    return {"prs": prs, "summary": my_prs.summary(prs), "sort": key, "desc": desc,
+    return {"groups": my_prs.groups(data["prs"]), "total": len(data["prs"]),
+            "yours": sum(1 for p in data["prs"] if p["action"] in my_prs.PUSHED),
             "last_run": data["last_run"], "last_error": data["last_error"]}
 
 
@@ -211,29 +310,29 @@ def partial_my_prs():
 
 @app.post("/api/my-prs/refresh")
 def api_my_prs_refresh():
-    if GH_CFG.get("login"):
-        my_prs.refresh(GH_CFG["login"], GH_CFG.get("orgs", []))
+    if GH["login"]:
+        my_prs.refresh(GH["login"], GH["orgs"])
     return partial_my_prs()
 
 
-def _approved_context():
-    key = request.args.get("sort", "status")
-    desc = request.args.get("dir", "asc") == "desc"
-    data = approved_prs.load()
-    return {**data, "prs": approved_prs.sort(data["open_prs"], key, desc),
-            "summary": approved_prs.summary(data), "sort": key, "desc": desc}
+def _followup_context() -> dict:
+    data = followup.load()
+    prs = data["prs"]
+    runs = db.runs_for([f"{p['repo']}#{p['number']}" for p in prs if p["stage"] == "failed"])
+    return {**data, "summary": followup.summary(prs), "runs": runs,
+            "stages": {s: [p for p in prs if p["stage"] == s] for s in followup.STAGES}}
 
 
-@app.get("/partials/approved")
-def partial_approved():
-    return render_template("partials/approved.html", **_approved_context())
+@app.get("/partials/follow-up")
+def partial_followup():
+    return render_template("partials/followup.html", **_followup_context())
 
 
-@app.post("/api/approved/refresh")
-def api_approved_refresh():
-    if approved_prs.enabled(APPROVED_CFG):
-        approved_prs.refresh(APPROVED_CFG)
-    return partial_approved()
+@app.post("/api/follow-up/refresh")
+def api_followup_refresh():
+    if followup.enabled(FOLLOWUP_CFG):
+        followup.refresh(FOLLOWUP_CFG)
+    return partial_followup()
 
 
 @app.get("/partials/cycle")
@@ -248,12 +347,41 @@ def api_cycle_refresh():
     return partial_cycle()
 
 
+def _watchers_context() -> dict:
+    states = db.watcher_states()
+    jobs = [(w.name, w.interval_seconds) for w in WATCHERS.values()]
+    if GH["login"]:
+        jobs.append((my_prs.NAME, GH["interval_seconds"]))
+    if followup.enabled(FOLLOWUP_CFG):
+        jobs.append((followup.NAME, FOLLOWUP_CFG.get("interval_seconds", 300)))
+    if cycle.enabled(CYCLE_CFG):
+        jobs.append((cycle.NAME, CYCLE_CFG.get("interval_seconds", 1800)))
+    return {"watchers": [{"name": name, "interval": interval, "runnable": name in WATCHERS,
+                          **{k: states.get(name, {}).get(k) for k in ("last_run", "last_error", "error_since")}}
+                         for name, interval in jobs]}
+
+
+def _agents_context() -> dict:
+    with db.connect() as conn:
+        recent = conn.execute("SELECT * FROM agent_runs ORDER BY COALESCE(started_at, created_at) DESC LIMIT 12").fetchall()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+    return {"recent_runs": recent,
+            "runs_today": db.count_runs("created_at >= ? AND mode IN ('precheck', 'followup')", today)}
+
+
 @app.get("/partials/watchers")
 def partial_watchers():
     return render_template("partials/watchers.html", **_watchers_context())
 
 
-# --- API items -----------------------------------------------------------------
+# --- Item actions --------------------------------------------------------------------------
+def _done(notice: str = "", error: str = ""):
+    """HTMX gets the refreshed Now page, anything else (the Claude Code mod) a JSON ack."""
+    if request.headers.get("HX-Request"):
+        return render_template("partials/now.html", **_now_context(notice, error))
+    return jsonify({"ok": not error, "notice": notice, "error": error}), (400 if error else 200)
+
+
 @app.post("/api/items/<int:item_id>/ack")
 def api_ack(item_id: int):
     with db.connect() as conn:
@@ -261,35 +389,72 @@ def api_ack(item_id: int):
     if not row:
         return "not found", 404
     forever = request.form.get("mode") == "forever"
-    db.set_state(item_id, "acked", ack_forever=int(forever),
-                 acked_fingerprint=row["fingerprint"], snooze_until=None)
-    return partial_items()
+    db.set_state(item_id, "acked", ack_forever=int(forever), acked_fingerprint=row["fingerprint"], snooze_until=None)
+    return _done()
+
+
+@app.post("/api/items/bulk")
+def api_bulk():
+    """Hide or snooze several items at once — a group row's ⋯ menu."""
+    ids = [int(x) for x in request.form.get("ids", "").split(",") if x.strip().isdigit()]
+    action = request.form.get("action", "")
+    until = _snooze_until(request.form.get("duration", "1h")) if action == "snooze" else None
+    if action not in ("ack", "forever", "snooze") or (action == "snooze" and not until):
+        return "bad action", 400
+    with db.connect() as conn:
+        rows = [r for r in (db.get_item(conn, i) for i in ids) if r]
+    for row in rows:
+        if action == "snooze":
+            db.set_state(row["id"], "snoozed", snooze_until=until, ack_forever=0)
+        else:
+            db.set_state(row["id"], "acked", ack_forever=int(action == "forever"),
+                         acked_fingerprint=row["fingerprint"], snooze_until=None)
+    return _done()
+
+
+@app.post("/api/items/<int:item_id>/unack")
+def api_unack(item_id: int):
+    db.set_state(item_id, "pending", ack_forever=0, acked_fingerprint=None, snooze_until=None)
+    return _done()
 
 
 @app.post("/api/items/<int:item_id>/snooze")
 def api_snooze(item_id: int):
-    duration = request.form.get("duration", "1h")
-    until = _snooze_until(duration)
+    until = _snooze_until(request.form.get("duration", "1h"))
     if not until:
         return "bad duration", 400
     db.set_state(item_id, "snoozed", snooze_until=until, ack_forever=0)
-    return partial_items()
+    return _done()
 
 
 @app.post("/api/items/<int:item_id>/unsnooze")
 def api_unsnooze(item_id: int):
     db.set_state(item_id, "pending", snooze_until=None)
-    return partial_items()
+    return _done()
 
 
+def _snooze_until(duration: str) -> str | None:
+    tz = ZoneInfo(config.TZ)
+    now_local = datetime.now(tz)
+    if duration == "tomorrow":
+        target = (now_local + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    else:
+        m = re.fullmatch(r"(\d+)([mh]?)", duration.strip())
+        if not m:
+            return None
+        minutes = int(m.group(1)) * (60 if m.group(2) == "h" else 1)
+        target = now_local + timedelta(minutes=minutes)
+    return target.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --- PR review panel ------------------------------------------------------------------------
 def _pr_item(item_id: int):
     """PR item + decoded payload, or (None, None)."""
     with db.connect() as conn:
         row = db.get_item(conn, item_id)
     if not row or row["watcher"] != "github_reviews":
         return None, None
-    payload = json.loads(row["payload"] or "{}")
-    return row, payload
+    return row, json.loads(row["payload"] or "{}")
 
 
 def _pr_panel(item_id: int, row, payload: dict, **ctx):
@@ -301,9 +466,9 @@ def _pr_panel(item_id: int, row, payload: dict, **ctx):
             ctx.setdefault("error", str(e))
     elif not payload.get("repo"):
         ctx.setdefault("error", "repo/number not in payload yet — wait for the next fetch")
-    resp = make_response(render_template("partials/pr_details.html", item=row,
-                                         reviews=db.get_reviews(item_id), modes=claude_review.MODES,
-                                         claude_enabled=claude_review.enabled(), **ctx))
+    subject = f"{payload.get('repo')}#{payload.get('number')}"
+    resp = make_response(render_template("partials/pr_details.html", item=row, subject=subject,
+                                         runs=db.runs_for([subject]).get(subject, {}), **ctx))
     resp.headers["HX-Retarget"] = f"#pr-details-{item_id}"
     return resp
 
@@ -318,12 +483,25 @@ def api_pr_details(item_id: int):
 
 def _pending_comments() -> list[dict]:
     """Line comments queued in the panel, sent as a JSON list in the `comments` form field."""
-    raw = request.form.get("comments") or "[]"
     try:
-        comments = json.loads(raw)
+        comments = json.loads(request.form.get("comments") or "[]")
     except ValueError:
         return []
     return [c for c in comments if isinstance(c, dict) and c.get("path") and c.get("line") and c.get("body")]
+
+
+def _approve(row, payload: dict, body: str = "", comments: list | None = None, event: str = "APPROVE",
+             head_sha: str | None = None):
+    """One review on GitHub, then ack the item on the PR state that already includes it: out of the
+    inbox now, back only if the PR moves (APPROVE/REQUEST_CHANGES also drop the request → resolved)."""
+    github_pr.submit_review(payload["repo"], payload["number"], event, body, comments or [], commit_id=head_sha)
+    fingerprint = row["fingerprint"]
+    if row["lane"] == "you":  # the only lane whose fingerprint follows updated_at
+        try:
+            fingerprint = github_pr.updated_at(payload["repo"], payload["number"])
+        except Exception:  # noqa: BLE001
+            pass
+    db.set_state(row["id"], "acked", ack_forever=0, acked_fingerprint=fingerprint, snooze_until=None)
 
 
 def _submit_review(item_id: int, event: str):
@@ -336,19 +514,11 @@ def _submit_review(item_id: int, event: str):
     if event != "APPROVE" and not body and not comments:
         return _pr_panel(item_id, row, payload, error=f"{label} failed — write a message or add a line comment first")
     try:
-        github_pr.submit_review(payload["repo"], payload["number"], event, body, comments,
-                                commit_id=request.form.get("head_sha") or None)
+        _approve(row, payload, body, comments, event, head_sha=request.form.get("head_sha") or None)
     except Exception as e:
         return _pr_panel(item_id, row, payload, error=f"{label} failed — {e}")
     log.info("PR review %s via dashboard: %s#%s (%d line comments)", event, payload["repo"], payload["number"], len(comments))
-    # reviewed = out of the inbox now, back only when the PR moves again: ack on the state that
-    # already includes this review (APPROVE/REQUEST_CHANGES also drop the request → resolved next fetch)
-    try:
-        fingerprint = github_pr.updated_at(payload["repo"], payload["number"])
-    except Exception:
-        fingerprint = row["fingerprint"]
-    db.set_state(item_id, "acked", ack_forever=0, acked_fingerprint=fingerprint, snooze_until=None)
-    resp = make_response(partial_items())
+    resp = make_response(_done(notice=f"{label} sent on {payload['repo'].split('/')[-1]}#{payload['number']}"))
     # tells the page to drop the queued line comments (an error keeps them)
     resp.headers["HX-Trigger"] = json.dumps({"reviewSubmitted": {"id": item_id}})
     return resp
@@ -381,52 +551,79 @@ def api_reply(item_id: int):
         github_pr.reply(payload["repo"], payload["number"], int(request.form["comment_id"]), body)
     except Exception as e:
         return _pr_panel(item_id, row, payload, error=f"Reply failed — {e}")
-    return _pr_panel(item_id, row, payload, notice="Reply posted ✔")
+    return _pr_panel(item_id, row, payload, notice="Reply posted")
 
 
-# --- API Claude review -----------------------------------------------------------
-def _review_partial(item_id: int, row):
-    return render_template("partials/claude_review.html", item=row,
-                           reviews=db.get_reviews(item_id), modes=claude_review.MODES)
+# --- Dependency bumps -----------------------------------------------------------------------
+@app.post("/api/deps/approve")
+def api_deps_approve():
+    """Approve every green PR of one bump in a row; red, conflicting or draft ones are left to you."""
+    group = next((g for g in deps.pending_groups() if g["key"] == request.form.get("key")), None)
+    if not group:
+        return _done(error="That bump is no longer waiting for review")
+    done, skipped, failed = [], [], []
+    with db.connect() as conn:
+        rows = {r["id"]: r for r in conn.execute(
+            f"SELECT * FROM items WHERE id IN ({','.join('?' * len(group['prs']))})",
+            [p["item_id"] for p in group["prs"]])}
+    for p in group["prs"]:
+        ref = f"{p['repo'].split('/')[-1]}#{p['number']}"
+        if p.get("ci") != "success" or p.get("draft") or p.get("mergeable") == "CONFLICTING":
+            skipped.append(ref)
+            continue
+        try:
+            _approve(rows[p["item_id"]], p)
+            done.append(ref)
+        except Exception as e:  # noqa: BLE001
+            failed.append(f"{ref} ({e})")
+    log.info("bump %s approved on %s, skipped %s, failed %s", group["key"], done, skipped, failed)
+    notice = f"Approved {', '.join(done)}." if done else ""
+    if skipped:
+        notice += f" Left for you (not green): {', '.join(skipped)}."
+    return _done(notice=notice.strip(), error=f"Failed: {'; '.join(failed)}" if failed else "")
 
 
-@app.get("/api/items/<int:item_id>/review")
-def api_review(item_id: int):
-    row, _ = _pr_item(item_id)
-    if not row:
-        return "not found", 404
-    return _review_partial(item_id, row)
+# --- Claude ------------------------------------------------------------------------------------
+def _agent_target(subject: str, mode: str) -> tuple[str, dict] | None:
+    """What a run on this subject needs, rebuilt from Sentinel's own data — the page only names it."""
+    if subject.startswith("deps:"):
+        group = next((g for g in deps.pending_groups() if f"deps:{g['key']}" == subject), None)
+        return (group["prs"][0]["url"], deps.context(group)) if group and mode == "precheck" else None
+    m = re.fullmatch(r"([\w.-]+/[\w.-]+)#(\d+)", subject)
+    if not m:
+        return None
+    url = f"https://github.com/{m.group(1)}/pull/{m.group(2)}"
+    if mode == "followup":
+        pr = next((p for p in followup.load()["prs"] if f"{p['repo']}#{p['number']}" == subject), None)
+        return (url, followup.context(pr)) if pr and pr["stage"] == "failed" else None
+    return (url, {}) if mode in agents.ON_DEMAND else None
 
 
-@app.post("/api/items/<int:item_id>/review/run")
-def api_review_run(item_id: int):
-    row, _ = _pr_item(item_id)
-    if not row:
-        return "not found", 404
-    if not claude_review.enabled():
+def _agent_block(subject: str, modes: list[str]):
+    return render_template("partials/agent.html", subject=subject, modes=modes,
+                           runs=db.runs_for([subject]).get(subject, {}))
+
+
+@app.get("/partials/agent")
+def partial_agent():
+    modes = [m for m in request.args.get("modes", "").split(",") if m in agents.MODES]
+    return _agent_block(request.args.get("subject", ""), modes)
+
+
+@app.post("/api/agent")
+def api_agent():
+    subject, mode = request.form.get("subject", ""), request.form.get("mode", "")
+    modes = [m for m in request.form.get("modes", mode).split(",") if m in agents.MODES]
+    if not agents.enabled():
         return "CLAUDE_BRIDGE_URL not configured", 503
-    mode = request.form.get("mode", "deep")
-    if mode not in claude_review.MODES:
-        return "unknown review mode", 400
-    claude_review.start(item_id, row["url"], mode)
-    return _review_partial(item_id, row)
+    target = _agent_target(subject, mode)
+    if not target:
+        return "nothing to run for that", 404
+    agents.request(subject, mode, *target)
+    return _agent_block(subject, modes)
 
 
-def _snooze_until(duration: str) -> str | None:
-    tz = ZoneInfo(config.TZ)
-    now_local = datetime.now(tz)
-    if duration == "tomorrow":
-        target = (now_local + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
-    else:
-        m = re.fullmatch(r"(\d+)([mh]?)", duration.strip())
-        if not m:
-            return None
-        minutes = int(m.group(1)) * (60 if m.group(2) == "h" else 1)
-        target = now_local + timedelta(minutes=minutes)
-    return target.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-# --- API watchers / notifications ---------------------------------------------
+# --- API: watchers, summary for the Claude Code mod, notifications ------------------------------
 @app.post("/api/watchers/<path:name>/run")
 def api_run_watcher(name: str):
     watcher = WATCHERS.get(name)
@@ -436,18 +633,49 @@ def api_run_watcher(name: str):
     return partial_watchers()
 
 
+@app.get("/api/summary")
+def api_summary():
+    """Everything the Claude Code mod shows: counts, what needs you, notifications after `since`."""
+    ctx = _now_context()
+    since = request.args.get("since", type=int)
+    runs = ctx["runs"]
+
+    def brief(v: dict) -> dict:
+        run = next((r for r in runs.get(v["subject"], {}).values() if r["status"] == "done"), None)
+        return {"id": v["id"], "lane": v["lane"], "ref": v["ref"], "title": v["headline"], "url": v["url"],
+                "why": v["p"].get("why", ""), "since": v["first_seen"], "subject": v["subject"],
+                "claude": agents.summary_line(run["output"]) if run else ""}
+
+    notes = db.notifications_after(since if since is not None else db.last_notification_id())
+    return jsonify({
+        "attention": ctx["attention"],
+        "counts": {s["id"]: len(s["rows"]) for s in ctx["sections"]}
+                  | {"deps": ctx["dep_count"], "grace": len(ctx["grace"]), "radar": len(ctx["radar"]),
+                     "broken": sum(1 for s in ctx["sections"] for v in s["rows"]
+                                   if v["lane"] == "followup" and v["p"].get("kind") in ("failed", "reverted"))},
+        "landing": ctx["landing"],
+        "items": [brief(v) for s in ctx["sections"] for v in s["rows"]][:25],
+        "notifications": [{"id": n["id"], "title": n["title"], "body": n["body"], "url": n["url"],
+                           "reason": n["reason"], "lane": n["lane"]} for n in notes],
+        "seq": db.last_notification_id(),
+        "agents": {"running": db.count_runs("status = 'running'"), "queued": db.count_runs("status = 'queued'")},
+        "base_url": config.BASE_URL,
+    })
+
+
 @app.get("/api/notifications/pending")
 def api_notifications_pending():
+    """contrib/host-notifier: notifications sent after `since` whose item still waits for you."""
     since = request.args.get("since", "1970-01-01T00:00:00Z")
-    rows = db.notifications_since(since)
-    return jsonify([
-        {"id": r["id"], "item_id": r["item_id"], "sent_at": r["sent_at"],
-         "reason": r["reason"], "title": r["title"], "body": r["body"], "url": r["url"]}
-        for r in rows
-    ])
+    with db.connect() as conn:
+        rows = conn.execute(
+            """SELECT n.*, i.url FROM notifications n JOIN items i ON i.id = n.item_id
+               WHERE n.sent_at > ? AND i.state = 'pending' ORDER BY n.sent_at""", (since,)).fetchall()
+    return jsonify([{"id": r["id"], "item_id": r["item_id"], "sent_at": r["sent_at"], "reason": r["reason"],
+                     "title": r["title"], "body": r["body"], "url": r["url"]} for r in rows])
 
 
-# --- API push -------------------------------------------------------------------
+# --- API push ------------------------------------------------------------------------------------
 @app.get("/api/push/key")
 def api_push_key():
     return jsonify({"key": config.VAPID_PUBLIC_KEY})
@@ -472,6 +700,5 @@ def api_push_unsubscribe():
 
 @app.post("/api/push/test")
 def api_push_test():
-    sent = notify.send_push("Sentinel — test", "Notifications are working 🎉",
-                            config.BASE_URL, tag="test")
+    sent = notify.send_push("Sentinel — test", "Notifications are working", config.BASE_URL, tag="test")
     return jsonify({"sent": sent})

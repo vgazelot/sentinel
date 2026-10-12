@@ -1,0 +1,83 @@
+{% from "partials/agent_macro.html" import agent_block with context %}
+{% set alerts = summary.failed + summary.reverted + summary.blocked %}
+<span id="followup-count" hidden>{{ alerts }}</span>
+{% if last_error %}<div class="notice bad">GitHub — {{ last_error }}</div>{% endif %}
+
+<div class="page-head">
+    <div>
+        <h1>After you approved</h1>
+        <p class="muted">The pull requests you approved, followed until they have landed: merged, and every check that ran after the merge green. Last {{ window_days }} days.</p>
+    </div>
+    <div class="page-tools">
+        <span class="muted">{% if last_run %}fetched {{ last_run | localdt }}{% else %}not fetched yet{% endif %}</span>
+        <button class="btn" hx-post="/api/follow-up/refresh" hx-target="#follow-up" hx-swap="innerHTML" hx-disabled-elt="this">Refresh</button>
+    </div>
+</div>
+
+<div class="strip">
+    <span class="stat {{ 'hot' if summary.failed }}"><strong>{{ summary.failed }}</strong> broke after merge</span>
+    {% if summary.reverted %}<span class="stat hot"><strong>{{ summary.reverted }}</strong> reverted</span>{% endif %}
+    <span class="stat"><strong>{{ summary.waiting }}</strong> waiting to merge{% if summary.blocked %} · {{ summary.blocked }} blocked{% endif %}</span>
+    <span class="stat"><strong>{{ summary.checking }}</strong> checking</span>
+    {% if summary.inherited %}<span class="stat"><strong>{{ summary.inherited }}</strong> merged into a red pipeline</span>{% endif %}
+    <span class="stat"><strong>{{ summary.landed }}</strong> landed</span>
+    {% if summary['no checks'] %}<span class="stat"><strong>{{ summary['no checks'] }}</strong> nothing ran after merge</span>{% endif %}
+</div>
+
+{% macro pr_row(p, tone) -%}
+<article class="row">
+    <span class="dot {{ tone }}" aria-hidden="true"></span>
+    <div class="row-main">
+        <a class="row-title" href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }}</a>
+        <div class="row-meta">
+            <span class="ref">{{ p.repo.split('/')[-1] }}#{{ p.number }}</span>
+            <span>approved {{ p.approved_at | age }} ago</span>
+            {% if p.merged %}<span>merged {{ p.merged_at | age }} ago</span>{% endif %}
+            {% if p.stage == 'waiting' %}
+                <span class="pill {{ 'bad' if p.blocker in ('dismissed', 'conflicts', 'ci failing', 'changes requested') else ('ok' if p.blocker == 'ready to merge' else 'warn') }}">{{ 'approval dismissed' if p.blocker == 'dismissed' else p.blocker }}</span>
+                {% if p.automerge %}<span class="muted">automerge on</span>{% endif %}
+            {% elif p.post_checks %}
+                {% set ok = p.post_checks | selectattr('state', 'equalto', 'success') | list %}
+                <span class="pill {{ 'bad' if p.stage == 'failed' else ('warn' if p.stage in ('checking', 'inherited') else 'ok') }}">{{ ok | length }}/{{ p.post_checks | length }} post-merge checks green</span>
+                {% if p.landed_at and p.stage == 'landed' %}<span class="muted">landed {{ p.landed_at | age }} ago</span>{% endif %}
+            {% endif %}
+        </div>
+        {% if p.stage in ('failed', 'inherited') %}
+        <ul class="checks">
+            {% for c in p.post_checks if c.state == 'failure' %}<li><span class="dot {{ 'warn' if c.before == 'failure' else 'bad' }} small"></span><a href="{{ c.url }}" target="_blank" rel="noopener">{{ c.name }}</a>
+                <span class="muted">· {{ {'failure': 'already failing before this merge', 'success': 'passed on the commit before — started with this merge', 'pending': 'was running before', 'absent': 'did not run before'}[c.before or 'absent'] }}</span></li>{% endfor %}
+        </ul>
+        {% if claude_enabled and p.stage == 'failed' %}{{ agent_block(p.repo ~ '#' ~ p.number, ['followup'], runs.get(p.repo ~ '#' ~ p.number) or {}) }}{% endif %}
+        {% elif p.stage == 'reverted' %}
+        <div class="row-note">Reverted by <a href="{{ p.revert.url }}" target="_blank" rel="noopener">#{{ p.revert.number }} {{ p.revert.title }}</a></div>
+        {% endif %}
+    </div>
+    <div class="row-actions"><a class="btn" href="{{ p.url }}" target="_blank" rel="noopener">Open</a></div>
+</article>
+{%- endmacro %}
+
+{% set blocks = [
+    ('failed', 'Broke after merge', 'a check that ran after the merge failed — Claude looks into it', 'bad', False),
+    ('reverted', 'Reverted', '', 'bad', False),
+    ('waiting', 'Approved, not merged yet', 'worst blocker first', 'warn', False),
+    ('checking', 'Merged, checks running', '', 'warn', False),
+    ('inherited', 'Merged into a red pipeline', 'the failing checks were already red on the commit before the merge — not this PR', 'warn', False),
+    ('landed', 'Landed', 'merged and every post-merge check green', 'ok', True),
+    ('no checks', 'Merged, nothing ran after', 'no pipeline on the merge commit — nothing to verify', 'neutral', True),
+    ('closed', 'Closed without merging', '', 'neutral', True),
+] %}
+{% for stage, title, sub, tone, folded in blocks if stages[stage] %}
+{% if folded %}
+<details class="fold card-fold" id="fold-{{ stage | domid }}">
+    <summary>{{ title }} <span class="count">{{ stages[stage] | length }}</span>{% if sub %} <span class="card-sub">{{ sub }}</span>{% endif %}</summary>
+    <div class="rows">{% for p in stages[stage] %}{{ pr_row(p, tone) }}{% endfor %}</div>
+</details>
+{% else %}
+<section class="card" id="stage-{{ stage | domid }}">
+    <header class="card-head"><h2>{{ title }}</h2><span class="count">{{ stages[stage] | length }}</span>{% if sub %}<span class="card-sub">{{ sub }}</span>{% endif %}</header>
+    <div class="rows">{% for p in stages[stage] %}{{ pr_row(p, tone if stage != 'waiting' else ('bad' if p.blocker in ('dismissed', 'conflicts', 'ci failing') else 'neutral')) }}{% endfor %}</div>
+</section>
+{% endif %}
+{% else %}
+<section class="card calm"><p class="calm-title">Nothing you approved in the last {{ window_days }} days.</p></section>
+{% endfor %}

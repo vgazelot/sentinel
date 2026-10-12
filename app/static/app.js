@@ -10,23 +10,24 @@ function syncBadge(badgeId, sourceId) {
     return n;
 }
 function updateBadges() {
-    const pending = syncBadge('nav-pending', 'pending-count');
+    const attention = syncBadge('nav-attention', 'attention-count');
     syncBadge('nav-my-prs', 'my-prs-count');
-    syncBadge('nav-approved', 'approved-count');
+    syncBadge('nav-followup', 'followup-count');
     syncBadge('nav-cycle', 'cycle-count');
-    if (pending === null) return;
-    document.title = (pending > 0 ? `(${pending}) ` : '') + 'Sentinel';
+    if (attention === null) return;
+    document.title = (attention > 0 ? `(${attention}) ` : '') + 'Sentinel';
 }
 document.addEventListener('htmx:afterSwap', updateBadges);
 document.addEventListener('DOMContentLoaded', updateBadges);
 
 // --- Polling without jumps -------------------------------------------------------
-// The lists (#items, #my-prs, #approved, #watchers) are re-fetched every 15-60s. Two things made the page
-// jump: htmx moves hx-preserve'd panels out and back in (which resets their inner scroll boxes),
-// and a focused textarea inside the panel gets re-focused with a scroll-into-view.
+// The pages (#now, #my-prs, #follow-up, #watchers, #cycle) are re-fetched every 20-60s. Things that made
+// the page jump: htmx moves hx-preserve'd panels out and back in (which resets their inner scroll boxes),
+// a focused textarea inside the panel gets re-focused with a scroll-into-view, and every <details> the
+// user opened came back closed.
 // 1) skip the swap entirely when the server sent exactly the same HTML as last time;
-// 2) otherwise save window scroll, focus/caret and inner scroll positions, and restore them after settle.
-const POLLED = new Set(['items', 'my-prs', 'approved', 'watchers', 'cycle']);
+// 2) otherwise save window scroll, focus/caret, inner scroll positions and open <details>, restore after settle.
+const POLLED = new Set(['now', 'my-prs', 'follow-up', 'watchers', 'cycle']);
 const lastHtml = {};
 let scrollState = null;
 
@@ -41,13 +42,15 @@ document.addEventListener('htmx:beforeSwap', (e) => {
         x: window.scrollX, y: window.scrollY,
         focus: e.detail.target.contains(active) ? active : null,
         caret: active && active.selectionStart != null ? [active.selectionStart, active.selectionEnd] : null,
-        boxes: [...e.detail.target.querySelectorAll('.pr-diff, .md-body, pre')].map((b) => [b, b.scrollTop]).filter((x) => x[1]),
+        boxes: [...e.detail.target.querySelectorAll('.pr-diff, .md, pre')].map((b) => [b, b.scrollTop]).filter((x) => x[1]),
+        open: [...e.detail.target.querySelectorAll('details[open][id]:not(.menu)')].map((d) => d.id),
     };
 });
 
 document.addEventListener('htmx:afterSettle', (e) => {
     if (!POLLED.has(e.detail.target.id) || !scrollState) return;
     const st = scrollState; scrollState = null;
+    for (const id of st.open) { const d = document.getElementById(id); if (d) d.open = true; }
     for (const [b, top] of st.boxes) if (b.isConnected) b.scrollTop = top;
     if (st.focus && st.focus.isConnected && document.activeElement !== st.focus) {
         st.focus.focus({ preventScroll: true });
@@ -56,7 +59,7 @@ document.addEventListener('htmx:afterSettle', (e) => {
     window.scrollTo(st.x, st.y);
 });
 
-// Snooze menus (<details>): close when clicking anywhere else
+// ⋯ menus (<details>): close when clicking anywhere else
 document.addEventListener('click', (e) => {
     document.querySelectorAll('details.menu[open]').forEach((d) => { if (!d.contains(e.target)) d.removeAttribute('open'); });
 });

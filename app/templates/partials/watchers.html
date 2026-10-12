@@ -1,17 +1,15 @@
-<div class="table-scroll">
-<table class="ledger-table">
-    <thead><tr><th>Watcher</th><th class="num">Interval</th><th class="num">Last run</th><th>Status</th><th></th></tr></thead>
+<table class="table">
+    <thead><tr><th>Source</th><th class="num">Every</th><th class="num">Last run</th><th>Status</th><th></th></tr></thead>
     <tbody>
     {% for w in watchers %}
     <tr>
         <td><span class="ref">{{ w.name }}</span></td>
-        <td class="num">{{ w.interval }} s</td>
+        <td class="num">{{ (w.interval // 60) ~ ' min' if w.interval >= 60 else w.interval ~ ' s' }}</td>
         <td class="num">{{ w.last_run | localdt }}</td>
-        <td>{% if w.last_error %}<span class="mark fail">error</span> <span class="row-meta">{{ w.last_error }}</span>{% else %}<span class="mark ok">ok</span>{% endif %}</td>
-        <td class="cell-actions"><button class="btn btn-quiet" hx-post="/api/watchers/{{ w.name }}/run"
-                    hx-target="#watchers" hx-swap="innerHTML" hx-disabled-elt="this">Run now</button></td>
+        <td>{% if w.last_error %}<span class="pill bad">failing{% if w.error_since %} for {{ w.error_since | age }}{% endif %}</span> <span class="muted">{{ w.last_error }}</span>
+            {% elif w.last_run %}<span class="pill ok">ok</span>{% else %}<span class="pill neutral">waiting</span>{% endif %}</td>
+        <td class="num">{% if w.runnable %}<button class="btn small ghost" hx-post="/api/watchers/{{ w.name }}/run" hx-target="#watchers" hx-swap="innerHTML" hx-disabled-elt="this">Run now</button>{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody>
 </table>
-</div>

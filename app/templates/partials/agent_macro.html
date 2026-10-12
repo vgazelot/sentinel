@@ -1,0 +1,29 @@
+{# Claude run block for one subject (a PR "owner/repo#12" or a bump "deps:name@version"): one line per mode —
+   the button, then a live status while the bridge works (the block polls itself), then the verdict. #}
+{% macro agent_block(subject, modes, runs) -%}
+{% set busy = runs.values() | selectattr('status', 'in', ['queued', 'running']) | list %}
+<div class="agent" id="agent-{{ (subject ~ '-' ~ modes | join('-')) | domid }}"
+     {% if busy %}hx-get="/partials/agent?subject={{ subject | urlencode }}&modes={{ modes | join(',') }}" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+    {% for mode in modes %}{% set ui = agent_modes[mode] %}{% set run = runs.get(mode) %}
+    <div class="agent-mode">
+        {% if run and run.status in ('queued', 'running') %}
+        <span class="agent-status"><span class="spinner"></span> {{ ui.verdict }} — {% if run.status == 'queued' %}queued{% else %}{{ run.started_at | elapsed }}{% endif %} <span class="muted">({{ ui.eta }})</span></span>
+        {% else %}
+            {% if run and run.status == 'done' %}{% set v = run.output | verdict %}
+            <details class="agent-verdict" id="verdict-{{ (subject ~ '-' ~ mode) | domid }}">
+                <summary><span class="pill {{ v[1] or 'neutral' }}">Claude · {{ v[0] or ui.verdict | lower }}</span>
+                    <span class="agent-headline">{{ run.output | headline }}</span>
+                    <span class="muted">{{ run.finished_at | age }} ago</span></summary>
+                <div class="md">{{ run.output | md | safe }}</div>
+            </details>
+            {% elif run and run.status == 'error' %}
+            <span class="inline-error">{{ ui.verdict }} failed — {{ run.error }}</span>
+            {% endif %}
+            <button type="button" class="btn small {{ 'ghost' if run else '' }}" hx-post="/api/agent" hx-target="closest .agent" hx-swap="outerHTML"
+                    hx-vals='{"subject": {{ subject | tojson }}, "mode": "{{ mode }}", "modes": "{{ modes | join(',') }}"}'
+                    title="{{ ui.title }}">{{ ui.button }}{{ ' again' if run else '' }}</button>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{%- endmacro %}

@@ -1,23 +1,33 @@
-"""Your own open PRs across the configured orgs — one GraphQL search, cached in watcher_state."""
+"""Your own open PRs: one GraphQL search, cached in watcher_state, plus the next move on each.
+
+The list itself is the My PRs page. The PRs waiting on *you* (conflicts, changes requested,
+red CI, approved and green, open threads) also become engine items, so a transition pushes
+once — "#1608 changes requested", "#1517 ready to merge" — instead of a tab you must remember.
+"""
 import json
 import logging
+from datetime import datetime, timezone
 
 import requests
 
 import config
 import db
+import engine
+from watchers import WatchedItem
 
 log = logging.getLogger("sentinel.my_prs")
 NAME = "my_prs"
 QUERY = """
 query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
-    issueCount
     nodes { ... on PullRequest {
-      number title url isDraft createdAt updatedAt reviewDecision mergeable additions deletions headRefName
+      id number title url isDraft createdAt updatedAt reviewDecision mergeable additions deletions headRefName
       repository { nameWithOwner }
       labels(first: 6) { nodes { name } }
-      reviewRequests { totalCount }
+      reviewRequests(first: 10) { nodes { requestedReviewer {
+        __typename ... on User { login } ... on Team { slug } } } }
+      latestReviews(first: 10) { nodes { state author { login } } }
+      reviewThreads(first: 50) { nodes { isResolved } }
       comments { totalCount }
       commits(last: 1) { nodes { commit { statusCheckRollup {
         state
@@ -32,13 +42,27 @@ query($q: String!) {
 }
 """
 FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+# what the PR is waiting for, most urgent first; the first five are on you and push once
+ACTIONS = {
+    "conflicts": "Conflicts to resolve",
+    "changes": "Changes requested",
+    "ci": "CI failing",
+    "merge": "Approved and green — merge it",
+    "threads": "Open review threads",
+    "no-reviewer": "Nobody was asked to review",
+    "nudge": "No movement for a while — nudge a reviewer",
+    "running": "CI running",
+    "waiting": "Waiting for a review",
+    "draft": "Drafts",
+}
+PUSHED = ("conflicts", "changes", "ci", "merge", "threads")
+LISTED = ("no-reviewer", "nudge")  # shown on Now as a reminder, never pushed
 SORT_KEYS = {
     "updated": lambda p: p["updated_at"],
     "created": lambda p: p["created_at"],
     "repo": lambda p: (p["repo"], p["number"]),
     "title": lambda p: p["title"].lower(),
-    "ci": lambda p: {"failure": 0, "pending": 1, None: 2, "success": 3}[p["ci"]],
-    "review": lambda p: {"CHANGES_REQUESTED": 0, "REVIEW_REQUIRED": 1, None: 2, "APPROVED": 3}[p["review"]],
+    "action": lambda p: (list(ACTIONS).index(p["action"]), p["updated_at"]),
 }
 
 
@@ -51,17 +75,17 @@ def refresh(login: str, orgs: list[str]):
             prs = fetch(login, orgs)
     except Exception as e:
         log.warning("my_prs fetch failed: %s", e)
-        db.set_watcher_state(NAME, "last_error", str(e))
-    else:
-        db.set_watcher_state(NAME, "data", json.dumps(prs))
-        db.set_watcher_state(NAME, "last_error", "")
-    db.set_watcher_state(NAME, "last_run", db.now())
+        db.record_run(NAME, str(e) or e.__class__.__name__)
+        return
+    db.set_watcher_state(NAME, "data", json.dumps(prs))
+    db.record_run(NAME)
+    engine.process(NAME, items(prs))
 
 
 def fetch(login: str, orgs: list[str]) -> list[dict]:
     if not config.GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN missing from .env")
-    q = f"is:pr is:open author:{login} " + " ".join(f"org:{o}" for o in orgs)
+    q = f"is:pr is:open archived:false author:{login} " + " ".join(f"org:{o}" for o in orgs)
     r = requests.post(
         "https://api.github.com/graphql",
         json={"query": QUERY, "variables": {"q": q}},
@@ -72,10 +96,11 @@ def fetch(login: str, orgs: list[str]) -> list[dict]:
     data = r.json()
     if data.get("errors"):
         raise RuntimeError(data["errors"][0].get("message", "GraphQL error"))
-    return [_normalize(n) for n in data["data"]["search"]["nodes"] if n]
+    stale = config.triage()["stale_review_days"]
+    return [_normalize(n, stale) for n in data["data"]["search"]["nodes"] if n]
 
 
-def _normalize(pr: dict) -> dict:
+def _normalize(pr: dict, stale_days: int) -> dict:
     commits = pr["commits"]["nodes"]
     rollup = (commits[0]["commit"].get("statusCheckRollup") if commits else None) or {}
     failed = []
@@ -84,10 +109,9 @@ def _normalize(pr: dict) -> dict:
             failed.append(c["name"])
         elif c["__typename"] == "StatusContext" and c.get("state") in ("FAILURE", "ERROR"):
             failed.append(c["context"])
-    state = rollup.get("state")
-    ci = {"SUCCESS": "success", "FAILURE": "failure", "ERROR": "failure",
-          "PENDING": "pending", "EXPECTED": "pending"}.get(state)
-    return {
+    requested = [n["requestedReviewer"] for n in pr["reviewRequests"]["nodes"] if n.get("requestedReviewer")]
+    out = {
+        "id": pr["id"],
         "repo": pr["repository"]["nameWithOwner"],
         "number": pr["number"],
         "title": pr["title"],
@@ -101,11 +125,85 @@ def _normalize(pr: dict) -> dict:
         "additions": pr["additions"],
         "deletions": pr["deletions"],
         "labels": [l["name"] for l in pr["labels"]["nodes"]],
-        "review_requests": pr["reviewRequests"]["totalCount"],
+        "reviewers": [r.get("login") or f"@{r.get('slug')}" for r in requested],
+        "approved_by": [r["author"]["login"] for r in pr["latestReviews"]["nodes"]
+                        if r["state"] == "APPROVED" and r.get("author")],
+        "changes_by": [r["author"]["login"] for r in pr["latestReviews"]["nodes"]
+                       if r["state"] == "CHANGES_REQUESTED" and r.get("author")],
+        "unresolved": sum(1 for t in pr["reviewThreads"]["nodes"] if not t["isResolved"]),
         "comments": pr["comments"]["totalCount"],
-        "ci": ci,
-        "ci_failed": failed[:5],
+        "ci": {"SUCCESS": "success", "FAILURE": "failure", "ERROR": "failure",
+               "PENDING": "pending", "EXPECTED": "pending"}.get(rollup.get("state")),
+        "ci_failed": failed[:8],
+        "ci_family": sorted({family(n) for n in failed}),
     }
+    out["action"] = next_action(out, stale_days)
+    return out
+
+
+def family(check: str) -> str:
+    """"Molecule Test (EC2) - rsyslog / default" → "Molecule Test (EC2)": one CI cause, many jobs."""
+    return check.split(" - ")[0].split(" / ")[0].strip() or check
+
+
+def next_action(pr: dict, stale_days: int) -> str:
+    if pr["draft"]:
+        return "draft"
+    if pr["mergeable"] == "CONFLICTING":
+        return "conflicts"
+    if pr["review"] == "CHANGES_REQUESTED":
+        return "changes"
+    if pr["ci"] == "failure":
+        return "ci"
+    if pr["review"] == "APPROVED" and pr["ci"] in ("success", None):
+        return "merge"
+    if pr["unresolved"] and pr["review"] != "APPROVED":
+        return "threads"
+    if pr["ci"] == "pending":
+        return "running"
+    if pr["review"] == "REVIEW_REQUIRED" and not pr["reviewers"] and not pr["approved_by"]:
+        return "no-reviewer"
+    if _days_since(pr["updated_at"]) >= stale_days:
+        return "nudge"
+    return "waiting"
+
+
+def items(prs: list[dict]) -> list[WatchedItem]:
+    out = []
+    for p in prs:
+        if p["action"] not in PUSHED + LISTED:
+            continue
+        why = ACTIONS[p["action"]].lower()
+        if p["action"] == "ci" and p["ci_family"]:
+            why += f" · {', '.join(p['ci_family'][:2])}"
+        elif p["action"] == "changes" and p["changes_by"]:
+            why += f" · {', '.join(p['changes_by'])}"
+        elif p["action"] == "merge" and p["approved_by"]:
+            why = f"approved by {', '.join(p['approved_by'])} · CI green — merge it"
+        elif p["action"] == "threads":
+            why = f"{p['unresolved']} open review thread{'s' if p['unresolved'] > 1 else ''}"
+        elif p["action"] == "nudge":
+            why = f"no movement for {_days_since(p['updated_at'])} d · {', '.join(p['reviewers'][:3])}"
+        out.append(WatchedItem(
+            external_id=p["id"],
+            title=f"{p['repo'].split('/')[-1]}#{p['number']} — {p['title']}",
+            url=p["url"],
+            # re-notify after an ack only when the PR waits on something else
+            fingerprint=p["action"] + (":" + ",".join(p["ci_family"]) if p["action"] == "ci" else ""),
+            payload={"repo": p["repo"], "number": p["number"], "title": p["title"], "action": p["action"],
+                     "why": why, "ci": p["ci"], "branch": p["branch"], "families": p["ci_family"],
+                     "updated_at": p["updated_at"]},
+            lane="mine",
+            urgency="now" if p["action"] in PUSHED else "quiet",
+        ))
+    return out
+
+
+def _days_since(value: str | None) -> int:
+    if not value:
+        return 0
+    then = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - then).days
 
 
 def load() -> dict:
@@ -118,17 +216,22 @@ def load() -> dict:
 
 
 def sort(prs: list[dict], key: str, desc: bool) -> list[dict]:
-    fn = SORT_KEYS.get(key) or SORT_KEYS["updated"]
+    fn = SORT_KEYS.get(key) or SORT_KEYS["action"]
     return sorted(prs, key=fn, reverse=desc)
 
 
-def summary(prs: list[dict]) -> dict:
-    return {
-        "total": len(prs),
-        "awaiting": sum(1 for p in prs if not p["draft"] and p["review"] == "REVIEW_REQUIRED"),
-        "changes": sum(1 for p in prs if p["review"] == "CHANGES_REQUESTED"),
-        "approved": sum(1 for p in prs if p["review"] == "APPROVED"),
-        "ci_failing": sum(1 for p in prs if p["ci"] == "failure"),
-        "conflicting": sum(1 for p in prs if p["mergeable"] == "CONFLICTING"),
-        "drafts": sum(1 for p in prs if p["draft"]),
-    }
+def groups(prs: list[dict]) -> list[dict]:
+    """Sections of the My PRs page, in ACTIONS order; red CI split by failing check family."""
+    out = []
+    for action, label in ACTIONS.items():
+        members = sorted((p for p in prs if p["action"] == action), key=lambda p: p["updated_at"])
+        if not members:
+            continue
+        if action == "ci":
+            fams: dict[str, int] = {}
+            for p in members:
+                for f in p["ci_family"] or ["?"]:
+                    fams[f] = fams.get(f, 0) + 1
+            label = f"{label} — " + " · ".join(f"{f} ×{n}" for f, n in sorted(fams.items(), key=lambda x: -x[1]))
+        out.append({"action": action, "label": label, "prs": members, "yours": action in PUSHED + LISTED})
+    return out

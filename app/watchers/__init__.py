@@ -11,6 +11,10 @@ class WatchedItem:
     fingerprint: str
     severity: str | None = None
     payload: dict = field(default_factory=dict)
+    # where it shows up (you, team, deps, mine, followup, incident, health) and whether it may
+    # interrupt you (now, later = after the team grace period, quiet = never) — see engine.py
+    lane: str = "you"
+    urgency: str = "now"
 
 
 class Watcher(ABC):

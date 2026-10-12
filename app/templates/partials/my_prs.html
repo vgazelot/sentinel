@@ -1,75 +1,49 @@
-{% set dir = 'desc' if desc else 'asc' %}
-{% macro th(key, label, numeric=False) -%}
-{% set next = 'desc' if (sort == key and not desc) else 'asc' %}
-<th class="{% if numeric %}num{% endif %} {% if sort == key %}sorted{% endif %}">
-    <a href="/my-prs?sort={{ key }}&dir={{ next }}" hx-get="/partials/my-prs?sort={{ key }}&dir={{ next }}"
-       hx-target="#my-prs" hx-swap="innerHTML" hx-push-url="/my-prs?sort={{ key }}&dir={{ next }}">{{ label }}{% if sort == key %}<span class="sort-dir">{{ '▾' if desc else '▴' }}</span>{% endif %}</a>
-</th>
-{%- endmacro %}
+<span id="my-prs-count" hidden>{{ yours }}</span>
+{% if last_error %}<div class="notice bad">GitHub — {{ last_error }}</div>{% endif %}
 
-<span id="my-prs-count" hidden>{{ summary.total }}</span>
-
-{% if last_error %}<div class="notice notice-error">GitHub — {{ last_error }}</div>{% endif %}
-
-<div class="ledger-head">
-    <h2 class="ledger-title">Open pull requests <span class="ledger-count">{{ summary.total }}</span></h2>
-    <div class="ledger-tools">
-        <span class="row-meta">{% if last_run %}fetched {{ last_run | localdt }}{% else %}not fetched yet{% endif %}</span>
-        <button class="btn btn-quiet" hx-post="/api/my-prs/refresh" hx-target="#my-prs" hx-swap="innerHTML" hx-disabled-elt="this">Refresh</button>
+<div class="page-head">
+    <div>
+        <h1>My pull requests</h1>
+        <p class="muted">{{ total }} open · {{ yours }} waiting on you · grouped by what each one waits for</p>
+    </div>
+    <div class="page-tools">
+        <span class="muted">{% if last_run %}fetched {{ last_run | localdt }}{% else %}not fetched yet{% endif %}</span>
+        <button class="btn" hx-post="/api/my-prs/refresh" hx-target="#my-prs" hx-swap="innerHTML" hx-disabled-elt="this">Refresh</button>
     </div>
 </div>
 
-<dl class="summary">
-    <div><dt>Awaiting review</dt><dd>{{ summary.awaiting }}</dd></div>
-    <div class="{% if summary.changes %}is-bad{% endif %}"><dt>Changes requested</dt><dd>{{ summary.changes }}</dd></div>
-    <div class="{% if summary.approved %}is-good{% endif %}"><dt>Approved</dt><dd>{{ summary.approved }}</dd></div>
-    <div class="{% if summary.ci_failing %}is-bad{% endif %}"><dt>CI failing</dt><dd>{{ summary.ci_failing }}</dd></div>
-    <div class="{% if summary.conflicting %}is-bad{% endif %}"><dt>Conflicts</dt><dd>{{ summary.conflicting }}</dd></div>
-    <div><dt>Drafts</dt><dd>{{ summary.drafts }}</dd></div>
-</dl>
-
-<div class="table-scroll">
-<table class="ledger-table">
-    <thead>
-    <tr>
-        {{ th('repo', 'Repository') }}
-        {{ th('title', 'Pull request') }}
-        {{ th('ci', 'CI') }}
-        {{ th('review', 'Review') }}
-        <th class="num">Talk</th>
-        {{ th('updated', 'Updated', numeric=True) }}
-        {{ th('created', 'Age', numeric=True) }}
-    </tr>
-    </thead>
-    <tbody>
-    {% for p in prs %}
-    <tr class="{% if p.draft %}is-draft{% endif %}">
-        <td class="cell-repo"><span class="ref">{{ p.repo.split('/')[-1] }} <span class="ref-num">#{{ p.number }}</span></span></td>
-        <td class="cell-title">
-            <a href="{{ p.url }}" target="_blank">{{ p.title }}</a>
-            <div class="row-meta">{% if p.draft %}<span class="mark none">draft</span> {% endif %}{{ p.branch }} · <span class="add">+{{ p.additions }}</span> <span class="del">−{{ p.deletions }}</span>{% for l in p.labels %} · {{ l }}{% endfor %}</div>
-        </td>
-        <td class="cell-state">
-            {% if p.ci == 'failure' %}<span class="mark fail" title="{{ p.ci_failed | join(', ') }}">failing</span>
-            {% elif p.ci == 'pending' %}<span class="mark pend">running</span>
-            {% elif p.ci == 'success' %}<span class="mark ok">passing</span>
-            {% else %}<span class="mark none">—</span>{% endif %}
-            {% if p.mergeable == 'CONFLICTING' %}<span class="mark fail">conflicts</span>{% endif %}
-        </td>
-        <td class="cell-state">
-            {% if p.review == 'APPROVED' %}<span class="mark ok">approved</span>
-            {% elif p.review == 'CHANGES_REQUESTED' %}<span class="mark fail">changes requested</span>
-            {% elif p.draft %}<span class="mark none">—</span>
-            {% elif p.review_requests %}<span class="mark pend">requested</span>
-            {% else %}<span class="mark none">no reviewer</span>{% endif %}
-        </td>
-        <td class="num">{{ p.comments or '' }}</td>
-        <td class="num" title="{{ p.updated_at | localdt }}">{{ p.updated_at | age }}</td>
-        <td class="num" title="opened {{ p.created_at | localdt }}">{{ p.created_at | age }}</td>
-    </tr>
-    {% else %}
-    <tr><td colspan="7" class="empty">No open pull request.</td></tr>
-    {% endfor %}
-    </tbody>
-</table>
+<div class="strip">
+    {% for g in groups %}<a class="stat {{ 'hot' if g.yours and g.action not in ('no-reviewer', 'nudge') }}" href="#act-{{ g.action }}"><strong>{{ g.prs | length }}</strong> {{ g.label.split(' — ')[0] }}</a>{% endfor %}
 </div>
+
+{% for g in groups %}
+<section class="card {{ '' if g.yours else 'soft' }}" id="act-{{ g.action }}">
+    <header class="card-head"><h2>{{ g.label }}</h2><span class="count">{{ g.prs | length }}</span></header>
+    <div class="rows">
+    {% for p in g.prs %}
+        <article class="row">
+            <span class="dot {{ {'merge': 'ok', 'conflicts': 'bad', 'changes': 'bad', 'ci': 'bad', 'threads': 'warn', 'no-reviewer': 'warn', 'running': 'warn'}.get(p.action, 'neutral') }}" aria-hidden="true"></span>
+            <div class="row-main">
+                <a class="row-title" href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }}</a>
+                <div class="row-meta">
+                    <span class="ref">{{ p.repo.split('/')[-1] }}#{{ p.number }}</span>
+                    <span class="diff"><span class="add">+{{ p.additions }}</span> <span class="del">−{{ p.deletions }}</span></span>
+                    {% if p.approved_by %}<span class="pill ok">approved · {{ p.approved_by | join(', ') }}</span>{% endif %}
+                    {% if p.changes_by %}<span class="pill bad">changes · {{ p.changes_by | join(', ') }}</span>{% endif %}
+                    {% if p.reviewers and not p.approved_by %}<span>asked {{ p.reviewers | join(', ') }}</span>{% endif %}
+                    {% if p.unresolved %}<span class="pill warn">{{ p.unresolved }} open thread{{ 's' if p.unresolved > 1 }}</span>{% endif %}
+                    {% if p.ci == 'failure' %}<span class="pill bad" title="{{ p.ci_failed | join(', ') }}">{{ p.ci_family | join(', ') or 'CI failing' }}</span>
+                    {% elif p.ci == 'pending' %}<span class="pill warn">CI running</span>
+                    {% elif p.ci == 'success' %}<span class="pill ok">CI green</span>{% endif %}
+                    {% if p.mergeable == 'CONFLICTING' %}<span class="pill bad">conflicts</span>{% endif %}
+                    <span title="opened {{ p.created_at | localdt }}">updated {{ p.updated_at | age }} ago</span>
+                </div>
+            </div>
+            <div class="row-actions"><a class="btn {{ 'primary' if p.action == 'merge' }}" href="{{ p.url }}" target="_blank" rel="noopener">{{ 'Merge on GitHub' if p.action == 'merge' else 'Open' }}</a></div>
+        </article>
+    {% endfor %}
+    </div>
+</section>
+{% else %}
+<section class="card calm"><p class="calm-title">No open pull request.</p></section>
+{% endfor %}

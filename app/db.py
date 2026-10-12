@@ -1,7 +1,7 @@
 """SQLite: schema + helpers. No ORM, stdlib sqlite3."""
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
 
@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS items (
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
     resolved_at TEXT,
+    lane TEXT NOT NULL DEFAULT 'you',
+    urgency TEXT NOT NULL DEFAULT 'now',
+    notified_at TEXT,
     UNIQUE(watcher, external_id)
 );
 CREATE TABLE IF NOT EXISTS notifications (
@@ -37,15 +40,19 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     keys_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS reviews (
-    item_id INTEGER NOT NULL REFERENCES items(id),
-    mode TEXT NOT NULL DEFAULT 'deep',
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY,
+    subject TEXT NOT NULL,
+    mode TEXT NOT NULL,
     status TEXT NOT NULL,
+    url TEXT,
+    context TEXT NOT NULL DEFAULT '{}',
     output TEXT,
     error TEXT,
-    started_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
     finished_at TEXT,
-    PRIMARY KEY (item_id, mode)
+    UNIQUE(subject, mode)
 );
 CREATE TABLE IF NOT EXISTS watcher_state (
     watcher TEXT NOT NULL,
@@ -54,10 +61,16 @@ CREATE TABLE IF NOT EXISTS watcher_state (
     PRIMARY KEY (watcher, key)
 );
 """
+# a pending item counts as "needs you" when it is urgent, or when its grace period ran out
+ATTENTION = "state = 'pending' AND (urgency = 'now' OR (urgency = 'later' AND notified_at IS NOT NULL))"
 
 
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def ago(minutes: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def connect() -> sqlite3.Connection:
@@ -70,30 +83,45 @@ def connect() -> sqlite3.Connection:
 
 def init():
     with connect() as conn:
+        _migrate_items(conn)
         conn.executescript(SCHEMA)
-        _migrate(conn)
+        _migrate_reviews(conn)
 
 
-def _migrate(conn):
-    # reviews: one row per item → one row per (item, mode); SQLite cannot alter a primary key
-    cols = [c["name"] for c in conn.execute("PRAGMA table_info(reviews)")]
-    if "mode" not in cols:
-        conn.executescript("""
-            ALTER TABLE reviews RENAME TO reviews_old;
-            CREATE TABLE reviews (
-                item_id INTEGER NOT NULL REFERENCES items(id),
-                mode TEXT NOT NULL DEFAULT 'deep',
-                status TEXT NOT NULL,
-                output TEXT,
-                error TEXT,
-                started_at TEXT NOT NULL,
-                finished_at TEXT,
-                PRIMARY KEY (item_id, mode)
-            );
-            INSERT INTO reviews (item_id, mode, status, output, error, started_at, finished_at)
-                SELECT item_id, 'deep', status, output, error, started_at, finished_at FROM reviews_old;
-            DROP TABLE reviews_old;
-        """)
+def _columns(conn, table: str) -> list[str]:
+    return [c["name"] for c in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def _migrate_items(conn):
+    """Databases from before the triage: add the lane/urgency columns (CREATE TABLE IF NOT EXISTS won't)."""
+    cols = _columns(conn, "items")
+    if not cols:
+        return
+    for name, ddl in (("lane", "TEXT NOT NULL DEFAULT 'you'"), ("urgency", "TEXT NOT NULL DEFAULT 'now'"),
+                      ("notified_at", "TEXT")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")
+
+
+def _migrate_reviews(conn):
+    """The `reviews` table (one Ask Claude verdict per item and mode) became `agent_runs`, keyed by PR."""
+    if not _columns(conn, "reviews"):
+        return
+    rows = conn.execute(
+        "SELECT r.*, i.payload, i.url AS item_url FROM reviews r JOIN items i ON i.id = r.item_id"
+    ).fetchall()
+    for r in rows:
+        payload = json.loads(r["payload"] or "{}")
+        if not payload.get("repo"):
+            continue
+        conn.execute(
+            """INSERT OR IGNORE INTO agent_runs (subject, mode, status, url, output, error,
+                                                 created_at, started_at, finished_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f"{payload['repo']}#{payload['number']}", r["mode"], r["status"], r["item_url"],
+             r["output"], r["error"], r["started_at"], r["started_at"], r["finished_at"]),
+        )
+    conn.execute("DROP TABLE reviews")
 
 
 # --- items -----------------------------------------------------------------
@@ -101,16 +129,16 @@ def get_item(conn, item_id: int):
     return conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
 
 
-def items_by_state(state: str):
+def items(where: str = "1", *params) -> list:
     with connect() as conn:
         return conn.execute(
-            "SELECT * FROM items WHERE state = ? ORDER BY severity DESC, last_seen DESC", (state,)
+            f"SELECT * FROM items WHERE {where} ORDER BY first_seen DESC", params
         ).fetchall()
 
 
-def pending_count() -> int:
+def attention_count() -> int:
     with connect() as conn:
-        return conn.execute("SELECT COUNT(*) FROM items WHERE state = 'pending'").fetchone()[0]
+        return conn.execute(f"SELECT COUNT(*) FROM items WHERE {ATTENTION}").fetchone()[0]
 
 
 def set_state(item_id: int, state: str, **fields):
@@ -121,22 +149,27 @@ def set_state(item_id: int, state: str, **fields):
 
 
 # --- notifications ----------------------------------------------------------
-def log_notification(conn, item_id: int, reason: str, title: str, body: str):
-    conn.execute(
+def log_notification(conn, item_id: int, reason: str, title: str, body: str) -> int:
+    cur = conn.execute(
         "INSERT INTO notifications (item_id, sent_at, reason, title, body) VALUES (?, ?, ?, ?, ?)",
         (item_id, now(), reason, title, body),
     )
+    return cur.lastrowid
 
 
-def notifications_since(since: str):
+def notifications_after(seq: int, limit: int = 20) -> list:
     with connect() as conn:
         return conn.execute(
-            """SELECT n.*, i.url, i.watcher FROM notifications n
+            """SELECT n.*, i.url, i.watcher, i.lane FROM notifications n
                JOIN items i ON i.id = n.item_id
-               WHERE n.sent_at > ? AND i.state = 'pending'
-               ORDER BY n.sent_at""",
-            (since,),
-        ).fetchall()
+               WHERE n.id > ? ORDER BY n.id DESC LIMIT ?""",
+            (seq, limit),
+        ).fetchall()[::-1]
+
+
+def last_notification_id() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM notifications").fetchone()[0]
 
 
 # --- push subscriptions ------------------------------------------------------
@@ -176,35 +209,78 @@ def watcher_states() -> dict:
     return out
 
 
-# --- Claude reviews ------------------------------------------------------------
-def get_reviews(item_id: int) -> dict:
-    """{mode: row} for this item."""
+def record_run(watcher: str, error: str = ""):
+    """last_run/last_error for any polling job, plus error_since: when the current failure streak began."""
+    states = watcher_states().get(watcher, {})
+    set_watcher_state(watcher, "last_run", now())
+    set_watcher_state(watcher, "last_error", error)
+    if not error:
+        set_watcher_state(watcher, "error_since", "")
+    elif not states.get("error_since"):
+        set_watcher_state(watcher, "error_since", now())
+
+
+# --- Claude agent runs ------------------------------------------------------------
+def get_run(subject: str, mode: str):
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM reviews WHERE item_id = ?", (item_id,)).fetchall()
-    return {r["mode"]: r for r in rows}
+        return conn.execute("SELECT * FROM agent_runs WHERE subject = ? AND mode = ?", (subject, mode)).fetchone()
 
 
-def start_review(item_id: int, mode: str):
+def runs_for(subjects: list[str]) -> dict:
+    """{subject: {mode: row}} for a set of subjects, one query."""
+    if not subjects:
+        return {}
+    marks = ",".join("?" * len(subjects))
+    with connect() as conn:
+        rows = conn.execute(f"SELECT * FROM agent_runs WHERE subject IN ({marks})", subjects).fetchall()
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r["subject"], {})[r["mode"]] = r
+    return out
+
+
+def queue_run(subject: str, mode: str, url: str, context: dict):
+    """(Re)queue a run: one row per subject and mode, the latest one wins."""
     with connect() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO reviews (item_id, mode, status, output, error, started_at, finished_at)
-               VALUES (?, ?, 'running', NULL, NULL, ?, NULL)""",
-            (item_id, mode, now()),
+            """INSERT INTO agent_runs (subject, mode, status, url, context, created_at)
+               VALUES (?, ?, 'queued', ?, ?, ?)
+               ON CONFLICT(subject, mode) DO UPDATE SET status = 'queued', url = excluded.url,
+                   context = excluded.context, output = NULL, error = NULL,
+                   created_at = excluded.created_at, started_at = NULL, finished_at = NULL""",
+            (subject, mode, url, json.dumps(context), now()),
         )
 
 
-def finish_review(item_id: int, mode: str, output: str | None = None, error: str | None = None):
+def claim_runs(limit: int) -> list:
+    """Move up to `limit` queued runs to running (oldest first) and return them."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM agent_runs WHERE status = 'queued' ORDER BY created_at LIMIT ?", (limit,)
+        ).fetchall()
+        for r in rows:
+            conn.execute("UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ?", (now(), r["id"]))
+    return rows
+
+
+def finish_run(run_id: int, output: str | None = None, error: str | None = None):
     with connect() as conn:
         conn.execute(
-            "UPDATE reviews SET status = ?, output = ?, error = ?, finished_at = ? WHERE item_id = ? AND mode = ?",
-            ("error" if error else "done", output, error, now(), item_id, mode),
+            "UPDATE agent_runs SET status = ?, output = ?, error = ?, finished_at = ? WHERE id = ?",
+            ("error" if error else "done", output, error, now(), run_id),
         )
 
 
-def fail_stale_reviews():
-    """Called at startup: a restart kills the background threads, their rows would stay 'running' forever."""
+def count_runs(where: str, *params) -> int:
+    with connect() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM agent_runs WHERE {where}", params).fetchone()[0]
+
+
+def fail_stale_runs():
+    """Called at startup: a restart kills the runner threads, their rows would stay 'running' forever."""
     with connect() as conn:
         conn.execute(
-            "UPDATE reviews SET status = 'error', error = 'interrupted by a Sentinel restart — run it again', finished_at = ? WHERE status = 'running'",
+            "UPDATE agent_runs SET status = 'error', error = 'interrupted by a Sentinel restart — run it again', "
+            "finished_at = ? WHERE status = 'running'",
             (now(),),
         )

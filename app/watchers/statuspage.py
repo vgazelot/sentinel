@@ -15,18 +15,20 @@ class StatuspageWatcher(Watcher):
         self.components = [c.lower() for c in instance.get("components", []) or []]
         self.keywords = [k.lower() for k in instance.get("keywords", []) or []]
         self.include_maintenances = instance.get("include_maintenances", False)
+        # `notify: quiet` lists the incidents without ever pushing them (noisy pages, informative only)
+        self.quiet = instance.get("notify", "now") == "quiet"
 
     def fetch(self) -> list[WatchedItem]:
         r = requests.get(self.url, timeout=10)
         r.raise_for_status()
         data = r.json()
 
-        incidents = list(data.get("incidents", []))
+        incidents = [(i, False) for i in data.get("incidents", [])]
         if self.include_maintenances:
-            incidents += data.get("scheduled_maintenances", [])
+            incidents += [(m, True) for m in data.get("scheduled_maintenances", [])]
 
         items = []
-        for inc in incidents:
+        for inc, planned in incidents:
             if inc.get("status") in ("resolved", "completed"):
                 continue  # absent from the fetch → the engine will mark it resolved
             comp_names = [c.get("name", "") for c in inc.get("components", [])]
@@ -43,10 +45,18 @@ class StatuspageWatcher(Watcher):
                     fingerprint=fingerprint,
                     severity=inc.get("impact") or "maintenance",
                     payload={
+                        "source": self.instance,
+                        "name": inc.get("name", "incident"),
                         "status": inc.get("status"),
                         "body": body,
                         "components": comp_names,
+                        "planned": planned,
+                        "started_at": inc.get("started_at") or inc.get("scheduled_for") or inc.get("created_at"),
+                        "scheduled_until": inc.get("scheduled_until"),
                     },
+                    lane="incident",
+                    # a planned maintenance is announced, not happening to you: listed, never pushed
+                    urgency="quiet" if (self.quiet or planned) else "now",
                 )
             )
         return items

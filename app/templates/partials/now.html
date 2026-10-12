@@ -1,0 +1,88 @@
+{% import "partials/rows.html" as r with context %}
+<span id="attention-count" hidden>{{ attention }}</span>
+
+{% if notice %}<div class="notice ok" role="status">{{ notice }}</div>{% endif %}
+{% if error %}<div class="notice bad" role="alert">{{ error }}</div>{% endif %}
+
+<div class="strip">
+    <a href="#sec-top" class="stat {{ 'hot' if attention }}"><strong>{{ attention }}</strong> need{{ 's' if attention == 1 }} you</a>
+    {% if dep_groups %}<a href="#sec-deps" class="stat"><strong>{{ dep_count }}</strong> dependency bump{{ 's' if dep_count > 1 }} · {{ dep_groups | length }} decision{{ 's' if dep_groups | length > 1 }}</a>{% endif %}
+    {% if grace %}<a href="#sec-grace" class="stat"><strong>{{ grace | length }}</strong> team request{{ 's' if grace | length > 1 }} in grace</a>{% endif %}
+    {% if followup_enabled %}<a href="/follow-up" class="stat">After approval · {{ landing.waiting }} waiting · {{ landing.checking }} checking · {{ landing.landed }} landed{% if landing.failed %} · <strong class="bad-text">{{ landing.failed }} failed</strong>{% endif %}</a>{% endif %}
+</div>
+
+<div id="sec-top"></div>
+{% if not (sections | selectattr('rows') | list) %}
+<section class="card calm">
+    <p class="calm-title">Nothing needs you right now.</p>
+    <p class="muted">Review requests, your pull requests, post-merge failures and incidents land here when they wait on you.</p>
+</section>
+{% endif %}
+
+{% for s in sections if s.rows %}
+<section class="card" id="sec-{{ s.id }}">
+    <header class="card-head"><h2>{{ s.title }}</h2><span class="count">{{ s.rows | length }}</span>
+        {% if s.id == 'mine' %}<span class="card-sub">one row per cause</span><a class="card-link" href="/my-prs">All my PRs →</a>{% endif %}</header>
+    <div class="rows">
+        {% if s.id == 'mine' %}{% for g in s.groups %}{{ r.mine_group(g, runs) }}{% endfor %}
+        {% else %}{% for v in s.rows %}{{ r.item_row(v, runs) }}{% endfor %}{% endif %}
+    </div>
+</section>
+{% endfor %}
+
+{% if dep_groups %}
+<section class="card" id="sec-deps">
+    <header class="card-head"><h2>Dependency bumps</h2><span class="count">{{ dep_count }}</span>
+        <span class="card-sub">one row per bump, every repository at once — never pushed</span></header>
+    <div class="rows">{% for g in dep_groups %}{{ r.dep_group(g, runs) }}{% endfor %}</div>
+</section>
+{% endif %}
+
+{% if grace %}
+<section class="card soft" id="sec-grace">
+    <header class="card-head"><h2>Team requests</h2><span class="count">{{ grace | length }}</span>
+        <span class="card-sub">a teammate may pick them up — they become yours if still open after the grace period</span></header>
+    <ul class="compact-list">{% for v in grace %}{{ r.compact_row(v, 'grace') }}{% endfor %}</ul>
+</section>
+{% endif %}
+
+{% if landing_live %}
+<section class="card soft" id="sec-landing">
+    <header class="card-head"><h2>In flight after your approval</h2><span class="count">{{ landing_live | length }}</span>
+        <a class="card-link" href="/follow-up">Follow-up →</a></header>
+    <ul class="compact-list">
+    {% for p in landing_live %}
+        <li class="compact">
+            <span class="dot {{ 'warn' if p.stage == 'checking' else ('bad' if p.blocker in ('dismissed', 'conflicts', 'ci failing') else 'neutral') }} small"></span>
+            <a class="compact-title" href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }}</a>
+            <span class="compact-meta">{{ p.repo.split('/')[-1] }}#{{ p.number }} · {% if p.stage == 'checking' %}merged {{ p.merged_at | age }} ago, checks running{% else %}{{ p.blocker }} · approved {{ p.approved_at | age }} ago{% endif %}</span>
+        </li>
+    {% endfor %}
+    </ul>
+</section>
+{% endif %}
+
+{% if radar %}
+<section class="card soft" id="sec-radar">
+    <header class="card-head"><h2>On the radar</h2><span class="count">{{ radar | length }}</span>
+        <span class="card-sub">never pushed — reminders, drafts, planned maintenance</span></header>
+    <ul class="compact-list">{% for v in radar %}{{ r.compact_row(v) }}{% endfor %}</ul>
+</section>
+{% endif %}
+
+{% if snoozed or acked %}
+<div class="folds">
+    {% if snoozed %}
+    <details class="fold" id="fold-snoozed">
+        <summary>Snoozed <span class="count">{{ snoozed | length }}</span></summary>
+        <ul class="compact-list">{% for v in snoozed %}{{ r.compact_row(v, 'wake') }}{% endfor %}</ul>
+    </details>
+    {% endif %}
+    {% if acked %}
+    <details class="fold" id="fold-acked">
+        <summary>Done or hidden <span class="count">{{ acked | length }}</span></summary>
+        <ul class="compact-list">{% for v in acked %}{{ r.compact_row(v, 'unack') }}{% endfor %}</ul>
+    </details>
+    {% endif %}
+</div>
+{% endif %}

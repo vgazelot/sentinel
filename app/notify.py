@@ -11,8 +11,8 @@ log = logging.getLogger("sentinel.notify")
 
 
 def send_push(title: str, body: str, url: str, tag: str | None = None) -> int:
-    if not config.VAPID_PRIVATE_KEY:
-        log.info("VAPID_PRIVATE_KEY missing, push disabled (notif: %s)", title)
+    if config.PUSH_DISABLED or not config.VAPID_PRIVATE_KEY:
+        log.info("push disabled (notif: %s)", title)
         return 0
     payload = json.dumps({"title": title, "body": body, "url": url, "tag": tag})
     sent = 0

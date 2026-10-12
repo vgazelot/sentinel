@@ -1,24 +1,69 @@
 {% extends "base.html" %}
 {% block title %}Sentinel — Settings{% endblock %}
 {% block content %}
-<h2 class="ledger-title">Watchers</h2>
-<div id="watchers" hx-get="/partials/watchers" hx-trigger="every 30s" hx-swap="innerHTML">
-    {% include "partials/watchers.html" %}
-</div>
+<div class="page-head"><div><h1>Settings</h1><p class="muted">What Sentinel watches, how it decides to interrupt you, and what Claude did lately. Edit <code>config.yaml</code> to change any of it.</p></div></div>
 
-<h2 class="ledger-title">Push notifications</h2>
-{% if not push_enabled %}
-<div class="notice notice-error">VAPID keys missing from <code>.env</code> — generate them with
-    <code>docker compose run --rm sentinel python gen_vapid.py</code> then restart.</div>
-{% endif %}
-<section class="panel">
-    <p>Registered subscriptions: <strong>{{ subscriptions | length }}</strong></p>
-    <p class="row-meta">Subscribe from Chrome or Firefox on <code>http://localhost:8300</code> — never 127.0.0.1, the service worker origin depends on it.</p>
-    <div class="pr-actions">
-        <button id="btn-subscribe" class="btn btn-primary" {% if not push_enabled %}disabled{% endif %}>Subscribe this browser</button>
-        <button id="btn-unsubscribe" class="btn">Unsubscribe</button>
-        <button id="btn-test" class="btn">Send test notification</button>
+<section class="card">
+    <header class="card-head"><h2>Sources</h2></header>
+    <div id="watchers" hx-get="/partials/watchers" hx-trigger="every 30s" hx-swap="innerHTML">
+        {% include "partials/watchers.html" %}
     </div>
-    <div id="push-status" class="row-meta"></div>
+</section>
+
+<section class="card">
+    <header class="card-head"><h2>When Sentinel interrupts you</h2></header>
+    <dl class="facts">
+        <div><dt>Review asked of you by name</dt><dd>push right away</dd></div>
+        <div><dt>Review asked of a team you are in</dt><dd>push only if nobody took it within {{ triage.team_grace_minutes }} min; gone once someone approved</dd></div>
+        <div><dt>Dependency bump (Renovate, Dependabot)</dt><dd>never pushed, grouped by bump on Now</dd></div>
+        <div><dt>Your own PRs</dt><dd>push when one starts waiting on you: conflicts, changes requested, red CI, approved and green, open threads</dd></div>
+        <div><dt>PRs you approved</dt><dd>push if the approval is dismissed, if it is still open after the stale delay, if a post-merge check fails or if it is reverted</dd></div>
+        <div><dt>Status pages</dt><dd>push for incidents on your components; planned maintenance and <code>notify: quiet</code> pages are listed only</dd></div>
+        <div><dt>A source failing</dt><dd>push after {{ triage.health_minutes }} min of errors</dd></div>
+        <div><dt>Bursts</dt><dd>more than 3 at once become a single push</dd></div>
+    </dl>
+</section>
+
+<section class="card">
+    <header class="card-head"><h2>Claude</h2>
+        <span class="card-sub">{% if bridge %}bridge {{ bridge }} · {{ runs_today }}/{{ agent_cfg.max_runs_per_day }} automatic runs today{% else %}no bridge configured (CLAUDE_BRIDGE_URL){% endif %}</span></header>
+    <dl class="facts">
+        <div><dt>Dependency bumps</dt><dd>{{ 'checked automatically before you approve' if agent_cfg.precheck else 'on demand only' }}</dd></div>
+        <div><dt>Post-merge failures</dt><dd>{{ 'investigated automatically' if agent_cfg.followup else 'on demand only' }}</dd></div>
+        <div><dt>Reviews</dt><dd>quick pass and devil's advocate on demand, from the review panel</dd></div>
+        <div><dt>Parallel runs</dt><dd>{{ agent_cfg.concurrency }}</dd></div>
+    </dl>
+    {% if recent_runs %}
+    <table class="table">
+        <thead><tr><th>Subject</th><th>Mode</th><th>Status</th><th class="num">When</th></tr></thead>
+        <tbody>
+        {% for run in recent_runs %}
+        <tr>
+            <td><span class="ref">{{ run.subject }}</span></td>
+            <td>{{ agent_modes[run.mode].verdict if run.mode in agent_modes else run.mode }}</td>
+            <td>{% if run.status == 'done' %}{% set v = run.output | verdict %}<span class="pill {{ v[1] or 'neutral' }}">{{ v[0] or 'done' }}</span>
+                {% elif run.status == 'error' %}<span class="pill bad" title="{{ run.error }}">error</span>
+                {% else %}<span class="pill warn">{{ run.status }}</span>{% endif %}</td>
+            <td class="num">{{ (run.finished_at or run.started_at or run.created_at) | age }} ago</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+
+<section class="card">
+    <header class="card-head"><h2>Push notifications</h2><span class="card-sub">{{ subscriptions | length }} subscribed browser{{ 's' if subscriptions | length != 1 }}</span></header>
+    {% if not push_enabled %}
+    <div class="notice bad">Push is off — VAPID keys missing from <code>.env</code> (generate them with
+        <code>docker compose run --rm sentinel python gen_vapid.py</code>) or SENTINEL_PUSH_DISABLED=1.</div>
+    {% endif %}
+    <p class="muted">Subscribe from Chrome or Firefox on <code>http://localhost:8300</code> — never 127.0.0.1, the service worker origin depends on it.</p>
+    <div class="actions">
+        <button id="btn-subscribe" class="btn primary" {% if not push_enabled %}disabled{% endif %}>Subscribe this browser</button>
+        <button id="btn-unsubscribe" class="btn">Unsubscribe</button>
+        <button id="btn-test" class="btn">Send a test</button>
+    </div>
+    <div id="push-status" class="muted"></div>
 </section>
 {% endblock %}

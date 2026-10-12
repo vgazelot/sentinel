@@ -4,23 +4,23 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Sentinel{% endblock %}</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect x=%2210%22 y=%2210%22 width=%2280%22 height=%2280%22 fill=%22%2315181b%22/><rect x=%2236%22 y=%2236%22 width=%2228%22 height=%2228%22 fill=%22%23c4331d%22/></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect x=%228%22 y=%228%22 width=%2284%22 height=%2284%22 rx=%2220%22 fill=%22%231c2024%22/><circle cx=%2250%22 cy=%2250%22 r=%2216%22 fill=%22%23e0472f%22/></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header class="masthead">
-    <div class="wrap masthead-row">
+<header class="topbar">
+    <div class="wrap topbar-row">
         <a class="wordmark" href="/">Sentinel</a>
-        <nav class="tabs">
-            <a class="tab {% if active == 'inbox' %}active{% endif %}" href="/">Inbox<span class="tab-count" id="nav-pending" {% if not nav_pending %}hidden{% endif %}>{{ nav_pending }}</span></a>
-            <a class="tab {% if active == 'my_prs' %}active{% endif %}" href="/my-prs">My PRs<span class="tab-count" id="nav-my-prs" {% if not nav_my_prs %}hidden{% endif %}>{{ nav_my_prs }}</span></a>
-            {% if approved_enabled %}<a class="tab {% if active == 'approved' %}active{% endif %}" href="/approved">Approved<span class="tab-count" id="nav-approved" {% if not nav_approved %}hidden{% endif %}>{{ nav_approved }}</span></a>{% endif %}
-            {% if cycle_enabled %}<a class="tab {% if active == 'cycle' %}active{% endif %}" href="/cycle">Cycle<span class="tab-count" id="nav-cycle" {% if not nav_cycle %}hidden{% endif %}>{{ nav_cycle }}</span></a>{% endif %}
-            <a class="tab {% if active == 'settings' %}active{% endif %}" href="/settings">Settings</a>
+        <nav class="nav">
+            <a class="nav-link {% if active == 'now' %}active{% endif %}" href="/">Now<span class="nav-count hot" id="nav-attention" {% if not nav_attention %}hidden{% endif %}>{{ nav_attention }}</span></a>
+            <a class="nav-link {% if active == 'my_prs' %}active{% endif %}" href="/my-prs">My PRs<span class="nav-count" id="nav-my-prs" {% if not nav_my_prs %}hidden{% endif %}>{{ nav_my_prs }}</span></a>
+            {% if followup_enabled %}<a class="nav-link {% if active == 'followup' %}active{% endif %}" href="/follow-up">Follow-up<span class="nav-count" id="nav-followup" {% if not nav_followup %}hidden{% endif %}>{{ nav_followup }}</span></a>{% endif %}
+            {% if cycle_enabled %}<a class="nav-link {% if active == 'cycle' %}active{% endif %}" href="/cycle">Cycle<span class="nav-count" id="nav-cycle" {% if not nav_cycle %}hidden{% endif %}>{{ nav_cycle }}</span></a>{% endif %}
+            <a class="nav-link {% if active == 'settings' %}active{% endif %}" href="/settings">Settings</a>
         </nav>
     </div>
 </header>

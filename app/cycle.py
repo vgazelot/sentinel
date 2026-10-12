@@ -10,9 +10,10 @@ from datetime import date, datetime, timedelta, timezone
 
 import config
 import db
-import notify
+import engine
 import shortcut
 import slite
+from watchers import WatchedItem
 
 log = logging.getLogger("sentinel.cycle")
 NAME = "cycle"
@@ -29,12 +30,11 @@ def refresh(cfg: dict):
         data = build(cfg)
     except Exception as e:
         log.warning("cycle refresh failed: %s", e)
-        db.set_watcher_state(NAME, "last_error", str(e))
-    else:
-        db.set_watcher_state(NAME, "data", json.dumps(data))
-        db.set_watcher_state(NAME, "last_error", "")
-        _alert_stalled(data, cfg)
-    db.set_watcher_state(NAME, "last_run", db.now())
+        db.record_run(NAME, str(e) or e.__class__.__name__)
+        return
+    db.set_watcher_state(NAME, "data", json.dumps(data))
+    db.record_run(NAME)
+    engine.process(NAME, items(data, cfg))
 
 
 def build(cfg: dict) -> dict:
@@ -195,32 +195,26 @@ def _date(value) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value))
 
 
-def _alert_stalled(data: dict, cfg: dict):
-    """One push per big rock that went quiet, re-armed when it moves again or after stall_days."""
+def items(data: dict, cfg: dict) -> list[WatchedItem]:
+    """A big rock that went quiet is an item: pushed once, back after an ack when it moves and
+    stalls again, or every stall_days while it stays frozen (the bucket in the fingerprint)."""
     stall_days = int(cfg.get("stall_days", 7))
-    state = json.loads(db.watcher_states().get(NAME, {}).get("alerts") or "{}")
-    changed = False
+    out = []
     for rock in data["big_rocks"]:
-        key, activity = rock["title"], rock["last_activity"]
         if not (rock["stalled"] and rock["linked"]):
-            if state.pop(key, None) is not None:
-                changed = True
-            continue
-        previous = state.get(key)
-        if previous and previous.get("activity") == activity and _days_since(previous.get("at", "")) < stall_days:
             continue
         todo = sum(1 for o in rock["outputs"] if o["status"] != "done")
-        notify.send_push(
-            "Sentinel — big rock figé",
-            f"{rock['title']} — rien depuis {rock['stalled_days']} j"
-            + (f", {todo} output{'s' if todo > 1 else ''} à faire" if todo else ""),
-            config.BASE_URL.rstrip("/") + "/cycle",
-            tag=f"cycle-{_norm(key).replace(' ', '-')}",
-        )
-        state[key] = {"at": db.now(), "activity": activity}
-        changed = True
-    if changed:
-        db.set_watcher_state(NAME, "alerts", json.dumps(state))
+        out.append(WatchedItem(
+            external_id=_norm(rock["title"]).replace(" ", "-"),
+            title=f"Big rock stalled — {rock['title']}",
+            url=config.BASE_URL.rstrip("/") + "/cycle",
+            fingerprint=f"{rock['last_activity']}:{rock['stalled_days'] // stall_days}",
+            payload={"title": rock["title"],
+                     "why": f"no Shortcut movement for {rock['stalled_days']} d"
+                            + (f" · {todo} output{'s' if todo > 1 else ''} left" if todo else "")},
+            lane="cycle",
+        ))
+    return out
 
 
 def load() -> dict:
