@@ -8,7 +8,7 @@
     <a href="#sec-top" class="stat {{ 'hot' if attention }}"><strong>{{ attention }}</strong> need{{ 's' if attention == 1 }} you</a>
     {% if dep_groups %}<a href="#sec-deps" class="stat"><strong>{{ dep_count }}</strong> dependency bump{{ 's' if dep_count > 1 }} · {{ dep_groups | length }} decision{{ 's' if dep_groups | length > 1 }}</a>{% endif %}
     {% if grace %}<a href="#sec-grace" class="stat"><strong>{{ grace | length }}</strong> team request{{ 's' if grace | length > 1 }} in grace</a>{% endif %}
-    {% if followup_enabled %}<a href="/follow-up" class="stat">After approval · {{ landing.waiting }} waiting · {{ landing.checking }} checking · {{ landing.landed }} landed{% if landing.failed %} · <strong class="bad-text">{{ landing.failed }} failed</strong>{% endif %}</a>{% endif %}
+    {% if followup_enabled %}<a href="/follow-up" class="stat">After approval · {{ landing.waiting }} waiting · {{ landing.checking }} checking · {{ landing.landed }} landed{% if broken %} · <strong class="bad-text">{{ broken }} broke after merge</strong>{% endif %}</a>{% endif %}
 </div>
 
 <div id="sec-top"></div>

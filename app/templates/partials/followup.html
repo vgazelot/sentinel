@@ -1,6 +1,5 @@
 {% from "partials/agent_macro.html" import agent_block with context %}
-{% set alerts = summary.failed + summary.reverted + summary.blocked %}
-<span id="followup-count" hidden>{{ alerts }}</span>
+<span id="followup-count" hidden>{{ nav_followup }}</span>
 {% if last_error %}<div class="notice bad">GitHub — {{ last_error }}</div>{% endif %}
 
 <div class="page-head">
@@ -19,7 +18,7 @@
     {% if summary.reverted %}<span class="stat hot"><strong>{{ summary.reverted }}</strong> reverted</span>{% endif %}
     <span class="stat"><strong>{{ summary.waiting }}</strong> waiting to merge{% if summary.blocked %} · {{ summary.blocked }} blocked{% endif %}</span>
     <span class="stat"><strong>{{ summary.checking }}</strong> checking</span>
-    {% if summary.inherited %}<span class="stat"><strong>{{ summary.inherited }}</strong> merged into a red pipeline</span>{% endif %}
+    {% if summary['not yours'] %}<span class="stat"><strong>{{ summary['not yours'] }}</strong> failed, not this PR's doing</span>{% endif %}
     <span class="stat"><strong>{{ summary.landed }}</strong> landed</span>
     {% if summary['no checks'] %}<span class="stat"><strong>{{ summary['no checks'] }}</strong> nothing ran after merge</span>{% endif %}
 </div>
@@ -61,7 +60,7 @@
     ('reverted', 'Reverted', '', 'bad', False),
     ('waiting', 'Approved, not merged yet', 'worst blocker first', 'warn', False),
     ('checking', 'Merged, checks running', '', 'warn', False),
-    ('inherited', 'Merged into a red pipeline', 'the failing checks were already red on the commit before the merge — not this PR', 'warn', False),
+    ('not yours', 'Failed after merge, not because of it', 'already red before the merge, or traced elsewhere by Claude', 'warn', False),
     ('landed', 'Landed', 'merged and every post-merge check green', 'ok', True),
     ('no checks', 'Merged, nothing ran after', 'no pipeline on the merge commit — nothing to verify', 'neutral', True),
     ('closed', 'Closed without merging', '', 'neutral', True),

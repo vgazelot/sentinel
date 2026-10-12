@@ -55,6 +55,7 @@ if cycle.enabled(CYCLE_CFG):
     _every(cycle.refresh, CYCLE_CFG.get("interval_seconds", 1800), cycle.NAME, delay=12, args=[CYCLE_CFG])
 if agents.enabled():
     _every(agents.tick, 10, "agents", delay=15)
+    _every(agents.check_bridge, 120, "claude-bridge", delay=30)
     if config.agents()["precheck"]:
         _every(deps.precheck, 300, "precheck", delay=45)
 if os.environ.get("SENTINEL_SCHEDULER", "1") == "1":  # 0 = tests: routes only, no background polling
@@ -146,12 +147,12 @@ def minutes_left(first_seen: str) -> int:
 def inject_nav():
     off_track = (sum(1 for r in cycle.load()["big_rocks"] if r["status"] in ("stalled", "behind"))
                  if cycle.enabled(CYCLE_CFG) else 0)
-    fu = followup.summary(followup.load()["prs"]) if followup.enabled(FOLLOWUP_CFG) else {}
     attention = [_view(r) for r in db.items(db.ATTENTION)]
     _clear_by_claude(attention, db.runs_for([v["subject"] for v in attention if v["lane"] == "followup"]))
-    return {"nav_attention": _units([v for v in attention if v["attention"]]),
+    attention = [v for v in attention if v["attention"]]
+    return {"nav_attention": _units(attention),
             "nav_my_prs": sum(1 for p in my_prs.load()["prs"] if p["action"] in my_prs.PUSHED),
-            "nav_followup": fu.get("failed", 0) + fu.get("reverted", 0) + fu.get("blocked", 0),
+            "nav_followup": sum(1 for v in attention if v["lane"] == "followup"),
             "nav_cycle": off_track, "cycle_enabled": cycle.enabled(CYCLE_CFG),
             "followup_enabled": followup.enabled(FOLLOWUP_CFG), "claude_enabled": agents.enabled(),
             "agent_modes": agents.MODES}
@@ -213,6 +214,20 @@ def _clear_by_claude(views: list[dict], runs: dict):
             v["attention"], v["tone"], v["cleared"] = False, "ok", True
 
 
+def _followup_view(prs: list[dict]) -> tuple[list[dict], dict]:
+    """Follow-up PRs with `section` set — a failure already red before the merge or traced elsewhere
+    by Claude is "not yours" — and the counts every page shows, computed once here."""
+    runs = db.runs_for([f"{p['repo']}#{p['number']}" for p in prs if p["stage"] == "failed"])
+    for p in prs:
+        run = (runs.get(f"{p['repo']}#{p['number']}") or {}).get("followup")
+        p["cleared"] = bool(run and run["status"] == "done" and agents.verdict(run["output"])[0] == "unrelated")
+        p["section"] = "not yours" if p["stage"] == "inherited" or (p["stage"] == "failed" and p["cleared"]) else p["stage"]
+    count = {s: sum(1 for p in prs if p["section"] == s) for s in followup.STAGES + ["not yours"]}
+    count["blocked"] = sum(1 for p in prs if p["stage"] == "waiting"
+                           and followup.RANK.index(p["blocker"]) <= followup.RANK.index("review required"))
+    return prs, count
+
+
 def _units(attention: list[dict]) -> int:
     """What the badges count: decisions — every item, except your own PRs which count per cause."""
     return sum(1 for v in attention if v["lane"] != "mine") + len(_mine_groups([v for v in attention if v["lane"] == "mine"]))
@@ -238,7 +253,8 @@ def _now_context(notice: str = "", error: str = "") -> dict:
                  "rows": sorted((v for v in attention if v["lane"] in lanes), key=lambda v: v["first_seen"], reverse=True)}
                 for sid, title, lanes in SECTIONS]
     pending = [v for v in views if v["state"] == "pending"]
-    fu = followup.load() if followup.enabled(FOLLOWUP_CFG) else {"prs": []}
+    fu = followup.load() if followup.enabled(FOLLOWUP_CFG) else {"prs": [], "stale_days": 3}
+    fu_prs, landing = _followup_view(fu["prs"])
     mine = next(s for s in sections if s["id"] == "mine")
     mine["groups"] = _mine_groups(mine["rows"])
     return {
@@ -252,9 +268,10 @@ def _now_context(notice: str = "", error: str = "") -> dict:
         "snoozed": [v for v in views if v["state"] == "snoozed"],
         "acked": [v for v in views if v["state"] == "acked"][:40],
         "runs": runs,
-        "landing": followup.summary(fu["prs"]),
+        "landing": landing,
+        "broken": sum(1 for v in attention if v["lane"] == "followup" and v["p"].get("kind") in ("failed", "reverted")),
         # what is moving and fine — a dismissed or stuck one is already an item above
-        "landing_live": [p for p in fu["prs"] if p["stage"] == "checking" or (
+        "landing_live": [p for p in fu_prs if p["stage"] == "checking" or (
             p["stage"] == "waiting" and not p["dismissed"] and p["waiting_days"] < fu.get("stale_days", 3))][:8],
         "notice": notice,
         "error": error,
@@ -336,10 +353,10 @@ def api_my_prs_refresh():
 
 def _followup_context() -> dict:
     data = followup.load()
-    prs = data["prs"]
+    prs, summary = _followup_view(data["prs"])
     runs = db.runs_for([f"{p['repo']}#{p['number']}" for p in prs if p["stage"] == "failed"])
-    return {**data, "summary": followup.summary(prs), "runs": runs,
-            "stages": {s: [p for p in prs if p["stage"] == s] for s in followup.STAGES}}
+    return {**data, "summary": summary, "runs": runs,
+            "stages": {s: [p for p in prs if p["section"] == s] for s in followup.STAGES + ["not yours"]}}
 
 
 @app.get("/partials/follow-up")
@@ -580,18 +597,16 @@ def api_deps_approve():
     group = next((g for g in deps.pending_groups() if g["key"] == request.form.get("key")), None)
     if not group:
         return _done(error="That bump is no longer waiting for review")
-    done, skipped, failed = [], [], []
+    done, failed = [], []
+    skipped = [f"{p['repo'].split('/')[-1]}#{p['number']}" for p in group["prs"] if p not in group["approvable"]]
     with db.connect() as conn:
         rows = {r["id"]: r for r in conn.execute(
             f"SELECT * FROM items WHERE id IN ({','.join('?' * len(group['prs']))})",
             [p["item_id"] for p in group["prs"]])}
-    for p in group["prs"]:
+    for p in group["approvable"]:
         ref = f"{p['repo'].split('/')[-1]}#{p['number']}"
-        if p.get("ci") != "success" or p.get("draft") or p.get("mergeable") == "CONFLICTING":
-            skipped.append(ref)
-            continue
         try:
-            _approve(rows[p["item_id"]], p)
+            _approve(rows[p["item_id"]], p, head_sha=p.get("head_sha") or None)
             done.append(ref)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{ref} ({e})")

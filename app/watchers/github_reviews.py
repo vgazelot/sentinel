@@ -12,6 +12,7 @@ import logging
 
 import requests
 
+import checks
 import config
 import deps
 from watchers import WatchedItem, Watcher
@@ -36,7 +37,6 @@ query($q: String!) {
   }
 }
 """
-CI = {"SUCCESS": "success", "FAILURE": "failure", "ERROR": "failure", "PENDING": "pending", "EXPECTED": "pending"}
 
 
 class GithubReviewsWatcher(Watcher):
@@ -97,7 +97,7 @@ class GithubReviewsWatcher(Watcher):
             "review_decision": decision,
             "approvals": [r["author"]["login"] for r in pr["latestReviews"]["nodes"]
                           if r["state"] == "APPROVED" and r.get("author")],
-            "ci": CI.get((commit.get("statusCheckRollup") or {}).get("state")),
+            "ci": checks.rollup((commit.get("statusCheckRollup") or {}).get("state")),
             "mergeable": pr.get("mergeable"),
             "head_sha": commit.get("oid", ""),
             "additions": pr["additions"],

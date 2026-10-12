@@ -87,18 +87,19 @@
 
 {% macro dep_group(g, runs) -%}
 {% set subject = 'deps:' ~ g.key %}
-{% set green = g.prs | selectattr('ci', 'equalto', 'success') | rejectattr('draft') | list %}
+{% set green = g.approvable %}
 {% set red = g.prs | selectattr('ci', 'equalto', 'failure') | list %}
 <article class="row dep" id="dep-{{ g.key | domid }}">
     <span class="dot {{ 'bad' if red else ('warn' if g.type == 'major' else 'neutral') }}" aria-hidden="true"></span>
     <div class="row-main">
         <div class="row-title">
-            <span class="dep-name">{{ g.name }}</span>{% if g.to %}<span class="dep-to">→ {{ g.to }}</span>{% endif %}
+            <span class="dep-name">{{ g.name }}</span>{% if g.kind %}<span class="muted">{{ g.kind }}</span>{% endif %}{% if g.to %}<span class="dep-to">→ {{ g.to }}</span>{% endif %}
             {% if g.type %}<span class="pill {{ 'warn' if g.type == 'major' else 'neutral' }}">{{ g.type }}</span>{% endif %}
+            {% if g.security %}<span class="pill bad">security</span>{% endif %}
         </div>
         <div class="row-meta">
             <span>{{ g.prs | length }} repo{{ 's' if g.prs | length > 1 }}</span>
-            {% if green %}<span class="pill ok">{{ green | length }} green</span>{% endif %}
+            {% if green %}<span class="pill ok">{{ green | length }} ready to approve</span>{% endif %}
             {% if red %}<span class="pill bad">{{ red | length }} failing</span>{% endif %}
             {% if g.prs | selectattr('direct') | list %}<span class="pill hot">asked you</span>{% endif %}
             {% if g.prs | selectattr('automerge') | list %}<span class="muted">merges itself once approved</span>{% endif %}

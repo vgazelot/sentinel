@@ -51,6 +51,21 @@ class StageTest(SentinelTest):
         unknown = self.norm(checks=[("apply", "COMPLETED", "FAILURE")])
         self.assertEqual(unknown["stage"], "failed", "did not run before: assume it is this merge")
 
+    def test_a_job_the_parent_did_not_run_is_compared_with_the_workflow_previous_run(self):
+        from unittest import mock
+
+        import followup
+
+        pr = self.norm(checks=[("apply", "COMPLETED", "FAILURE")])
+        with mock.patch("evidence.previous_outcome", return_value="failure") as previous:
+            followup._settle_before(pr)
+        self.assertEqual(pr["stage"], "inherited")
+        previous.assert_called_once()
+
+    def test_cancelled_runs_are_not_failures(self):
+        self.assertEqual(self.norm(checks=[("apply", "COMPLETED", "CANCELLED"), ("plan", "COMPLETED", "SUCCESS")])["stage"],
+                         "landed")
+
     def test_checking_and_fresh_merge(self):
         self.assertEqual(self.norm(checks=[("apply", "IN_PROGRESS", None)])["stage"], "checking")
         self.assertEqual(self.norm(merged_ago_min=5)["stage"], "checking", "pipelines not started yet")
@@ -92,11 +107,27 @@ class ItemsTest(SentinelTest):
 
         pr = followup._normalize(node(checks=[("apply", "COMPLETED", "FAILURE")], merged_ago_min=30), "me", 3)
         old = followup._normalize(node(checks=[("apply", "COMPLETED", "FAILURE")], merged_ago_min=4000), "me", 3)
-        with mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
+        with mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"), \
+                mock.patch("followup.context", return_value={"merge_sha": "abc", "material": "logs"}) as fetched:
+            followup._investigate({"prs": [old]})
+            fetched.assert_not_called()  # a week-old failure: no automatic run, no fetch
             followup._investigate({"prs": [pr]})
             followup._investigate({"prs": [pr]})
             self.assertEqual(db.count_runs("mode = 'followup'"), 1)
             db.finish_run(db.get_run("acme/x#7", "followup")["id"], output="Verdict: unrelated")
             followup._investigate({"prs": [pr]})
             self.assertEqual(db.count_runs("mode = 'followup'"), 1, "same merge commit: not again")
-        self.assertIn("before the merge", followup.context(old)["failed_checks"][0])
+        with mock.patch("evidence.pr_brief", return_value="PR"), mock.patch("evidence.job_log", return_value="LOG"), \
+                mock.patch("evidence.workflow_history", return_value="HISTORY"):
+            ctx = followup.context(old)
+        self.assertEqual(ctx["material"], "PR\n\nFailed check: apply (no earlier run found) "
+                         "https://github.com/acme/x/actions/runs/1/job/apply\nLOG\n\nHISTORY")
+
+
+class EvidenceTest(SentinelTest):
+    def test_matrix_job_names_are_compared_without_their_drift(self):
+        import evidence
+
+        self.assertEqual(evidence._job_key("Apply / Plan ./50-org/common"), evidence._job_key("Apply / Plan 50-org/common"))
+        self.assertEqual(evidence.job_ids("https://github.com/a/b/actions/runs/12/job/34"), ("12", "34"))
+        self.assertIsNone(evidence.job_ids("https://jenkins.example/job/x/1"))

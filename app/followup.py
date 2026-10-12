@@ -22,9 +22,11 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 import agents
+import checks
 import config
 import db
 import engine
+import evidence
 from watchers import WatchedItem
 
 log = logging.getLogger("sentinel.followup")
@@ -37,7 +39,7 @@ query($open: String!, $closed: String!) {
 }
 fragment pr on PullRequest {
   id number title url isDraft createdAt updatedAt merged mergedAt closedAt
-  reviewDecision mergeable headRefName
+  reviewDecision mergeable headRefName baseRefName
   repository { nameWithOwner }
   author { login }
   autoMergeRequest { enabledAt }
@@ -71,7 +73,6 @@ fragment landing on PullRequest {
   } }
 }
 """
-FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 # runs that belong to the PR or the merge queue, not to what happens once merged
 PRE_MERGE_EVENTS = {"merge_group", "pull_request", "pull_request_target", "pull_request_review"}
 # a review of mine that still counts as "I approved this": DISMISSED = a new commit wiped it,
@@ -115,10 +116,12 @@ def refresh(cfg: dict):
         log.warning("followup fetch failed: %s", e)
         db.record_run(NAME, str(e) or e.__class__.__name__)
         return
+    first_pass = not db.watcher_states().get(NAME, {}).get("seeded")
     db.set_watcher_state(NAME, "data", json.dumps(data))
     db.record_run(NAME)
     engine.process(NAME, items(data))
-    _investigate(data)
+    if not first_pass:  # a first pass records what already happened: no investigation, no push about it
+        _investigate(data)
 
 
 def fetch(login: str, orgs: list[str], authors: list[str], stale_days: int, window_days: int) -> dict:
@@ -147,6 +150,8 @@ def fetch(login: str, orgs: list[str], authors: list[str], stale_days: int, wind
             pr = _normalize(node, login, stale_days) if node else None
             if pr:
                 prs.append(pr)
+    for pr in prs:
+        _settle_before(pr)
     prs.sort(key=lambda p: (STAGES.index(p["stage"]), p["merged_at"] or p["approved_at"]))
     return {"prs": prs, "window_days": window_days, "stale_days": stale_days}
 
@@ -166,6 +171,7 @@ def _normalize(pr: dict, login: str, stale_days: int) -> dict | None:
         "url": pr["url"],
         "author": (pr.get("author") or {}).get("login", ""),
         "branch": pr["headRefName"],
+        "base": pr.get("baseRefName") or "",
         "draft": pr["isDraft"],
         "updated_at": pr["updatedAt"],
         "merged": pr["merged"],
@@ -190,59 +196,48 @@ def _normalize(pr: dict, login: str, stale_days: int) -> dict | None:
 def _rollup(pr: dict) -> dict:
     commits = pr["commits"]["nodes"]
     rollup = (commits[0]["commit"].get("statusCheckRollup") if commits else None) or {}
-    failed = []
-    for c in rollup.get("contexts", {}).get("nodes", []):
-        if c["__typename"] == "CheckRun" and c.get("conclusion") in FAILED_CONCLUSIONS:
-            failed.append(c["name"])
-        elif c["__typename"] == "StatusContext" and c.get("state") in ("FAILURE", "ERROR"):
-            failed.append(c["context"])
-    return {"ci": {"SUCCESS": "success", "FAILURE": "failure", "ERROR": "failure",
-                   "PENDING": "pending", "EXPECTED": "pending"}.get(rollup.get("state")),
-            "ci_failed": failed[:5]}
+    return {"ci": checks.rollup(rollup.get("state")),
+            "ci_failed": checks.failed_names(rollup.get("contexts", {}).get("nodes", []))[:5]}
 
 
 def _landing(pr: dict) -> dict:
     """What ran on the merge commit after the merge, and whether somebody reverted the PR."""
     commit = pr.get("mergeCommit") or {}
     contexts = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes", [])
-    checks = []
+    post = []
     for c in contexts:
-        if c["__typename"] == "CheckRun":
-            run = (c.get("checkSuite") or {}).get("workflowRun") or {}
-            if run.get("event") in PRE_MERGE_EVENTS:
-                continue
-            if c.get("status") != "COMPLETED":
-                state = "pending"
-            elif c.get("conclusion") in FAILED_CONCLUSIONS:
-                state = "failure"
-            else:
-                state = "success"  # SUCCESS, NEUTRAL, SKIPPED
-            checks.append({"name": c["name"], "state": state, "url": c.get("detailsUrl") or "",
-                           "workflow": (run.get("workflow") or {}).get("name", ""), "run_id": run.get("databaseId"),
-                           "completed_at": c.get("completedAt")})
-        else:
-            state = {"SUCCESS": "success", "PENDING": "pending", "EXPECTED": "pending"}.get(c.get("state"), "failure")
-            checks.append({"name": c["context"], "state": state, "url": c.get("targetUrl") or "",
-                           "workflow": "", "run_id": None, "completed_at": c.get("createdAt")})
-    # the same check on the commit just before the merge: already red there = not this PR's doing
+        run = (c.get("checkSuite") or {}).get("workflowRun") or {}
+        state = checks.outcome(c)
+        if run.get("event") in PRE_MERGE_EVENTS or state == "neutral":
+            continue  # the PR's own runs, the merge queue's, and runs cancelled by a newer one
+        post.append({"name": checks.name(c), "state": state, "url": c.get("detailsUrl") or c.get("targetUrl") or "",
+                     "workflow": (run.get("workflow") or {}).get("name", ""),
+                     "completed_at": c.get("completedAt") or c.get("createdAt")})
+    # the same check on the commit just before the merge: red there = not this PR's doing; when it did
+    # not run there (paths filter), _settle_before asks the workflow's previous run
     parents = (commit.get("parents") or {}).get("nodes") or [{}]
-    before = {}
-    for c in (((parents[0] or {}).get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes", []):
-        if c["__typename"] == "CheckRun":
-            before[c["name"]] = ("pending" if c.get("status") != "COMPLETED"
-                                 else "failure" if c.get("conclusion") in FAILED_CONCLUSIONS else "success")
-        else:
-            before[c["context"]] = {"SUCCESS": "success", "PENDING": "pending", "EXPECTED": "pending"}.get(c.get("state"), "failure")
-    for c in checks:
-        c["before"] = before.get(c["name"], "absent")
+    before = {checks.name(c): checks.outcome(c)
+              for c in (((parents[0] or {}).get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes", [])}
+    for c in post:
+        c["before"] = {"failure": "failure", "success": "success"}.get(before.get(c["name"]), "absent")
     revert = None
     for node in (pr.get("timelineItems") or {}).get("nodes", []):
         src = (node or {}).get("source") or {}
         if src.get("title", "").lower().startswith("revert") and src.get("url") != pr["url"]:
             revert = {"number": src["number"], "url": src["url"], "title": src["title"]}
-    done = [c["completed_at"] for c in checks if c["completed_at"]]
-    return {"merge_sha": commit.get("oid", ""), "post_checks": checks, "revert": revert,
-            "landed_at": max(done) if done and all(c["state"] != "pending" for c in checks) else None}
+    done = [c["completed_at"] for c in post if c["completed_at"]]
+    return {"merge_sha": commit.get("oid", ""), "post_checks": post, "revert": revert,
+            "landed_at": max(done) if done and all(c["state"] != "pending" for c in post) else None}
+
+
+def _settle_before(pr: dict):
+    """A failing check that did not run on the parent commit: compare with the previous run of its
+    workflow on the base branch (cached — the past does not change), then stage again."""
+    pending = [c for c in pr.get("post_checks") or [] if c["state"] == "failure" and c["before"] == "absent"]
+    for c in pending:
+        c["before"] = evidence.previous_outcome(pr["repo"], c["url"], pr["base"])
+    if pending:
+        pr["stage"] = stage(pr)
 
 
 def stage(pr: dict) -> str:
@@ -317,23 +312,34 @@ def _item(external_id: str, title: str, pr: dict, fingerprint: str, payload: dic
 
 def _investigate(data: dict):
     """A fresh post-merge failure gets a Claude investigation, once per merge commit. Older ones
-    (first run of Sentinel, a failure from last week) keep the button: no surprise push about the past."""
+    (a failure from last week) keep the button: no surprise push about the past."""
     for p in data["prs"]:
         if p["stage"] != "failed" or _minutes_since(p["merged_at"]) > AUTO_INVESTIGATE_HOURS * 60:
             continue
         subject = f"{p['repo']}#{p['number']}"
         if agents.settled(db.get_run(subject, "followup"), merge_sha=p["merge_sha"]):
             continue  # once per merge commit
-        agents.request(subject, "followup", p["url"], context(p), auto=True)
+        agents.request(subject, "followup", p["url"], lambda p=p: context(p), auto=True)
+
+
+BEFORE = {"failure": "already failing before the merge", "success": "passing before the merge",
+          "absent": "no earlier run found"}
 
 
 def context(pr: dict) -> dict:
-    """What the bridge's followup prompt gets besides the PR URL."""
-    failed = [c for c in pr["post_checks"] if c["state"] == "failure"]
-    before = {"failure": "already failing", "success": "passing", "pending": "running", "absent": "did not run"}
+    """The investigation's material, fetched here (see evidence.py): Claude gets no tool in this mode."""
+    failed = [c for c in pr["post_checks"] if c["state"] == "failure"][:3]
+    parts = [evidence.safely(evidence.pr_brief, pr["repo"], pr["number"])]
+    workflows = set()
+    for c in failed:
+        parts.append(f"Failed check: {c['name']} ({BEFORE.get(c['before'], c['before'])}) {c['url']}\n"
+                     + evidence.safely(evidence.job_log, pr["repo"], c["url"]))
+        if c["workflow"] not in workflows:
+            workflows.add(c["workflow"])
+            parts.append(evidence.safely(evidence.workflow_history, pr["repo"], c["url"], pr["base"]))
     return {"merge_sha": pr["merge_sha"], "merged_at": pr["merged_at"],
-            "failed_checks": [f"{c['name']} — {c['url']} (on the commit before the merge: {before[c['before']]})"
-                              for c in failed[:6]]}
+            "failed_checks": [f"{c['name']} — {BEFORE.get(c['before'], c['before'])}" for c in failed],
+            "material": evidence.material(*parts)}
 
 
 def _days_since(value: str | None) -> int:
@@ -357,10 +363,3 @@ def load() -> dict:
         "last_run": state.get("last_run"),
         "last_error": state.get("last_error"),
     }
-
-
-def summary(prs: list[dict]) -> dict:
-    count = {s: sum(1 for p in prs if p["stage"] == s) for s in STAGES}
-    count["blocked"] = sum(1 for p in prs if p["stage"] == "waiting"
-                           and RANK.index(p["blocker"]) <= RANK.index("review required"))
-    return count

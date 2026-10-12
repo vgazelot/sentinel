@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import requests
 
+import checks
 import config
 import db
 import engine
@@ -41,7 +42,6 @@ query($q: String!) {
   }
 }
 """
-FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 # what the PR is waiting for, most urgent first; the first five are on you and push once
 ACTIONS = {
     "conflicts": "Conflicts to resolve",
@@ -103,12 +103,7 @@ def fetch(login: str, orgs: list[str]) -> list[dict]:
 def _normalize(pr: dict, stale_days: int) -> dict:
     commits = pr["commits"]["nodes"]
     rollup = (commits[0]["commit"].get("statusCheckRollup") if commits else None) or {}
-    failed = []
-    for c in rollup.get("contexts", {}).get("nodes", []):
-        if c["__typename"] == "CheckRun" and c.get("conclusion") in FAILED_CONCLUSIONS:
-            failed.append(c["name"])
-        elif c["__typename"] == "StatusContext" and c.get("state") in ("FAILURE", "ERROR"):
-            failed.append(c["context"])
+    failed = checks.failed_names(rollup.get("contexts", {}).get("nodes", []))
     requested = [n["requestedReviewer"] for n in pr["reviewRequests"]["nodes"] if n.get("requestedReviewer")]
     out = {
         "id": pr["id"],
@@ -132,18 +127,12 @@ def _normalize(pr: dict, stale_days: int) -> dict:
                        if r["state"] == "CHANGES_REQUESTED" and r.get("author")],
         "unresolved": sum(1 for t in pr["reviewThreads"]["nodes"] if not t["isResolved"]),
         "comments": pr["comments"]["totalCount"],
-        "ci": {"SUCCESS": "success", "FAILURE": "failure", "ERROR": "failure",
-               "PENDING": "pending", "EXPECTED": "pending"}.get(rollup.get("state")),
+        "ci": checks.rollup(rollup.get("state")),
         "ci_failed": failed[:8],
-        "ci_family": sorted({family(n) for n in failed}),
+        "ci_family": sorted({checks.family(n) for n in failed}),
     }
     out["action"] = next_action(out, stale_days)
     return out
-
-
-def family(check: str) -> str:
-    """"Molecule Test (EC2) - rsyslog / default" → "Molecule Test (EC2)": one CI cause, many jobs."""
-    return check.split(" - ")[0].split(" / ")[0].strip() or check
 
 
 def next_action(pr: dict, stale_days: int) -> str:
