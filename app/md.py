@@ -2,6 +2,13 @@
 import re
 
 import markdown
+import nh3
+
+# Claude's verdicts quote release notes and CI logs, GitHub comments are whatever people typed:
+# python-markdown passes raw HTML through, so the output keeps a plain allowlist and nothing else
+# (an <img onerror> there would run in this page, which can approve PRs on your behalf)
+TAGS = {"p", "br", "hr", "strong", "em", "b", "i", "del", "code", "pre", "blockquote", "ul", "ol", "li",
+        "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td", "a"}
 
 _LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 
@@ -20,7 +27,8 @@ def _separate_lists(text: str) -> str:
 
 
 def render(text: str) -> str:
-    return markdown.markdown(_separate_lists(text or ""), extensions=["fenced_code", "tables", "sane_lists"])
+    html = markdown.markdown(_separate_lists(text or ""), extensions=["fenced_code", "tables", "sane_lists"])
+    return nh3.clean(html, tags=TAGS, attributes={"a": {"href", "title"}}, url_schemes={"http", "https", "mailto"})
 
 
 # `path/to/file.ext:42` (optionally `:42-50`) written by Claude or a reviewer: the panel resolves it

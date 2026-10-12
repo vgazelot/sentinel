@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -59,6 +60,24 @@ if agents.enabled():
 if os.environ.get("SENTINEL_SCHEDULER", "1") == "1":  # 0 = tests: routes only, no background polling
     scheduler.start()
     log.info("scheduler started, watchers: %s", list(WATCHERS))
+
+
+# --- No auth by design (localhost only), so no other site may drive this one --------------------
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "host.docker.internal", urlparse(config.BASE_URL).hostname}
+
+
+@app.before_request
+def local_and_same_origin():
+    """A page from another site must not use your browser to approve PRs here (cross-site form, or a
+    DNS name of theirs rebound to 127.0.0.1). The Claude Code mod and curl send no Origin: allowed."""
+    if request.host.rsplit(":", 1)[0] not in LOCAL_HOSTS:
+        return "unknown host", 403
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    origin = request.headers.get("Origin")
+    if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site") or (origin and urlparse(origin).netloc != request.host):
+        return "cross-site request refused", 403
+    return None
 
 
 # --- Template filters ----------------------------------------------------------------
