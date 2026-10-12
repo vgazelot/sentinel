@@ -1,5 +1,7 @@
 watchers:
-  # Watches PRs where your review is requested (directly or via a team)
+  # PRs waiting for your review (by name or through a team), sorted into lanes:
+  # asked by name → pushed; asked of a team → pushed only if still unclaimed after the grace period;
+  # a bot's dependency bump → grouped, never pushed. login/orgs are shared by every GitHub feature.
   github_reviews:
     enabled: true
     interval_seconds: 180
@@ -9,7 +11,8 @@ watchers:
   # Generic Atlassian Statuspage watcher — works with any status page exposing
   # /api/v2/summary.json (Scaleway, OVHcloud, GitHub, Cloudflare, ...).
   # Filtering: components = an affected component must match (substring);
-  # keywords = additional AND restriction, matched at word start (gra → GRA1, not degraded)
+  # keywords = additional AND restriction, matched at word start (gra → GRA1, not degraded).
+  # Planned maintenance is listed, never pushed; `notify: quiet` does the same for a whole page.
   statuspage:
     enabled: true
     interval_seconds: 300
@@ -20,28 +23,43 @@ watchers:
         components: [Instances, Object Storage, Load Balancer]
         keywords: []
         include_maintenances: true
-      # OVH component granularity = datacenter; adjust to the DCs actually hosting your infra.
-      # Maintenances excluded: very noisy (rack-by-rack notifications)
+      # OVH bare-metal incidents are per rack: keep the datacenters that host your servers
+      # (keywords match the [RBX8] tag of the title) and list them without pushing
       - name: ovh-baremetal
         url: https://bare-metal-servers.status-ovhcloud.com/api/v2/summary.json
         components: [GRA, RBX, SBG]
-        keywords: []
+        keywords: [rbx8, gra3]
         include_maintenances: false
+        notify: quiet
       - name: ovh-network
         url: https://network.status-ovhcloud.com/api/v2/summary.json
         components: []
         keywords: [france, europe, gra, rbx, sbg]
         include_maintenances: false
 
-# Optional: Approved tab — bot PRs you approved that are still not merged (automerge does not
-# always fire: major bump, red CI, conflicts, an approval dismissed by a new commit).
-# login/orgs fall back to watchers.github_reviews, remove the block to hide the tab.
-approved_prs:
+# Optional: Follow-up — the PRs you approved, followed until they have landed: merged, and every
+# check that ran on the merge commit green (apply, deploy, release). A dismissed approval, a PR
+# still open after stale_days, a post-merge failure (Claude investigates) or a revert become items.
+# Remove the block to hide the tab.
+followup:
   enabled: true
-  interval_seconds: 900
-  authors: [renovate]              # bot login, searched as author:app/<login> (dependabot → dependabot)
-  stale_days: 3                   # approved longer ago than this and still open → one push
-  window_days: 7                  # how far back the "recently closed" list reaches
+  interval_seconds: 300
+  authors: [renovate, dependabot]  # bots whose PRs merge without their author watching (author:app/<login>); `all` = every PR you approve
+  stale_days: 3                    # approved longer ago than this and still open → one push, re-armed every stale_days
+  window_days: 7                   # merged/closed PRs followed for this long
+
+# Optional: how Sentinel decides to interrupt you (defaults shown)
+# triage:
+#   team_grace_minutes: 60         # team review requests: pushed only if still unclaimed after this
+#   health_minutes: 30             # a source failing this long becomes an item
+#   stale_review_days: 3           # your PR without movement this long → "nudge a reviewer"
+
+# Optional: Claude through contrib/claude-bridge (needs CLAUDE_BRIDGE_URL in .env; defaults shown)
+# agents:
+#   precheck: true                 # read each dependency bump before you approve it
+#   followup: true                 # investigate a fresh post-merge failure of a PR you approved
+#   max_runs_per_day: 30           # automatic runs only; on-demand reviews are never capped
+#   concurrency: 2
 
 # Optional: Cycle tab — objectives from a Slite note, progress from Shortcut epics.
 # Needs SLITE_API_KEY and SHORTCUT_API_TOKEN in .env, remove the block to hide the tab.
@@ -53,13 +71,13 @@ cycle:
   interval_seconds: 1800
   owner: Your Name                # matches the `_Owner_ @Your Name` line of a note section
   shortcut_member: yourmention    # Shortcut mention name, flags your own stories
-  stall_days: 7                   # no Shortcut activity for that long → Web Push alert
-  behind_points: 10               # outputs delivered this far under the elapsed cycle → BEHIND
+  stall_days: 7                   # no Shortcut activity for that long → one push
+  behind_points: 10               # outputs delivered this far under the elapsed cycle → behind
   slite:
     parent_id: xxxxxxxxxxxx       # collection holding one note per cycle
     # note_id: yyyyyyyyyyyy       # pin one note instead of taking the newest
-  # label_prefix: Infra           # cycle labels look like Team-2026-C5
-  # label: Team-2026-C5          # pin one label instead of taking the highest
+  # label_prefix: Team            # cycle labels look like Team-2026-C5
+  # label: Team-2026-C5           # pin one label instead of taking the highest
   # start: 2026-09-01             # fallback when the note title carries no months
   # end: 2026-10-31
   epics:                          # override: big rock title → epic ids, for the odd one out
