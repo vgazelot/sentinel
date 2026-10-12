@@ -122,7 +122,8 @@
     </div>
     <div class="row-actions">
         {% if green %}
-        <button class="btn primary" hx-post="/api/deps/approve" hx-vals='{"key": {{ g.key | tojson }}}' hx-target="#now" hx-swap="innerHTML"
+        <button class="btn primary" hx-post="/api/deps/approve" hx-target="#now" hx-swap="innerHTML"
+                hx-vals='{"key": {{ g.key | tojson }}, "ids": "{{ green | map(attribute='item_id') | join(',') }}"}'
                 hx-confirm="Approve {{ green | length }} green PR{{ 's' if green | length > 1 }} of {{ g.name }} → {{ g.to }} on GitHub?" hx-disabled-elt="this">Approve {{ green | length }} green</button>
         {% endif %}
     </div>

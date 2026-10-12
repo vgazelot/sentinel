@@ -145,20 +145,24 @@ def precheck():
     """Scheduler job: one Claude bump check per pending bump, with the PRs of every repository at once."""
     for g in pending_groups():
         subject = f"deps:{g['key']}"
-        if agents.settled(db.get_run(subject, "precheck")):
-            continue  # once per bump; the button re-runs it
+        if agents.settled(db.get_run(subject, "precheck"), urls=urls(g)):
+            continue  # once per bump and set of PRs; the button re-runs it
         agents.request(subject, "precheck", g["prs"][0]["url"], lambda g=g: context(g), auto=True)
+
+
+def urls(g: dict) -> list[str]:
+    return sorted(p["url"] for p in g["prs"])[:6]
 
 
 def context(g: dict) -> dict:
     """The precheck's material, fetched here (see evidence.py): Claude gets no tool in this mode."""
     parts = []
-    for pr in g["prs"][:4]:
+    for pr in sorted(g["prs"], key=lambda p: p["url"])[:6]:
         parts.append(evidence.safely(evidence.pr_brief, pr["repo"], pr["number"], body_chars=5000, diff_lines=150))
         for name, url in evidence.safely_list(evidence.failing_checks, pr["repo"], pr.get("head_sha", ""))[:2]:
             parts.append(f"Failing check on {pr['repo']}#{pr['number']}: {name} {url}\n"
                          + evidence.safely(evidence.job_log, pr["repo"], url, tail=60))
     kind = f" ({g['kind']})" if g.get("kind") else ""
-    return {"urls": [p["url"] for p in g["prs"][:6]],
+    return {"urls": urls(g),
             "bump": f"{g['name']}{kind} → {g['to'] or '?'} ({g['type'] or 'size unknown'})",
             "material": evidence.material(*parts)}

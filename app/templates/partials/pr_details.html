@@ -38,7 +38,7 @@
     {% if notice %}<div class="notice ok">{{ notice }}</div>{% endif %}
 
     {% if pr %}
-    {% if claude_enabled %}{{ agent_block(subject, ['quick', 'deep'], runs) }}{% endif %}
+    {% if claude_enabled %}{{ agent_block(subject, modes, runs) }}{% endif %}
 
     <form class="pr-review" id="pr-review-{{ item.id }}">
         <input type="hidden" name="head_sha" value="{{ pr.head_sha }}">

@@ -141,3 +141,55 @@ class EvidenceTest(SentinelTest):
         self.assertEqual(evidence._job_key("Apply / Plan ./50-org/common"), evidence._job_key("Apply / Plan 50-org/common"))
         self.assertEqual(evidence.job_ids("https://github.com/a/b/actions/runs/12/job/34"), ("12", "34"))
         self.assertIsNone(evidence.job_ids("https://jenkins.example/job/x/1"))
+
+
+class ClearedTest(SentinelTest):
+    def run_row(self, output, logs_missing=()):
+        import db
+
+        db.queue_run("acme/x#7", "followup", "u", {"merge_sha": "abc", "logs_missing": list(logs_missing)})
+        db.finish_run(db.get_run("acme/x#7", "followup")["id"], output=output)
+        return db.get_run("acme/x#7", "followup")
+
+    def test_a_verdict_alone_does_not_clear_a_regression(self):
+        import followup
+
+        failing = lambda before: [{"name": "apply", "state": "failure", "before": before}]
+        self.assertTrue(followup.cleared(failing("absent"), self.run_row("Verdict: unrelated")))
+        self.assertFalse(followup.cleared(failing("success"), self.run_row("Verdict: unrelated")),
+                         "it passed right before this merge")
+        self.assertFalse(followup.cleared(failing("absent"), self.run_row("Verdict: unrelated", ["apply"])),
+                         "Claude never read the log")
+        self.assertFalse(followup.cleared(failing("absent"), self.run_row("Verdict: unclear")))
+
+    def test_unknown_previous_run_waits_instead_of_alarming(self):
+        from unittest import mock
+
+        import followup
+
+        pr = followup._normalize(node(checks=[("apply", "COMPLETED", "FAILURE")]), "me", 3)
+        with mock.patch("evidence.previous_outcome", return_value="unknown"):
+            followup._settle_before(pr, {})
+        self.assertEqual(pr["stage"], "checking")
+
+    def test_previous_run_same_trigger_only_and_not_cached_while_a_run_is_pending(self):
+        from unittest import mock
+
+        import evidence
+
+        evidence._previous.clear()
+        pages = {
+            "/repos/acme/x/actions/jobs/9": {"name": "Plan ./stack"},
+            "/repos/acme/x/actions/runs/5": {"workflow_id": 1, "created_at": "2026-10-05T10:00:00Z", "event": "push"},
+            "/repos/acme/x/actions/workflows/1/runs": {"workflow_runs": [
+                {"id": 4, "created_at": "2026-10-05T09:00:00Z", "event": "push", "status": "in_progress", "conclusion": None},
+                {"id": 3, "created_at": "2026-10-05T08:00:00Z", "event": "pull_request", "status": "completed", "conclusion": "success"},
+                {"id": 2, "created_at": "2026-10-05T07:00:00Z", "event": "push", "status": "completed", "conclusion": "failure"},
+            ]},
+            "/repos/acme/x/actions/runs/2/jobs": {"jobs": [{"name": "Plan stack", "conclusion": "failure"}]},
+            "/repos/acme/x/actions/runs/3/jobs": {"jobs": [{"name": "Plan stack", "conclusion": "success"}]},
+        }
+        with mock.patch("evidence._get", side_effect=lambda path, **_: pages[path]):
+            url = "https://github.com/acme/x/actions/runs/5/job/9"
+            self.assertEqual(evidence.previous_outcome("acme/x", url, "main"), "failure")
+        self.assertEqual(evidence._previous, {}, "a run was still in progress: not final, not cached")

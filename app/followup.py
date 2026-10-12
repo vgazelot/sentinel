@@ -222,7 +222,7 @@ def _settle_before(pr: dict, known: dict):
     pending = [c for c in pr.get("post_checks") or [] if c["state"] == "failure" and c["before"] == "absent"]
     for c in pending:
         outcome = evidence.previous_outcome(pr["repo"], c["url"], pr["base"])
-        c["before"] = known.get((f"{pr['repo']}#{pr['number']}", c["name"]), "absent") if outcome == "unknown" else outcome
+        c["before"] = known.get((f"{pr['repo']}#{pr['number']}", c["name"]), "unknown") if outcome == "unknown" else outcome
     if pending:
         pr["stage"] = stage(pr)
 
@@ -235,6 +235,8 @@ def stage(pr: dict) -> str:
     checks = pr.get("post_checks") or []
     failed = [c for c in checks if c["state"] == "failure"]
     if failed:
+        if any(c.get("before") == "unknown" for c in failed):
+            return "checking"  # GitHub did not say what the previous run did: no verdict, no alarm yet
         return "inherited" if all(c.get("before") == "failure" for c in failed) else "failed"
     if any(c["state"] == "pending" for c in checks):
         return "checking"
@@ -310,23 +312,37 @@ def _investigate(data: dict):
 
 
 BEFORE = {"failure": "already failing before the merge", "success": "passing before the merge",
-          "absent": "no earlier run found"}
+          "absent": "no earlier run found", "unknown": "previous run not readable yet"}
+NO_LOG = ("(log expired", "(no log", "(job_log unavailable")
 
 
 def context(pr: dict) -> dict:
     """The investigation's material, fetched here (see evidence.py): Claude gets no tool in this mode."""
     failed = [c for c in pr["post_checks"] if c["state"] == "failure"][:3]
     parts = [evidence.safely(evidence.pr_brief, pr["repo"], pr["number"])]
-    workflows = set()
+    workflows, logs_missing = set(), []
     for c in failed:
-        parts.append(f"Failed check: {c['name']} ({BEFORE.get(c['before'], c['before'])}) {c['url']}\n"
-                     + evidence.safely(evidence.job_log, pr["repo"], c["url"]))
+        job_log = evidence.safely(evidence.job_log, pr["repo"], c["url"])
+        if job_log.startswith(NO_LOG):
+            logs_missing.append(c["name"])
+        parts.append(f"Failed check: {c['name']} ({BEFORE.get(c['before'], c['before'])}) {c['url']}\n" + job_log)
         if c["workflow"] not in workflows:
             workflows.add(c["workflow"])
             parts.append(evidence.safely(evidence.workflow_history, pr["repo"], c["url"], pr["base"]))
     return {"merge_sha": pr["merge_sha"], "merged_at": pr["merged_at"],
             "failed_checks": [f"{c['name']} — {BEFORE.get(c['before'], c['before'])}" for c in failed],
-            "material": evidence.material(*parts)}
+            "logs_missing": logs_missing, "material": evidence.material(*parts)}
+
+
+def cleared(checks: list[dict], run) -> bool:
+    """Claude traced the failure elsewhere, and nothing it could not see says otherwise: a check that
+    passed right before this merge, or a log Claude never read, keeps the alert — a verdict alone can
+    be steered by the text it reads."""
+    if not run or run["status"] != "done" or agents.verdict(run["output"])[0] != "unrelated":
+        return False
+    if any(c.get("state") == "failure" and c.get("before") == "success" for c in checks):
+        return False
+    return not json.loads(run["context"] or "{}").get("logs_missing")
 
 
 def _days_since(value: str | None) -> int:

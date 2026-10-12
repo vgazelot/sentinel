@@ -115,9 +115,10 @@ function openInlineForm(itemId, target, start) {
     target.el.classList.add('is-anchor');
     const form = document.createElement('div');
     form.className = 'inline-form';
-    const range = start ? `<div class="range">${target.path} · lines ${start.line}–${target.line}</div>` : `<div class="range">${target.path} · line ${target.line}</div>`;
-    form.innerHTML = `${range}<textarea class="field" rows="3" placeholder="Comment on this ${start ? 'range' : 'line'} — Ctrl+Enter to add"></textarea>
-        <div class="pr-actions"><button type="button" class="btn btn-primary" data-act="add">Add to review</button><button type="button" class="btn btn-quiet" data-act="cancel">Cancel</button></div>`;
+    form.innerHTML = `<div class="range"></div><textarea class="field" rows="3" placeholder="Comment on this ${start ? 'range' : 'line'} — Ctrl+Enter to add"></textarea>
+        <div class="actions"><button type="button" class="btn small primary" data-act="add">Add to review</button><button type="button" class="btn small ghost" data-act="cancel">Cancel</button></div>`;
+    // the file name comes from the PR: text, never markup (a file can be named <img onerror=...>)
+    form.querySelector('.range').textContent = start ? `${target.path} · lines ${start.line}–${target.line}` : `${target.path} · line ${target.line}`;
     target.el.insertAdjacentElement('afterend', form);
     const ta = form.querySelector('textarea');
     ta.focus();
@@ -141,8 +142,8 @@ function renderPending(itemId, lineEl, c) {
     const box = document.createElement('div');
     box.className = 'dl-threads';
     const where = c.start_line ? `lines ${c.start_line}–${c.line}` : `line ${c.line}`;
-    box.innerHTML = `<div class="thread pending"><div class="comment"><div class="comment-head"><span class="comment-user">Pending</span> <span class="row-meta">${where} · sent with your review</span></div>
-        <div class="md-body comment-body"></div><div class="comment-actions"><button type="button" class="btn btn-quiet" data-act="remove">Remove</button></div></div></div>`;
+    box.innerHTML = `<div class="thread pending"><div class="comment"><div class="comment-head"><span class="comment-user">Pending</span> <span class="muted">${where} · sent with your review</span></div>
+        <div class="md comment-body"></div><div class="comment-actions"><button type="button" class="btn small ghost" data-act="remove">Remove</button></div></div></div>`;
     box.querySelector('.comment-body').textContent = c.body;
     box.querySelector('[data-act="remove"]').addEventListener('click', () => {
         pending[itemId] = (pending[itemId] || []).filter((x) => x !== c);

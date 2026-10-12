@@ -196,6 +196,11 @@ def submit_review(repo: str, number: int, event: str, body: str = "", comments: 
     _post(f"/repos/{repo}/pulls/{number}/reviews", payload)
 
 
+def head_sha(repo: str, number: int) -> str:
+    """The PR head right now: approving checks it is still the commit whose CI was green."""
+    return _get(f"/repos/{repo}/pulls/{number}")["head"]["sha"]
+
+
 def updated_at(repo: str, number: int) -> str:
     """PR updated_at, read back after a review to ack on a state that includes it."""
     return _get(f"/repos/{repo}/pulls/{number}")["updated_at"]

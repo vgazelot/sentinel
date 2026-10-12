@@ -16,7 +16,7 @@ A review inbox that pushes every request is mostly noise: on a team, most review
 
 - **Triage, not a firehose.** Each signal gets a lane and an urgency. A review asked of you by name pushes right away; one asked of your team pushes only if nobody picked it up within a grace period, and disappears once someone approved; dependency bumps never push. More than three at once become a single notification.
 - **Reviews.** Inline panel: numbered diff, CI checks, existing threads with reply, GitHub-style **line comments** (click a line, shift-click a range) sent as one review with **Approve**, **Comment** or **Request changes**.
-- **Dependency bumps, one decision per bump.** Renovate and Dependabot PRs are grouped by `package@version` across repositories, sized from the update table (major / minor / patch), and **Approve the green ones** approves every PR of the bump with a passing CI in one click. With Claude enabled, each bump is read before you approve it: release notes, a deliberate version pin quietly removed, a failing plan that the bump explains.
+- **Dependency bumps, one decision per bump.** Renovate and Dependabot PRs are grouped by `package@version` across repositories, sized from the update table (major / minor / patch), and **Approve the green ones** approves, in one click, the PRs of the bump you were shown — green, and still on the commit whose CI was green. With Claude enabled, each bump is read before you approve it: release notes, a deliberate version pin quietly removed, a failing plan that the bump explains.
 - **Your pull requests, by what they wait for.** Conflicts, changes requested, red CI (grouped by failing job: ten PRs red on the same CI job are one problem), approved and green, open threads, nobody asked to review, no movement for days. A PR that starts waiting on you pushes once.
 - **Follow-up after you approve.** Every PR you approved (bots by default) is followed until it has *landed*: merged, and every check that ran on the merge commit green — `terraform apply`, deploy, release. A dismissed approval, a PR stuck for days, a post-merge failure or a revert become items. A failing job that already failed in the previous run of its workflow is told apart (*not this PR's doing*), and with Claude enabled a fresh failure is investigated — *caused by this PR*, *unrelated*, or *unclear* — with the root cause from the logs and what to do; one Claude traced elsewhere stops asking for you.
 - **Status pages.** Any [Atlassian Statuspage](https://www.atlassian.com/software/statuspage) (Scaleway, OVHcloud, GitHub, Cloudflare…) with component and keyword filters. Planned maintenance is listed, never pushed; a noisy page can be set to `notify: quiet`.
@@ -120,18 +120,18 @@ Claude Code runs on the **host** — that is where your skills, repositories and
 
 | Mode | When | What |
 |---|---|---|
-| `quick` | on demand, review panel | typos, naming, leftovers, PR text vs change (`sonnet`) |
-| `deep` | on demand, review panel | devil's advocate review (subagents, default model) |
+| `quick` | on demand, review panel | typos, naming, leftovers, PR text vs change, from the diff Sentinel sends (`sonnet`) |
+| `deep` | on demand, review panel of a PR written by a person | devil's advocate review, reading the repositories (subagents, default model) |
 | `precheck` | automatic, each pending dependency bump | release notes, removed pins, failing checks the bump explains → `safe` / `check` / `risky` (`sonnet`) |
 | `followup` | automatic, a fresh post-merge failure of a PR you approved | the failed run's logs, the history of the same workflow → `caused-by-this-pr` / `unrelated` / `unclear` and what to do |
 
-A follow-up investigation answers with a push; a failure Claude traced to something else stops asking for you. Automatic runs are capped per day (`agents.max_runs_per_day`) and run at most `agents.concurrency` at a time.
+A follow-up investigation answers with a push. A failure Claude traced to something else stops asking for you — unless a fact Claude could not argue with says otherwise: the failing job passed right before the merge, or its log could not be read. Automatic runs are capped per day (`agents.max_runs_per_day`) and run at most `agents.concurrency` at a time.
 
 **What Claude can touch.**
-- The **automatic modes get no tool at all.** They read third-party text (release notes, CI logs) with nobody watching, so Sentinel fetches the material itself — the PR and its diff, the failed job logs, the recent runs of the failing workflow — and Claude only reads it, fenced as untrusted data. A text written to steer the model can bend a verdict; it cannot read a file or reach a host.
-- The **on-demand modes** keep inspection commands and `gh` minus the subcommands that write, and start only from your click. `gh api` with `-f` still sends a POST that no prefix rule can tell apart: review only PRs you would open yourself.
+- **`quick`, `precheck` and `followup` get no tool at all.** They read third-party text (a diff, release notes, CI logs), so Sentinel fetches the material itself — the PR and its diff, the failed job logs, the recent runs of the failing workflow — and Claude only reads it, fenced as untrusted data. A text written to steer the model can bend a verdict; it cannot read a file or reach a host.
+- **`deep`** explores the repositories with named read-only commands (`gh pr view/diff/checks`, `gh run view`, `git log/show`, `grep`…): no `gh api` (with `-f` it is a POST, and `-X` can follow any prefix, so no rule tells a read from a merge), no WebFetch. It is offered only on PRs written by people, never on a bot's.
 - Every run loads your *user* settings only (`--setting-sources user`): the allow rules of the project the bridge starts in would otherwise add to the bridge's lists (an allowed `tee` there wrote a file in a run meant to be read-only). No MCP servers.
-- The bridge answers local hosts only (no DNS rebinding) and, with `BRIDGE_TOKEN` set on it and the same value as `CLAUDE_BRIDGE_TOKEN` in Sentinel's `.env`, only Sentinel — not a page your browser opens.
+- The bridge answers local hosts only (no DNS rebinding) and runs nothing without `BRIDGE_TOKEN` — set on it, and the same value as `CLAUDE_BRIDGE_TOKEN` in Sentinel's `.env` — so only Sentinel can make it run Claude, not a page your browser opens.
 
 ```bash
 # 1. the bridge, kept alive by launchd (edit the plist: python3, claude binary, workspace dir)

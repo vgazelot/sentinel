@@ -16,6 +16,7 @@ import cycle
 import db
 import deps
 import engine
+import evidence
 import followup
 import github_pr
 import my_prs
@@ -209,8 +210,7 @@ def _clear_by_claude(views: list[dict], runs: dict):
     question "did I break it?". It stays on Follow-up and on the radar, verdict attached."""
     for v in views:
         run = (runs.get(v["subject"]) or {}).get("followup")
-        if (v["lane"] == "followup" and v["p"].get("kind") == "failed" and run and run["status"] == "done"
-                and agents.verdict(run["output"])[0] == "unrelated"):
+        if v["lane"] == "followup" and v["p"].get("kind") == "failed" and followup.cleared(v["p"].get("checks") or [], run):
             v["attention"], v["tone"], v["cleared"] = False, "ok", True
 
 
@@ -220,7 +220,7 @@ def _followup_view(prs: list[dict]) -> tuple[list[dict], dict]:
     runs = db.runs_for([f"{p['repo']}#{p['number']}" for p in prs if p["stage"] == "failed"])
     for p in prs:
         run = (runs.get(f"{p['repo']}#{p['number']}") or {}).get("followup")
-        p["cleared"] = bool(run and run["status"] == "done" and agents.verdict(run["output"])[0] == "unrelated")
+        p["cleared"] = followup.cleared(p.get("post_checks") or [], run)
         p["section"] = "not yours" if p["stage"] == "inherited" or (p["stage"] == "failed" and p["cleared"]) else p["stage"]
     count = {s: sum(1 for p in prs if p["section"] == s) for s in followup.STAGES + ["not yours"]}
     count["blocked"] = sum(1 for p in prs if p["stage"] == "waiting"
@@ -503,7 +503,9 @@ def _pr_panel(item_id: int, row, payload: dict, **ctx):
     elif not payload.get("repo"):
         ctx.setdefault("error", "repo/number not in payload yet — wait for the next fetch")
     subject = f"{payload.get('repo')}#{payload.get('number')}"
-    resp = make_response(render_template("partials/pr_details.html", item=row, subject=subject,
+    # the devil's advocate explores with tools: not on a bot's PR, whose text (release notes) nobody vouches for
+    modes = ["quick"] if payload.get("author_bot") else ["quick", "deep"]
+    resp = make_response(render_template("partials/pr_details.html", item=row, subject=subject, modes=modes,
                                          runs=db.runs_for([subject]).get(subject, {}), **ctx))
     resp.headers["HX-Retarget"] = f"#pr-details-{item_id}"
     return resp
@@ -593,27 +595,37 @@ def api_reply(item_id: int):
 # --- Dependency bumps -----------------------------------------------------------------------
 @app.post("/api/deps/approve")
 def api_deps_approve():
-    """Approve every green PR of one bump in a row; red, conflicting or draft ones are left to you."""
+    """Approve the green PRs of one bump the page showed you — those still green on the very commit you
+    saw; one a bot pushed to since, one added to the group since, or a red one is left to you."""
     group = next((g for g in deps.pending_groups() if g["key"] == request.form.get("key")), None)
     if not group:
         return _done(error="That bump is no longer waiting for review")
+    shown = {int(x) for x in request.form.get("ids", "").split(",") if x.strip().isdigit()}
     done, failed = [], []
-    skipped = [f"{p['repo'].split('/')[-1]}#{p['number']}" for p in group["prs"] if p not in group["approvable"]]
+    targets = []
+    for p in group["approvable"]:
+        try:
+            if p["item_id"] in shown and github_pr.head_sha(p["repo"], p["number"]) == p.get("head_sha"):
+                targets.append(p)
+        except Exception as e:  # noqa: BLE001
+            failed.append(f"{p['repo'].split('/')[-1]}#{p['number']} ({e})")
+    skipped = [f"{p['repo'].split('/')[-1]}#{p['number']}" for p in group["prs"]
+               if p not in targets and not any(f.startswith(f"{p['repo'].split('/')[-1]}#{p['number']} (") for f in failed)]
     with db.connect() as conn:
         rows = {r["id"]: r for r in conn.execute(
             f"SELECT * FROM items WHERE id IN ({','.join('?' * len(group['prs']))})",
             [p["item_id"] for p in group["prs"]])}
-    for p in group["approvable"]:
+    for p in targets:
         ref = f"{p['repo'].split('/')[-1]}#{p['number']}"
         try:
-            _approve(rows[p["item_id"]], p, head_sha=p.get("head_sha") or None)
+            _approve(rows[p["item_id"]], p, head_sha=p["head_sha"])
             done.append(ref)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{ref} ({e})")
     log.info("bump %s approved on %s, skipped %s, failed %s", group["key"], done, skipped, failed)
     notice = f"Approved {', '.join(done)}." if done else ""
     if skipped:
-        notice += f" Left for you (not green): {', '.join(skipped)}."
+        notice += f" Left for you (not green, moved since you looked, or new): {', '.join(skipped)}."
     return _done(notice=notice.strip(), error=f"Failed: {'; '.join(failed)}" if failed else "")
 
 
@@ -630,6 +642,9 @@ def _agent_target(subject: str, mode: str) -> tuple[str, dict] | None:
     if mode == "followup":
         pr = next((p for p in followup.load()["prs"] if f"{p['repo']}#{p['number']}" == subject), None)
         return (url, followup.context(pr)) if pr and pr["stage"] == "failed" else None
+    if mode == "quick":  # the diff is all a form pass needs: material, no tool
+        return url, {"material": evidence.material(evidence.safely(
+            evidence.pr_brief, m.group(1), int(m.group(2)), body_chars=6000, diff_lines=800))}
     return (url, {}) if mode in agents.ON_DEMAND else None
 
 

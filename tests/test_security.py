@@ -45,3 +45,13 @@ class SecurityTest(SentinelTest):
             conn.execute("UPDATE agent_runs SET finished_at = ?", (db.ago(61),))
         self.assertFalse(agents.settled(db.get_run("deps:go@v1", "precheck")), "an hour later: retry")
         self.assertFalse(agents.settled(db.get_run("deps:go@v1", "precheck"), merge_sha="b"), "another merge commit")
+
+
+class FrontendTest(SentinelTest):
+    def test_pr_data_never_goes_into_innerhtml(self):
+        import re
+
+        with open("/app/static/app.js") as f:
+            js = f.read()
+        for template in re.findall(r"innerHTML = `([^`]*)`", js):
+            self.assertNotIn("path", template, "a file name from a PR must go through textContent")

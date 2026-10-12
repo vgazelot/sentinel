@@ -160,3 +160,20 @@ class TriageTest(SentinelTest):
         engine.wake_snoozed()
         self.assertEqual(len(self.pushes), 1)
         self.assertEqual(state("q")["state"], "pending")
+
+
+class MissedTest(SentinelTest):
+    def test_an_item_missing_from_the_last_poll_is_neither_promoted_nor_woken(self):
+        import db
+        import engine
+
+        self.seed("w")
+        engine.process("w", [item("t", lane="team", urgency="later"), item("s")])
+        db.set_state(state("s")["id"], "snoozed", snooze_until=db.ago(1))
+        self.pushes.clear()
+        with db.connect() as conn:
+            conn.execute("UPDATE items SET first_seen = ?", (db.ago(61),))
+        engine.process("w", [])  # a teammate approved t; both missing once
+        engine.promote_due()
+        engine.wake_snoozed()
+        self.assertEqual(self.pushes, [])

@@ -66,10 +66,14 @@ class WebTest(SentinelTest):
         self.assertEqual(data["counts"]["deps"], 1)
         self.assertEqual(data["counts"]["grace"], 1)
 
-    def test_claude_clears_a_failure_it_traced_elsewhere(self):
+    def test_claude_clears_a_failure_only_when_nothing_contradicts_it(self):
         import db
 
         db.finish_run(db.get_run("acme/x#7", "followup")["id"], output="Verdict: unrelated\n- already broken since May")
+        self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 4,
+                         "the check passed right before the merge: a verdict alone does not clear it")
+        with db.connect() as conn:
+            conn.execute("UPDATE items SET payload = json_set(payload, '$.checks[0].before', 'absent') WHERE watcher = 'followup'")
         self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 3)
         self.assertIn("not this PR", self.client.get("/partials/now").get_data(as_text=True))
 
@@ -84,13 +88,31 @@ class WebTest(SentinelTest):
     def test_bump_approval_skips_what_is_not_green(self):
         import db
 
+        item = db.items("external_id = '3'")[0]
         with db.connect() as conn:
             conn.execute("UPDATE items SET payload = json_set(payload, '$.ci', 'failure') WHERE external_id = '3'")
-        with mock.patch("github_pr.submit_review") as submit:
-            resp = self.client.post("/api/deps/approve", data={"key": "go@v1.2"}, headers={"HX-Request": "true"})
+        with mock.patch("github_pr.submit_review") as submit, mock.patch("github_pr.head_sha", return_value=""):
+            resp = self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": str(item["id"])},
+                                    headers={"HX-Request": "true"})
         self.assertEqual(resp.status_code, 200)
         submit.assert_not_called()
         self.assertIn("Left for you", resp.get_data(as_text=True))
+
+    def test_bump_approval_only_on_the_pr_shown_and_unmoved(self):
+        import db
+
+        item = db.items("external_id = '3'")[0]
+        with db.connect() as conn:
+            conn.execute("UPDATE items SET payload = json_set(payload, '$.head_sha', 'aaa') WHERE external_id = '3'")
+        with mock.patch("github_pr.submit_review") as submit, mock.patch("github_pr.head_sha", return_value="bbb"), \
+                mock.patch("github_pr.updated_at", return_value="x"):
+            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": str(item["id"])})
+            submit.assert_not_called()  # a bot pushed since the page was drawn
+        with mock.patch("github_pr.submit_review") as submit, mock.patch("github_pr.head_sha", return_value="aaa"):
+            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": ""})
+            submit.assert_not_called()  # not shown on the page = not approved
+            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": str(item["id"])})
+            submit.assert_called_once_with("acme/x", 3, "APPROVE", "", [], commit_id="aaa")
 
     def test_approve_from_the_panel_acks_on_the_post_review_state(self):
         import db

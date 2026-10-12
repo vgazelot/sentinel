@@ -132,7 +132,7 @@ def promote_due():
     seeded = [w for w, st in db.watcher_states().items() if st.get("seeded")]
     with db.connect() as conn:
         rows = [r for r in conn.execute(
-            """SELECT * FROM items WHERE state = 'pending' AND urgency = 'later'
+            """SELECT * FROM items WHERE state = 'pending' AND urgency = 'later' AND missed = 0
                                      AND notified_at IS NULL AND first_seen <= ?""",
             (db.ago(grace),),
         ).fetchall() if r["watcher"] in seeded]
@@ -145,7 +145,7 @@ def promote_due():
 def wake_snoozed():
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM items WHERE state = 'snoozed' AND snooze_until <= ?", (db.now(),)
+            "SELECT * FROM items WHERE state = 'snoozed' AND missed = 0 AND snooze_until <= ?", (db.now(),)
         ).fetchall()
         loud = []
         for r in rows:

@@ -102,10 +102,14 @@ def previous_outcome(repo: str, url: str, branch: str) -> str:
         job = _get(f"/repos/{repo}/actions/jobs/{ids[1]}")
         run = _get(f"/repos/{repo}/actions/runs/{ids[0]}")
         runs = _get(f"/repos/{repo}/actions/workflows/{run['workflow_id']}/runs", branch=branch, per_page=30)
+        # same trigger only: a fork's pull_request run on a branch named like the base is not "before"
         earlier = [r for r in runs.get("workflow_runs", [])
-                   if r["created_at"] < run["created_at"] and r["status"] == "completed" and r["conclusion"] != "cancelled"]
-        result = "absent"
+                   if r["created_at"] < run["created_at"] and r["event"] == run["event"] and r["conclusion"] != "cancelled"]
+        result, settled = "absent", True
         for prev in earlier[:5]:  # the job may not have run in the last one either (paths filters)
+            if prev["status"] != "completed":
+                settled = False  # still running: it may decide later, so the answer is not final
+                continue
             jobs = _get(f"/repos/{repo}/actions/runs/{prev['id']}/jobs", per_page=100).get("jobs", [])
             same = [j for j in jobs if _job_key(j["name"]) == _job_key(job["name"])
                     and j["conclusion"] not in (None, "skipped", "cancelled")]
@@ -115,7 +119,8 @@ def previous_outcome(repo: str, url: str, branch: str) -> str:
     except requests.RequestException as e:
         log.info("previous run of %s not found: %s", url, e)
         return "unknown"
-    _previous[key] = result
+    if settled:
+        _previous[key] = result
     return result
 
 

@@ -10,18 +10,18 @@ the container reaches it through host.docker.internal.
     → {"output": "<markdown>", "duration": 142.3}
 
 Modes — prompt, model and tools are owned here, the app only sends URLs and context:
-  deep      on demand: devil's advocate review (subagents, default model)
-  quick     on demand: form pass (typos, naming, leftovers), faster model
-  precheck  automatic: a dependency bump read before approval (release notes, removed pins)
-  followup  automatic: a PR approved then merged broke a post-merge check — cause and next step
+  deep      on demand: devil's advocate review, read-only tools (no gh api, no WebFetch), never on a bot's PR
+  quick     on demand: form pass (typos, naming, leftovers) on the diff Sentinel sends, no tool
+  precheck  automatic: a dependency bump read before approval (release notes, removed pins), no tool
+  followup  automatic: a PR approved then merged broke a post-merge check — cause and next step, no tool
 
 Every run loads the user settings only (`--setting-sources user`): the allow rules of
-BRIDGE_CWD's project would otherwise widen the lists below. The automatic modes read
-third-party text (release notes, CI logs) with nobody watching, so they get **no tool at all**:
-Sentinel fetches the material (PR, diff, failed job logs, workflow history) and sends it as
-`context.material`; a text crafted to steer the model can bend a verdict, never read a file or
-reach a host. With BRIDGE_TOKEN set, a request without `Authorization: Bearer <token>` is
-refused — your browser, or any page it opens, cannot make the bridge run Claude.
+BRIDGE_CWD's project would otherwise widen the lists below. The material modes read
+third-party text (release notes, CI logs, a diff) so they get **no tool at all**: Sentinel
+fetches the material and sends it in `context`, fenced here as untrusted data; a text crafted
+to steer the model can bend a verdict, never read a file or reach a host. BRIDGE_TOKEN is
+required to run anything: a request without `Authorization: Bearer <token>` is refused, so your
+browser, or any page it opens, cannot make the bridge run Claude.
 `POST /review {"url", "mode"}` is kept for older Sentinel versions.
 """
 import hmac
@@ -53,14 +53,13 @@ DEFAULT_PROMPTS = {
             "Read-only: no edits, no GitHub comments. Answer in {lang} with a one-sentence verdict, then "
             "numbered findings (most structural first, each with file:line evidence), then a firm "
             "recommendation. PR: {url}",
-    "quick": "Quick pass on this pull request: form, not design. Read the diff once and report only "
-             "what you actually see: typos and wording in code, comments, docs, commit messages and the "
-             "PR description; naming or style inconsistent with the surrounding code; leftover debug, "
-             "TODO or dead code; copy-paste slips; mismatch between the PR title/description and the "
-             "change. Do not dig into architecture, performance or blast radius. Read-only: no edits, "
-             "no GitHub comments. Answer in {lang}. No preamble, no narration, never list what is fine. "
-             "First line: `Verdict: clean` or `Verdict: tidy-up` (keep these English tokens). Then one "
-             "bullet per real finding, `file:line — issue`, ten words max each. PR: {url}",
+    "quick": "Quick pass on this pull request, from its description and diff below: form, not design. Report "
+             "only what you actually see: typos and wording in code, comments, docs and the PR description; "
+             "naming or style inconsistent with the surrounding code; leftover debug, TODO or dead code; "
+             "copy-paste slips; mismatch between the PR title/description and the change. Do not dig into "
+             "architecture, performance or blast radius. Answer in {lang}. No preamble, no narration, never "
+             "list what is fine. First line: `Verdict: clean` or `Verdict: tidy-up` (keep these English tokens). "
+             "Then one bullet per real finding, `file:line — issue`, ten words max each. PR: {url}\n{context}",
     "precheck": "A bot opened dependency-update pull requests (the same bump, one per repository) and a human "
                 "is about to approve them. Check them before that happens, from the material below alone.\n{urls}\n"
                 "{context}\nLook for: breaking or behaviour changes in the release notes that matter for how these "
@@ -91,35 +90,27 @@ MODELS = {
     "followup": os.environ.get("BRIDGE_MODEL_FOLLOWUP", ""),
 }
 
-# on-demand reviews: the toolset your own skills expect (e.g. a /review skill reading the repo)
-REVIEW_TOOLS = "Bash,Read,Grep,Glob,WebFetch"
-REVIEW_ALLOWED = [
-    "Bash(gh:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git fetch:*)",
-    "Bash(git ls-files:*)", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(cat:*)",
-    "Bash(ls:*)", "Bash(head:*)", "Bash(sed -n:*)", "Bash(wc:*)", "WebFetch", "Agent",
+# the devil's advocate explores the repositories: named read-only subcommands only. No `gh api` (`-f`
+# makes it a POST and `-X` can come after any prefix, so no rule tells a read from a merge), no
+# WebFetch, no `gh:*`. A crafted PR can still steer what it reads; it cannot approve, merge or post.
+DEEP_ALLOWED = [
+    "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)", "Bash(gh pr list:*)",
+    "Bash(gh run view:*)", "Bash(gh run list:*)", "Bash(gh release view:*)", "Bash(gh issue view:*)",
+    "Bash(gh search code:*)", "Bash(gh search prs:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
+    "Bash(git fetch:*)", "Bash(git ls-files:*)", "Bash(git blame:*)", "Bash(grep:*)", "Bash(rg:*)",
+    "Bash(find:*)", "Bash(cat:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(sed -n:*)", "Bash(wc:*)",
+    "Read", "Grep", "Glob", "Agent",
 ]
-# gh writes that a prefix rule can name; `gh api` with -f/-F defaults to POST and cannot be told
-# apart by prefix, which is why the automatic modes do not get `gh api` at all
-REVIEW_DENIED = [
-    "Bash(gh pr review:*)", "Bash(gh pr comment:*)", "Bash(gh pr merge:*)", "Bash(gh pr close:*)",
-    "Bash(gh pr edit:*)", "Bash(gh pr create:*)", "Bash(gh pr ready:*)", "Bash(gh pr reopen:*)",
-    "Bash(gh issue comment:*)", "Bash(gh issue create:*)", "Bash(gh issue edit:*)", "Bash(gh issue close:*)",
-    "Bash(gh api -X:*)", "Bash(gh api --method:*)", "Bash(gh workflow run:*)", "Bash(gh run rerun:*)",
-    "Bash(gh run cancel:*)", "Bash(gh run delete:*)", "Bash(gh release create:*)", "Bash(gh release delete:*)",
-    "Bash(gh release edit:*)", "Bash(gh repo:*)", "Bash(gh secret:*)", "Bash(gh variable:*)",
-    "Bash(gh label:*)", "Bash(gh gist:*)", "Bash(gh cache delete:*)",
-]
-# the automatic modes: no tool at all ("" = none) — every gh subcommand can read local files through
-# a shell or reach another host (`-R host/owner/repo`), so what they need comes as material instead
-TOOLSETS = {
-    "deep": (REVIEW_TOOLS + ",Agent", REVIEW_ALLOWED, REVIEW_DENIED),
-    "quick": (REVIEW_TOOLS, REVIEW_ALLOWED, REVIEW_DENIED),
-    "precheck": ("", [], []),
-    "followup": ("", [], []),
-}
+DEEP_DENIED = ["Bash(gh api:*)", "Bash(curl:*)", "Bash(wget:*)", "WebFetch"]
+# material modes: no tool at all ("" = none), what they need comes fenced in the prompt
+MATERIAL_MODES = ("quick", "precheck", "followup")
+TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
+            **{mode: ("", [], []) for mode in MATERIAL_MODES}}
+API = 2  # what /healthz reports: Sentinel refuses an older bridge
 
 
 def _context_text(context: dict) -> str:
+    """Everything the app sends is data from GitHub (names, titles, logs): all of it goes in the fence."""
     context = dict(context or {})
     material = str(context.pop("material", "") or "")[:MAX_MATERIAL]
     lines = []
@@ -130,14 +121,15 @@ def _context_text(context: dict) -> str:
             lines += [f"  - {str(v)[:400]}" for v in value[:12]]
         else:
             lines.append(f"- {label}: {str(value)[:400]}")
-    text = ("Context:\n" + "\n".join(lines))[:MAX_CONTEXT] if lines else ""
-    if material:
-        text += f"\n\n{UNTRUSTED}\nBEGIN MATERIAL\n{material}\nEND MATERIAL"
-    return text
+    body = "\n".join(lines)[:MAX_CONTEXT] + ("\n\n" + material if material else "")
+    return f"{UNTRUSTED}\nBEGIN MATERIAL\n{body.strip()}\nEND MATERIAL" if body.strip() else ""
 
 
 def run(mode: str, url: str, urls: list[str], context: dict) -> dict:
-    prompt = PROMPTS[mode].format(url=url, urls="\n".join(urls or [url]), context=_context_text(context), lang=LANG)
+    fenced = _context_text(context)
+    prompt = PROMPTS[mode].format(url=url, urls="\n".join(urls or [url]), context=fenced, lang=LANG)
+    if mode in MATERIAL_MODES and fenced and "{context}" not in PROMPTS[mode]:
+        prompt += "\n\n" + fenced  # a custom prompt without the placeholder still gets the material
     tools, allowed, denied = TOOLSETS[mode]
     cmd = [
         CLAUDE, "-p", prompt,
@@ -186,12 +178,15 @@ class Handler(BaseHTTPRequestHandler):
         if self._refused():
             return
         if self.path == "/healthz":
-            return self._json(200, {"ok": True, "claude": CLAUDE, "cwd": CWD, "modes": sorted(PROMPTS), "lang": LANG})
+            return self._json(200, {"ok": True, "api": API, "token": bool(TOKEN), "claude": CLAUDE, "cwd": CWD,
+                                    "modes": sorted(PROMPTS), "lang": LANG})
         self._json(404, {"error": "not found"})
 
     def do_POST(self):
         if self._refused():
             return
+        if not TOKEN:
+            return self._json(503, {"error": "set BRIDGE_TOKEN on the bridge and the same CLAUDE_BRIDGE_TOKEN in Sentinel"})
         if self.path not in ("/run", "/review"):
             return self._json(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length") or 0)

@@ -58,6 +58,7 @@ AUTOMATIC = ("precheck", "followup")
 # (a log, a release note) must not stand for Claude's own
 VERDICT = re.compile(r"verdict\s*:\s*\**\s*([\w-]+)", re.I)
 MAX_ATTEMPTS = 3
+BRIDGE_API = 2  # what /healthz must report: material for every automatic and quick run, token required
 TONE = {"safe": "ok", "clean": "ok", "unrelated": "ok", "check": "warn", "unclear": "warn",
         "tidy-up": "warn", "risky": "bad", "caused-by-this-pr": "bad"}
 
@@ -80,7 +81,7 @@ def request(subject: str, mode: str, url: str, context: dict | Callable[[], dict
         if not cfg.get(mode, True):
             return False
         today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
-        used = db.count_runs("created_at >= ? AND mode IN ('precheck', 'followup')", today)
+        used = db.attempts_since(today)
         if used >= int(cfg["max_runs_per_day"]):
             log.info("daily cap reached, %s for %s not queued", mode, subject)
             return False
@@ -160,8 +161,13 @@ def check_bridge():
     try:
         r = requests.get(f"{config.CLAUDE_BRIDGE_URL}/healthz", headers=_auth(), timeout=10)
         r.raise_for_status()
-        missing = set(MODES) - set(r.json().get("modes", []))
-        error = f"the bridge is an older version (no {', '.join(sorted(missing))}): restart it" if missing else ""
+        info = r.json()
+        if info.get("api", 1) < BRIDGE_API:
+            error = "the bridge runs an older version: restart it (launchctl bootout, then bootstrap)"
+        elif not info.get("token"):
+            error = "the bridge has no BRIDGE_TOKEN: any local page could make it run Claude — set it"
+        else:
+            error = ""
     except (requests.RequestException, ValueError) as e:
         error = f"the Claude bridge does not answer: {e}"
     db.record_run("claude-bridge", error)

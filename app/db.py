@@ -280,6 +280,14 @@ def finish_run(run_id: int, output: str | None = None, error: str | None = None)
         )
 
 
+def attempts_since(day_start: str) -> int:
+    """Automatic attempts today — a run retried three times counts three times against the cap."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COALESCE(SUM(attempts), 0) FROM agent_runs WHERE created_at >= ? AND mode IN ('precheck', 'followup')",
+            (day_start,)).fetchone()[0]
+
+
 def count_runs(where: str, *params) -> int:
     with connect() as conn:
         return conn.execute(f"SELECT COUNT(*) FROM agent_runs WHERE {where}", params).fetchone()[0]
