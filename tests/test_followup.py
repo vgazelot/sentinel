@@ -69,7 +69,7 @@ class StageTest(SentinelTest):
 
         pr = self.norm(checks=[("apply", "COMPLETED", "FAILURE")])
         with mock.patch("evidence.previous_outcome", return_value="unknown"):
-            followup._settle_before(pr, {("acme/x#7", "apply"): "failure"})
+            followup._settle_before(pr, {("acme/x#7", "apply"): ("failure", None)})
         self.assertEqual(pr["stage"], "inherited", "a 502 does not turn into a false alarm")
 
     def test_cancelled_runs_are_not_failures(self):
@@ -147,7 +147,8 @@ class ClearedTest(SentinelTest):
     def run_row(self, output, logs_missing=()):
         import db
 
-        db.queue_run("acme/x#7", "followup", "u", {"merge_sha": "abc", "logs_missing": list(logs_missing)})
+        read = [] if logs_missing else ["apply"]
+        db.queue_run("acme/x#7", "followup", "u", {"merge_sha": "abc", "logs_missing": list(logs_missing), "investigated": read})
         db.finish_run(db.get_run("acme/x#7", "followup")["id"], output=output)
         return db.get_run("acme/x#7", "followup")
 
@@ -161,6 +162,45 @@ class ClearedTest(SentinelTest):
         self.assertFalse(followup.cleared(failing("absent"), self.run_row("Verdict: unrelated", ["apply"])),
                          "Claude never read the log")
         self.assertFalse(followup.cleared(failing("absent"), self.run_row("Verdict: unclear")))
+        two = failing("absent") + [{"name": "deploy", "state": "failure", "before": "absent"}]
+        self.assertFalse(followup.cleared(two, self.run_row("Verdict: unrelated")), "deploy failed after the investigation")
+
+    def test_an_older_investigation_that_lists_nothing_clears_nothing(self):
+        import db
+        import followup
+
+        db.queue_run("acme/x#7", "followup", "u", {"merge_sha": "abc"})
+        db.finish_run(db.get_run("acme/x#7", "followup")["id"], output="Verdict: unrelated")
+        self.assertFalse(followup.cleared([{"name": "apply", "state": "failure", "before": "absent"}],
+                                          db.get_run("acme/x#7", "followup")))
+
+    def test_an_api_that_stays_down_alerts_after_an_hour(self):
+        from unittest import mock
+
+        import db
+        import followup
+
+        pr = followup._normalize(node(checks=[("apply", "COMPLETED", "FAILURE")]), "me", 3)
+        with mock.patch("evidence.previous_outcome", return_value="unknown"):
+            followup._settle_before(pr, {("acme/x#7", "apply"): ("unknown", db.ago(61))})
+        self.assertEqual(pr["stage"], "failed")
+
+    def test_a_new_failing_check_asks_claude_again(self):
+        from unittest import mock
+
+        import db
+        import followup
+
+        pr = followup._normalize(node(checks=[("apply", "COMPLETED", "FAILURE")], merged_ago_min=30), "me", 3)
+        with mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"), \
+                mock.patch("followup.context", side_effect=lambda p: {"merge_sha": "abc", "failing": followup.failing(p)}):
+            followup._investigate({"prs": [pr]})
+            db.finish_run(db.get_run("acme/x#7", "followup")["id"], output="Verdict: unrelated")
+            followup._investigate({"prs": [pr]})
+            self.assertEqual(db.get_run("acme/x#7", "followup")["status"], "done", "same failures: settled")
+            pr["post_checks"].append({"name": "deploy", "state": "failure", "before": "absent", "url": "", "workflow": ""})
+            followup._investigate({"prs": [pr]})
+            self.assertEqual(db.get_run("acme/x#7", "followup")["status"], "queued")
 
     def test_unknown_previous_run_waits_instead_of_alarming(self):
         from unittest import mock
@@ -193,3 +233,9 @@ class ClearedTest(SentinelTest):
             url = "https://github.com/acme/x/actions/runs/5/job/9"
             self.assertEqual(evidence.previous_outcome("acme/x", url, "main"), "failure")
         self.assertEqual(evidence._previous, {}, "a run was still in progress: not final, not cached")
+
+    def test_cuts_are_said(self):
+        import evidence
+
+        cut = evidence.material("x" * (evidence.MAX_MATERIAL + 10))
+        self.assertTrue(cut.endswith("[material cut here: the rest was not shown]"))

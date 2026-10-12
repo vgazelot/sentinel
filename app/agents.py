@@ -80,14 +80,29 @@ def request(subject: str, mode: str, url: str, context: dict | Callable[[], dict
         cfg = config.agents()
         if not cfg.get(mode, True):
             return False
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
-        used = db.attempts_since(today)
-        if used >= int(cfg["max_runs_per_day"]):
+        if used_today() >= int(cfg["max_runs_per_day"]):
             log.info("daily cap reached, %s for %s not queued", mode, subject)
             return False
+        _count_today()
     payload = context() if callable(context) else (context or {})
     db.queue_run(subject, mode, url, payload, retry=auto and bool(current) and current["status"] == "error")
     return True
+
+
+def used_today() -> int:
+    """Automatic runs started today — re-queues and retries included: one counter, not the run rows."""
+    st = db.watcher_states().get("agents", {})
+    return int(st.get("count") or 0) if st.get("day") == _today() else 0
+
+
+def _count_today():
+    count = used_today() + 1
+    db.set_watcher_state("agents", "day", _today())
+    db.set_watcher_state("agents", "count", str(count))
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def settled(run, **context) -> bool:

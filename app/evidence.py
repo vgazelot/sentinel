@@ -45,7 +45,7 @@ def job_ids(url: str) -> tuple[str, str] | None:
 
 def pr_brief(repo: str, number: int, body_chars: int = 6000, diff_lines: int = 300) -> str:
     pr = _get(f"/repos/{repo}/pulls/{number}")
-    files = _get(f"/repos/{repo}/pulls/{number}/files", per_page=60)
+    files = _get(f"/repos/{repo}/pulls/{number}/files", per_page=100)
     out = [f"PR {repo}#{number}: {pr['title']}", f"by {pr['user']['login']} into {pr['base']['ref']}", "",
            "Description:", (pr.get("body") or "(empty)")[:body_chars], "", "Diff:"]
     budget = diff_lines
@@ -54,8 +54,10 @@ def pr_brief(repo: str, number: int, body_chars: int = 6000, diff_lines: int = 3
         out += [f"--- {f['filename']} (+{f['additions']} -{f['deletions']})", *patch]
         budget -= len(patch)
         if budget <= 0:
-            out.append("… diff cut here")
+            out.append(f"… diff cut here: {pr['changed_files'] - files.index(f) - 1} more file(s) not shown")
             break
+    if pr["changed_files"] > len(files):
+        out.append(f"… {pr['changed_files'] - len(files)} more file(s) not shown")
     return "\n".join(out)
 
 
@@ -101,7 +103,8 @@ def previous_outcome(repo: str, url: str, branch: str) -> str:
     try:
         job = _get(f"/repos/{repo}/actions/jobs/{ids[1]}")
         run = _get(f"/repos/{repo}/actions/runs/{ids[0]}")
-        runs = _get(f"/repos/{repo}/actions/workflows/{run['workflow_id']}/runs", branch=branch, per_page=30)
+        runs = _get(f"/repos/{repo}/actions/workflows/{run['workflow_id']}/runs", branch=branch, per_page=30,
+                    created=f"<{run['created_at']}")  # anchored: on a busy workflow the 30 newest miss it
         # same trigger only: a fork's pull_request run on a branch named like the base is not "before"
         earlier = [r for r in runs.get("workflow_runs", [])
                    if r["created_at"] < run["created_at"] and r["event"] == run["event"] and r["conclusion"] != "cancelled"]
@@ -119,7 +122,7 @@ def previous_outcome(repo: str, url: str, branch: str) -> str:
     except requests.RequestException as e:
         log.info("previous run of %s not found: %s", url, e)
         return "unknown"
-    if settled:
+    if settled and result != "absent":  # "nothing found" may be a window too short: never final
         _previous[key] = result
     return result
 
@@ -140,7 +143,8 @@ def _job_key(name: str) -> str:
 
 def material(*parts: str) -> str:
     """The parts, each fetched separately, joined and capped."""
-    return "\n\n".join(p for p in parts if p)[:MAX_MATERIAL]
+    text = "\n\n".join(p for p in parts if p)
+    return text if len(text) <= MAX_MATERIAL else text[:MAX_MATERIAL] + "\n[material cut here: the rest was not shown]"
 
 
 def safely(fetch, *args, **kwargs) -> str:

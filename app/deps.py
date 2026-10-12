@@ -151,7 +151,7 @@ def precheck():
 
 
 def urls(g: dict) -> list[str]:
-    return sorted(p["url"] for p in g["prs"])[:6]
+    return sorted(p["url"] for p in g["prs"])
 
 
 def context(g: dict) -> dict:

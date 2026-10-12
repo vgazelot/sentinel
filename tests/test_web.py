@@ -43,7 +43,7 @@ class WebTest(SentinelTest):
                                                                                    post_checks=[failed])],
                                                               "window_days": 7, "stale_days": 3}))
         db.set_watcher_state("my_prs", "data", json.dumps([]))
-        db.queue_run("acme/x#7", "followup", "https://github.com/acme/x/pull/7", {})
+        db.queue_run("acme/x#7", "followup", "https://github.com/acme/x/pull/7", {"investigated": ["apply"], "logs_missing": []})
         db.finish_run(db.get_run("acme/x#7", "followup")["id"], output="Verdict: caused-by-this-pr\n- **the bump** broke the apply")
 
     def test_pages_render(self):
@@ -92,7 +92,7 @@ class WebTest(SentinelTest):
         with db.connect() as conn:
             conn.execute("UPDATE items SET payload = json_set(payload, '$.ci', 'failure') WHERE external_id = '3'")
         with mock.patch("github_pr.submit_review") as submit, mock.patch("github_pr.head_sha", return_value=""):
-            resp = self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": str(item["id"])},
+            resp = self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": f"{item['id']}:"},
                                     headers={"HX-Request": "true"})
         self.assertEqual(resp.status_code, 200)
         submit.assert_not_called()
@@ -106,12 +106,14 @@ class WebTest(SentinelTest):
             conn.execute("UPDATE items SET payload = json_set(payload, '$.head_sha', 'aaa') WHERE external_id = '3'")
         with mock.patch("github_pr.submit_review") as submit, mock.patch("github_pr.head_sha", return_value="bbb"), \
                 mock.patch("github_pr.updated_at", return_value="x"):
-            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": str(item["id"])})
+            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": f"{item['id']}:aaa"})
             submit.assert_not_called()  # a bot pushed since the page was drawn
         with mock.patch("github_pr.submit_review") as submit, mock.patch("github_pr.head_sha", return_value="aaa"):
             self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": ""})
             submit.assert_not_called()  # not shown on the page = not approved
-            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": str(item["id"])})
+            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": f"{item['id']}:zzz"})
+            submit.assert_not_called()  # the page showed another commit than the one the poll has now
+            self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": f"{item['id']}:aaa"})
             submit.assert_called_once_with("acme/x", 3, "APPROVE", "", [], commit_id="aaa")
 
     def test_approve_from_the_panel_acks_on_the_post_review_state(self):

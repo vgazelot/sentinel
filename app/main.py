@@ -401,8 +401,7 @@ def _agents_context() -> dict:
     with db.connect() as conn:
         recent = conn.execute("SELECT * FROM agent_runs ORDER BY COALESCE(started_at, created_at) DESC LIMIT 12").fetchall()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
-    return {"recent_runs": recent,
-            "runs_today": db.count_runs("created_at >= ? AND mode IN ('precheck', 'followup')", today)}
+    return {"recent_runs": recent, "runs_today": agents.used_today()}
 
 
 @app.get("/partials/watchers")
@@ -600,12 +599,14 @@ def api_deps_approve():
     group = next((g for g in deps.pending_groups() if g["key"] == request.form.get("key")), None)
     if not group:
         return _done(error="That bump is no longer waiting for review")
-    shown = {int(x) for x in request.form.get("ids", "").split(",") if x.strip().isdigit()}
+    # "id:sha" pairs: the commit the page showed as green, not whatever the last poll saw
+    shown = dict(x.split(":", 1) for x in request.form.get("ids", "").split(",") if ":" in x)
     done, failed = [], []
     targets = []
     for p in group["approvable"]:
         try:
-            if p["item_id"] in shown and github_pr.head_sha(p["repo"], p["number"]) == p.get("head_sha"):
+            seen = shown.get(str(p["item_id"]))
+            if seen and seen == p.get("head_sha") and github_pr.head_sha(p["repo"], p["number"]) == seen:
                 targets.append(p)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{p['repo'].split('/')[-1]}#{p['number']} ({e})")

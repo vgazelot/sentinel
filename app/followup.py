@@ -83,6 +83,7 @@ RANK = ["dismissed", "conflicts", "ci failing", "changes requested", "review req
 # pipelines need a moment to start after the merge: "no checks" only after this
 CHECKS_START_MINUTES = 30
 AUTO_INVESTIGATE_HOURS = 48
+UNKNOWN_MINUTES = 60
 STAGES = ["failed", "reverted", "waiting", "checking", "inherited", "landed", "no checks", "closed"]
 
 
@@ -106,8 +107,8 @@ def enabled(cfg: dict | None = None) -> bool:
 
 def refresh(cfg: dict):
     opts = settings(cfg)
-    known = {(f"{p['repo']}#{p['number']}", c["name"]): c["before"]
-             for p in load()["prs"] for c in p.get("post_checks") or [] if c.get("before") in ("failure", "success")}
+    known = {(f"{p['repo']}#{p['number']}", c["name"]): (c["before"], c.get("unknown_since"))
+             for p in load()["prs"] for c in p.get("post_checks") or [] if c.get("before")}
     try:
         data = fetch(**opts, known=known)
     except Exception as e:
@@ -217,12 +218,21 @@ def _landing(pr: dict) -> dict:
 
 def _settle_before(pr: dict, known: dict):
     """A failing check that did not run on the parent commit: compare with the previous run of its
-    workflow on the base branch (cached — the past does not change), then stage again. GitHub not
-    answering keeps what the last refresh knew: an API hiccup must not turn into a false alarm."""
+    workflow on the base branch (final answers are cached), then stage again. GitHub not answering
+    keeps what the last refresh knew; with nothing known it waits UNKNOWN_MINUTES, then alerts as
+    if nothing ran before — an API hiccup is no alarm, an API that stays down is no silence."""
     pending = [c for c in pr.get("post_checks") or [] if c["state"] == "failure" and c["before"] == "absent"]
     for c in pending:
         outcome = evidence.previous_outcome(pr["repo"], c["url"], pr["base"])
-        c["before"] = known.get((f"{pr['repo']}#{pr['number']}", c["name"]), "unknown") if outcome == "unknown" else outcome
+        if outcome != "unknown":
+            c["before"] = outcome
+            continue
+        before, since = known.get((f"{pr['repo']}#{pr['number']}", c["name"]), ("unknown", None))
+        if before != "unknown":
+            c["before"] = before
+        else:
+            c["unknown_since"] = since or db.now()
+            c["before"] = "absent" if _minutes_since(c["unknown_since"]) > UNKNOWN_MINUTES else "unknown"
     if pending:
         pr["stage"] = stage(pr)
 
@@ -306,14 +316,18 @@ def _investigate(data: dict):
         if p["stage"] != "failed" or _minutes_since(p["merged_at"]) > AUTO_INVESTIGATE_HOURS * 60:
             continue
         subject = f"{p['repo']}#{p['number']}"
-        if agents.settled(db.get_run(subject, "followup"), merge_sha=p["merge_sha"]):
-            continue  # once per merge commit
+        if agents.settled(db.get_run(subject, "followup"), merge_sha=p["merge_sha"], failing=failing(p)):
+            continue  # once per merge commit and set of failing checks: a new failure is a new question
         agents.request(subject, "followup", p["url"], lambda p=p: context(p), auto=True)
 
 
 BEFORE = {"failure": "already failing before the merge", "success": "passing before the merge",
           "absent": "no earlier run found", "unknown": "previous run not readable yet"}
 NO_LOG = ("(log expired", "(no log", "(job_log unavailable")
+
+
+def failing(pr: dict) -> list[str]:
+    return sorted(c["name"] for c in pr.get("post_checks") or [] if c["state"] == "failure")
 
 
 def context(pr: dict) -> dict:
@@ -329,7 +343,8 @@ def context(pr: dict) -> dict:
         if c["workflow"] not in workflows:
             workflows.add(c["workflow"])
             parts.append(evidence.safely(evidence.workflow_history, pr["repo"], c["url"], pr["base"]))
-    return {"merge_sha": pr["merge_sha"], "merged_at": pr["merged_at"],
+    return {"merge_sha": pr["merge_sha"], "merged_at": pr["merged_at"], "failing": failing(pr),
+            "investigated": sorted(c["name"] for c in failed if c["name"] not in logs_missing),
             "failed_checks": [f"{c['name']} — {BEFORE.get(c['before'], c['before'])}" for c in failed],
             "logs_missing": logs_missing, "material": evidence.material(*parts)}
 
@@ -340,9 +355,11 @@ def cleared(checks: list[dict], run) -> bool:
     be steered by the text it reads."""
     if not run or run["status"] != "done" or agents.verdict(run["output"])[0] != "unrelated":
         return False
-    if any(c.get("state") == "failure" and c.get("before") == "success" for c in checks):
+    open_failures = [c for c in checks if c.get("state") == "failure" and c.get("before") != "failure"]
+    if any(c.get("before") == "success" for c in open_failures):
         return False
-    return not json.loads(run["context"] or "{}").get("logs_missing")
+    read = set(json.loads(run["context"] or "{}").get("investigated") or [])  # an older run read nothing we know of
+    return all(c["name"] in read for c in open_failures)
 
 
 def _days_since(value: str | None) -> int:
