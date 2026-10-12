@@ -18,7 +18,7 @@ A review inbox that pushes every request is mostly noise: on a team, most review
 - **Reviews.** Inline panel: numbered diff, CI checks, existing threads with reply, GitHub-style **line comments** (click a line, shift-click a range) sent as one review with **Approve**, **Comment** or **Request changes**.
 - **Dependency bumps, one decision per bump.** Renovate and Dependabot PRs are grouped by `package@version` across repositories, sized from the update table (major / minor / patch), and **Approve the green ones** approves every PR of the bump with a passing CI in one click. With Claude enabled, each bump is read before you approve it: release notes, a deliberate version pin quietly removed, a failing plan that the bump explains.
 - **Your pull requests, by what they wait for.** Conflicts, changes requested, red CI (grouped by failing job: ten PRs red on the same CI job are one problem), approved and green, open threads, nobody asked to review, no movement for days. A PR that starts waiting on you pushes once.
-- **Follow-up after you approve.** Every PR you approved (bots by default) is followed until it has *landed*: merged, and every check that ran on the merge commit green — `terraform apply`, deploy, release. A dismissed approval, a PR stuck for days, a post-merge failure or a revert become items. A failing check that was already red on the commit before the merge is told apart (*merged into a red pipeline*), and with Claude enabled a fresh failure is investigated — *caused by this PR*, *unrelated*, or *unclear* — with the root cause from the logs and what to do.
+- **Follow-up after you approve.** Every PR you approved (bots by default) is followed until it has *landed*: merged, and every check that ran on the merge commit green — `terraform apply`, deploy, release. A dismissed approval, a PR stuck for days, a post-merge failure or a revert become items. A failing job that already failed in the previous run of its workflow is told apart (*not this PR's doing*), and with Claude enabled a fresh failure is investigated — *caused by this PR*, *unrelated*, or *unclear* — with the root cause from the logs and what to do; one Claude traced elsewhere stops asking for you.
 - **Status pages.** Any [Atlassian Statuspage](https://www.atlassian.com/software/statuspage) (Scaleway, OVHcloud, GitHub, Cloudflare…) with component and keyword filters. Planned maintenance is listed, never pushed; a noisy page can be set to `notify: quiet`.
 - **Health.** A source failing for half an hour (expired token, API change) becomes an item instead of a silent gap.
 - **Cycle objectives** (optional). Your big rocks from a [Slite](https://slite.com) note joined with their [Shortcut](https://shortcut.com) epics, and a push when one goes quiet for too long.
@@ -127,7 +127,11 @@ Claude Code runs on the **host** — that is where your skills, repositories and
 
 A follow-up investigation answers with a push; a failure Claude traced to something else stops asking for you. Automatic runs are capped per day (`agents.max_runs_per_day`) and run at most `agents.concurrency` at a time.
 
-**Read-only by construction.** Every run loads your *user* settings only (`--setting-sources user`): the allow rules of the project the bridge starts in would otherwise widen its lists — an allowed `tee` there wrote a file in a run meant to be read-only. No Edit/Write tools anywhere. The on-demand modes get inspection commands and `gh` minus the subcommands that write. The automatic modes read third-party text (release notes, CI logs) with nobody watching, so they get a fixed allowlist of read-only `gh` subcommands (`pr view/diff/checks`, `run view/list`, `release view`, `issue view`, `search code`) plus text filters — no `gh api`, no file tools, no WebFetch, no MCP servers.
+**What Claude can touch.**
+- The **automatic modes get no tool at all.** They read third-party text (release notes, CI logs) with nobody watching, so Sentinel fetches the material itself — the PR and its diff, the failed job logs, the recent runs of the failing workflow — and Claude only reads it, fenced as untrusted data. A text written to steer the model can bend a verdict; it cannot read a file or reach a host.
+- The **on-demand modes** keep inspection commands and `gh` minus the subcommands that write, and start only from your click. `gh api` with `-f` still sends a POST that no prefix rule can tell apart: review only PRs you would open yourself.
+- Every run loads your *user* settings only (`--setting-sources user`): the allow rules of the project the bridge starts in would otherwise add to the bridge's lists (an allowed `tee` there wrote a file in a run meant to be read-only). No MCP servers.
+- The bridge answers local hosts only (no DNS rebinding) and, with `BRIDGE_TOKEN` set on it and the same value as `CLAUDE_BRIDGE_TOKEN` in Sentinel's `.env`, only Sentinel — not a page your browser opens.
 
 ```bash
 # 1. the bridge, kept alive by launchd (edit the plist: python3, claude binary, workspace dir)
@@ -135,11 +139,14 @@ cp contrib/claude-bridge/com.example.sentinel-claude-bridge.plist ~/Library/Laun
 launchctl load ~/Library/LaunchAgents/com.example.sentinel-claude-bridge.plist
 curl http://127.0.0.1:8301/healthz
 
-# 2. the app
-echo CLAUDE_BRIDGE_URL=http://host.docker.internal:8301 >> .env && docker compose up -d
+# 2. the app, with the token the plist sets as BRIDGE_TOKEN (python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+echo CLAUDE_BRIDGE_URL=http://host.docker.internal:8301 >> .env
+echo CLAUDE_BRIDGE_TOKEN=<the same token> >> .env && docker compose up -d
 ```
 
-Bridge environment: `BRIDGE_LANG` (answer language, default English), `BRIDGE_PROMPT` / `BRIDGE_PROMPT_<MODE>` (replace a mode's prompt — placeholders `{url}`, `{urls}`, `{context}`, `{lang}`; point them at your own skills, e.g. `/my-review {url}`), `BRIDGE_MODEL` / `BRIDGE_MODEL_<MODE>`, `BRIDGE_CWD` (where Claude starts: its `CLAUDE.md` and skills apply). After editing the plist, `launchctl bootout` then `bootstrap` it — `kickstart -k` keeps the old environment.
+The bridge is a separate process: after pulling a new version, restart it too (`launchctl bootout` then `bootstrap` the plist) — Settings and a health item tell you when Sentinel talks to an older bridge.
+
+Bridge environment: `BRIDGE_TOKEN`, `BRIDGE_LANG` (answer language, default English), `BRIDGE_PROMPT` / `BRIDGE_PROMPT_<MODE>` (replace a mode's prompt — placeholders `{url}`, `{urls}`, `{context}`, `{lang}`; point them at your own skills, e.g. `/my-review {url}`), `BRIDGE_MODEL` / `BRIDGE_MODEL_<MODE>`, `BRIDGE_CWD` (where Claude starts: its `CLAUDE.md` and skills apply). After editing the plist, `launchctl bootout` then `bootstrap` it — `kickstart -k` keeps the old environment.
 
 ## Claude Code status line (optional)
 
@@ -164,7 +171,7 @@ launchctl load ~/Library/LaunchAgents/com.example.sentinel-notifier.plist
 
 ```bash
 docker build -t sentinel-dev ./app
-docker run --rm -v "$PWD/app:/app" -v "$PWD/tests:/tests" -w /app sentinel-dev python -m unittest discover -s /tests
+docker run --rm -v "$PWD/app:/app" -v "$PWD/tests:/tests" -v "$PWD/contrib:/contrib" -w /app sentinel-dev python -m unittest discover -s /tests
 ```
 
 ## Architecture

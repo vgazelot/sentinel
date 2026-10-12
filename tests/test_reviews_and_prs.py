@@ -78,7 +78,7 @@ class MyPrsTest(SentinelTest):
         self.assertEqual(next_action(mine(), 3), "waiting")
 
     def test_ci_family(self):
-        from my_prs import family
+        from checks import family
 
         self.assertEqual(family("Molecule Test (EC2) - rsyslog / default"), "Molecule Test (EC2)")
         self.assertEqual(family("plan / Check folders"), "plan")

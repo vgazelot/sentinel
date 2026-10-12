@@ -1,7 +1,7 @@
 """Test scaffolding: a throwaway database and config per test, pushes captured instead of sent.
 
 Run inside the image, app mounted (see README → Tests):
-    docker run --rm -v "$PWD/app:/app" -v "$PWD/tests:/tests" -w /app sentinel-dev python -m unittest discover -s /tests
+    docker run --rm -v "$PWD/app:/app" -v "$PWD/tests:/tests" -v "$PWD/contrib:/contrib" -w /app sentinel-dev python -m unittest discover -s /tests
 """
 import os
 import sys
