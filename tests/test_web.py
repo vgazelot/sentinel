@@ -104,3 +104,10 @@ class WebTest(SentinelTest):
         self.assertIn("reviewSubmitted", resp.headers.get("HX-Trigger", ""))
         row = db.items("external_id = '1'")[0]
         self.assertEqual((row["state"], row["acked_fingerprint"]), ("acked", "after"))
+
+    def test_pages_survive_a_cache_written_by_an_older_version(self):
+        import db
+
+        db.set_watcher_state("my_prs", "data", json.dumps([{"repo": "acme/x", "number": 1, "title": "old format"}]))
+        for path in ("/", "/my-prs", "/follow-up", "/settings"):
+            self.assertEqual(self.client.get(path).status_code, 200, path)

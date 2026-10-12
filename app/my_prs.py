@@ -198,7 +198,9 @@ def _days_since(value: str | None) -> int:
 def load() -> dict:
     state = db.watcher_states().get(NAME, {})
     return {
-        "prs": json.loads(state.get("data") or "[]"),
+        # a cache written by an older version (no `action`) waits for the next refresh instead of
+        # breaking every page in the seconds after an upgrade
+        "prs": [p for p in json.loads(state.get("data") or "[]") if "action" in p],
         "last_run": state.get("last_run"),
         "last_error": state.get("last_error"),
     }
