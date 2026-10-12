@@ -22,7 +22,7 @@ def _get(path: str):
 
 @lru_cache(maxsize=1)
 def _states() -> dict:
-    """{workflow_state_id: type} across every workflow — Infra and Mention do not share one."""
+    """{workflow_state_id: type} across every workflow — teams do not always share one."""
     return {s["id"]: s["type"] for w in _get("/workflows") for s in w["states"]}
 
 

@@ -184,13 +184,15 @@ def submit_review(repo: str, number: int, event: str, body: str = "", comments: 
     payload: dict = {"event": event}
     if body:
         payload["body"] = body
+    if commit_id:
+        # the review lands on the commit that was looked at (and whose CI was green), not on
+        # whatever a bot pushed in between
+        payload["commit_id"] = commit_id
     if comments:
         payload["comments"] = [
             {k: c[k] for k in ("path", "line", "side", "start_line", "start_side", "body") if c.get(k) is not None}
             for c in comments
         ]
-        if commit_id:
-            payload["commit_id"] = commit_id
     _post(f"/repos/{repo}/pulls/{number}/reviews", payload)
 
 

@@ -24,11 +24,21 @@ class TitleTest(unittest.TestCase):
             "chore(terraform): Update github to ~> 6.13": ("github", "~> 6.13"),
             "ci(github-actions): Update jdx/mise-action action to v3": ("jdx/mise-action", "v3"),
             "terraform(deps): Update scaleway to v2.86.0": ("scaleway", "v2.86.0"),
-            "Update dependency eslint to v9 (major)": ("eslint", "v9 (major)"),
+            "Update dependency eslint to v9 (major)": ("eslint", "v9"),
+            "Update dependency eslint to v9 [SECURITY]": ("eslint", "v9"),
         }
         for title, (name, to) in cases.items():
             dep = deps.parse_title(title)
             self.assertEqual((dep["name"], dep["to"]), (name, to), title)
+
+    def test_what_is_bumped_is_part_of_the_bump(self):
+        image = deps.parse_title("chore(deps): Update alloy Docker tag to v1.2")
+        chart = deps.parse_title("chore(deps): Update Helm release alloy to v1.2")
+        self.assertEqual((image["kind"], chart["kind"]), ("image", "Helm chart"))
+        self.assertNotEqual(deps.group_key(image), deps.group_key(chart))
+        self.assertTrue(deps.parse_title("Update dependency eslint to v9 [SECURITY]")["security"])
+        self.assertEqual(deps.group_key(deps.parse_title("Update dependency eslint to v9 [SECURITY]")),
+                         deps.group_key(deps.parse_title("Update dependency eslint to v9")))
 
     def test_dependabot_titles(self):
         dep = deps.parse_title("build(deps): bump actions/checkout from 3 to 4 in /tools")
@@ -67,3 +77,10 @@ class GroupTest(unittest.TestCase):
                              pr("a/z", "karpenter", "v2", "major")])
         self.assertEqual([g["key"] for g in groups], ["karpenter@v2", "go@v1.2"])
         self.assertEqual(len(groups[1]["prs"]), 2)
+
+    def test_approvable_is_green_not_draft_not_conflicting(self):
+        base = {"repo": "a/x", "number": 1, "title": "t", "dep": {"name": "go", "to": "v1", "type": "patch"},
+                "ci": "success", "mergeable": "MERGEABLE"}
+        prs = [base, dict(base, number=2, mergeable="CONFLICTING"), dict(base, number=3, ci="pending"),
+               dict(base, number=4, draft=True)]
+        self.assertEqual([p["number"] for p in deps.group(prs)[0]["approvable"]], [1])

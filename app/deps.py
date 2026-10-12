@@ -8,17 +8,22 @@ import re
 
 import agents
 import db
+import evidence
 
 _PREFIX = r"^(?:[\w-]+(?:\([^)]*\))?!?:\s*)?"
 TITLE_PATTERNS = [
     # Renovate: "Update dependency go to v1.27.2", "Update karpenter-crd Docker tag to v1.15.0",
     # "Update Helm release alloy to v1.2", "Update Terraform hashicorp/terraform to v1.16.4", "Update github to ~> 6.13"
-    re.compile(_PREFIX + r"update (?:dependency |module |helm release |terraform )?(?P<name>.+?)"
-               r"(?: docker tag| action| digest| orb)? to (?P<to>\S.*?)\s*$", re.I),
+    re.compile(_PREFIX + r"update (?P<kind>dependency |module |helm release |terraform )?(?P<name>.+?)"
+               r"(?P<suffix> docker tag| action| digest| orb)? to (?P<to>\S.*?)\s*$", re.I),
     # Dependabot: "Bump lodash from 4.17.15 to 4.17.21", "build(deps): bump actions/checkout from 3 to 4 in /x"
     re.compile(_PREFIX + r"bump (?P<name>\S+) from (?P<from>\S+) to (?P<to>\S+)(?: in \S+)?\s*$", re.I),
 ]
 DEP_LABELS = {"renovate", "dependencies", "dependabot"}
+# what is bumped matters for grouping: the alloy image and the alloy chart are two decisions
+KINDS = {"helm release": "Helm chart", "docker tag": "image", "action": "action", "digest": "digest", "orb": "orb",
+         "module": "module", "terraform": "Terraform"}
+_NOTE = re.compile(r"\s*(\[security\]|\((?:major|minor|patch)\))\s*$", re.I)
 # biggest first: a PR bumping several packages is as risky as its biggest bump
 TYPE_RANK = ["major", "minor", "patch", "digest", "pin", "pindigest", "lockfilemaintenance"]
 _TICKS = re.compile(r"`([^`]*)`")
@@ -29,9 +34,14 @@ def parse_title(title: str) -> dict | None:
     for pattern in TITLE_PATTERNS:
         m = pattern.match(title.strip())
         if m:
-            name = m.group("name").strip()
-            return {"name": name, "to": m.group("to").strip(),
-                    "from": (m.groupdict().get("from") or "").strip()}
+            groups = m.groupdict()
+            kind = KINDS.get(((groups.get("kind") or "") + (groups.get("suffix") or "")).strip().lower(), "")
+            to, security = m.group("to").strip(), False
+            while _NOTE.search(to):  # "v9 [SECURITY]", "v9 (major)": the same version as "v9"
+                security = security or "security" in _NOTE.search(to).group(1).lower()
+                to = _NOTE.sub("", to)
+            return {"name": m.group("name").strip(), "kind": kind, "to": to,
+                    "from": (groups.get("from") or "").strip(), "security": security}
     return None
 
 
@@ -91,7 +101,13 @@ def _numbers(v: str) -> list[int]:
 
 
 def group_key(dep: dict) -> str:
-    return f"{dep['name'].lower()}@{dep['to']}"
+    kind = f" ({dep['kind']})" if dep.get("kind") else ""
+    return f"{dep['name'].lower()}{kind.lower()}@{dep['to']}"
+
+
+def approvable(pr: dict) -> bool:
+    """What "Approve the green ones" approves — the page and the endpoint ask this one function."""
+    return pr.get("ci") == "success" and not pr.get("draft") and pr.get("mergeable") != "CONFLICTING"
 
 
 def group(prs: list[dict]) -> list[dict]:
@@ -100,11 +116,15 @@ def group(prs: list[dict]) -> list[dict]:
     for pr in prs:
         dep = pr.get("dep") or {}
         key = group_key(dep) if dep.get("name") else f"pr:{pr['repo']}#{pr['number']}"
-        g = groups.setdefault(key, {"key": key, "name": dep.get("name") or pr["title"], "to": dep.get("to", ""),
-                                    "type": dep.get("type", ""), "prs": []})
+        g = groups.setdefault(key, {"key": key, "name": dep.get("name") or pr["title"], "kind": dep.get("kind", ""),
+                                    "to": dep.get("to", ""), "type": dep.get("type", ""), "security": False,
+                                    "prs": [], "approvable": []})
         if dep.get("type") and (not g["type"] or _rank(dep["type"]) < _rank(g["type"])):
             g["type"] = dep["type"]
+        g["security"] = g["security"] or bool(dep.get("security"))
         g["prs"].append(pr)
+        if approvable(pr):
+            g["approvable"].append(pr)
     return sorted(groups.values(), key=lambda g: (_rank(g["type"]), -len(g["prs"]), g["name"].lower()))
 
 
@@ -127,10 +147,18 @@ def precheck():
         subject = f"deps:{g['key']}"
         if agents.settled(db.get_run(subject, "precheck")):
             continue  # once per bump; the button re-runs it
-        agents.request(subject, "precheck", g["prs"][0]["url"], context(g), auto=True)
+        agents.request(subject, "precheck", g["prs"][0]["url"], lambda g=g: context(g), auto=True)
 
 
 def context(g: dict) -> dict:
-    """What the bridge's precheck prompt gets besides the URLs."""
+    """The precheck's material, fetched here (see evidence.py): Claude gets no tool in this mode."""
+    parts = []
+    for pr in g["prs"][:4]:
+        parts.append(evidence.safely(evidence.pr_brief, pr["repo"], pr["number"], body_chars=5000, diff_lines=150))
+        for name, url in evidence.safely_list(evidence.failing_checks, pr["repo"], pr.get("head_sha", ""))[:2]:
+            parts.append(f"Failing check on {pr['repo']}#{pr['number']}: {name} {url}\n"
+                         + evidence.safely(evidence.job_log, pr["repo"], url, tail=60))
+    kind = f" ({g['kind']})" if g.get("kind") else ""
     return {"urls": [p["url"] for p in g["prs"][:6]],
-            "bump": f"{g['name']} → {g['to'] or '?'} ({g['type'] or 'size unknown'})"}
+            "bump": f"{g['name']}{kind} → {g['to'] or '?'} ({g['type'] or 'size unknown'})",
+            "material": evidence.material(*parts)}
