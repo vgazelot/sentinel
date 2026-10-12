@@ -314,6 +314,41 @@ tr.is-draft .cell-title a { font-weight: 400; color: var(--ink-2); }
 .panel p { margin: 0 0 8px; }
 #push-status { margin-top: 10px; }
 
+/* --- Cycle (big rocks) ---------------------------------------------------------------- */
+.meter { position: relative; display: inline-block; flex: 1 1 120px; min-width: 80px; height: 6px; background: var(--paper-2); border: 1px solid var(--rule); }
+.meter-fill { position: absolute; inset: 0 auto 0 0; background: var(--ink); }
+
+.cycle-bar { display: flex; align-items: center; gap: 12px; margin: 14px 0 22px; }
+.cycle-label { font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+
+.cycle-table td { border-bottom: none; }
+.cycle-table .rock-row td { padding-top: 14px; }
+.cycle-table .rock-sub td { padding-top: 2px; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
+.cycle-table .rock-row.is-stalled td, .cycle-table .rock-row.is-behind td { border-top: 2px solid var(--signal); }
+.cycle-table .rock-row.is-run td { border-top: 1px dashed var(--ink); }
+.rock-name { font-family: var(--display); font-weight: 600; font-size: 17px; letter-spacing: 0.02em; margin-right: 8px; }
+.rock-link { font-size: 12.5px; color: var(--ink-2); margin-left: 8px; text-underline-offset: 3px; }
+.cycle-table .num .is-bad { color: var(--signal); }
+.cycle-table .num .is-good { color: var(--ok); }
+
+.outputs-line { font-size: 13.5px; margin-bottom: 6px; }
+.outputs-line strong { font-family: var(--display); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 12.5px; }
+.todo-list { color: var(--ink-2); margin-left: 8px; }
+
+.stories { margin-top: 2px; }
+.stories summary { font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
+.stories ul { list-style: none; margin: 6px 0 8px; padding: 0; }
+.stories li { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 13.5px; }
+.stories li a { flex: 1; text-decoration: none; }
+.stories li a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.stories li.is-other { color: var(--ink-2); }
+
+/* --- Approved tab ---------------------------------------------------------------------- */
+.ledger-table td.num.is-bad { color: var(--signal); }
+.closed-prs { margin-top: 26px; border-top: 1px solid var(--rule); padding-top: 10px; }
+.closed-prs > summary { cursor: pointer; font-family: var(--display); font-weight: 600; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+.closed-prs .ledger-table { margin-top: 10px; }
+
 /* --- Narrow screens ------------------------------------------------------------------- */
 @media (max-width: 720px) {
     .masthead-row { gap: 16px; }

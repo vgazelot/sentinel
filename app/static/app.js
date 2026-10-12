@@ -1,20 +1,32 @@
-// (n) badge in the tab title, refreshed on every HTMX swap
-function updateTitleBadge() {
-    const el = document.getElementById('pending-count');
-    if (!el) return;
-    const n = parseInt(el.textContent, 10) || 0;
-    document.title = (n > 0 ? `(${n}) ` : '') + 'Sentinel';
+// (n) in the tab title and the nav badges, refreshed on every HTMX swap: the masthead is rendered
+// once at page load while the lists are re-fetched every 15s, so the counts must follow the swaps.
+function syncBadge(badgeId, sourceId) {
+    const badge = document.getElementById(badgeId);
+    const source = document.getElementById(sourceId);
+    if (!badge || !source) return null;
+    const n = parseInt(source.textContent, 10) || 0;
+    badge.textContent = n;
+    badge.hidden = n === 0;
+    return n;
 }
-document.addEventListener('htmx:afterSwap', updateTitleBadge);
-document.addEventListener('DOMContentLoaded', updateTitleBadge);
+function updateBadges() {
+    const pending = syncBadge('nav-pending', 'pending-count');
+    syncBadge('nav-my-prs', 'my-prs-count');
+    syncBadge('nav-approved', 'approved-count');
+    syncBadge('nav-cycle', 'cycle-count');
+    if (pending === null) return;
+    document.title = (pending > 0 ? `(${pending}) ` : '') + 'Sentinel';
+}
+document.addEventListener('htmx:afterSwap', updateBadges);
+document.addEventListener('DOMContentLoaded', updateBadges);
 
 // --- Polling without jumps -------------------------------------------------------
-// The lists (#items, #my-prs, #watchers) are re-fetched every 15-60s. Two things made the page
+// The lists (#items, #my-prs, #approved, #watchers) are re-fetched every 15-60s. Two things made the page
 // jump: htmx moves hx-preserve'd panels out and back in (which resets their inner scroll boxes),
 // and a focused textarea inside the panel gets re-focused with a scroll-into-view.
 // 1) skip the swap entirely when the server sent exactly the same HTML as last time;
 // 2) otherwise save window scroll, focus/caret and inner scroll positions, and restore them after settle.
-const POLLED = new Set(['items', 'my-prs', 'watchers']);
+const POLLED = new Set(['items', 'my-prs', 'approved', 'watchers', 'cycle']);
 const lastHtml = {};
 let scrollState = null;
 

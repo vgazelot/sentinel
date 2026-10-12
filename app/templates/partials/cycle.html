@@ -1,0 +1,115 @@
+{% macro stories(e) -%}
+{% if e.stories %}
+<details class="stories">
+    <summary>{{ e.name }} — {{ e.done }}/{{ e.total }}, {{ e.stories | length }} open</summary>
+    <ul>
+        {% for s in e.stories[:12] %}
+        <li class="{% if not s.mine %}is-other{% endif %}">
+            <span class="mark {{ 'pend' if s.state_type == 'started' else 'none' }}">{{ s.state }}</span>
+            <a href="{{ s.url }}" target="_blank">{{ s.name }}</a>
+            <span class="ref">sc-{{ s.id }}</span>
+            <span class="row-meta" title="{{ s.updated_at | localdt }}">{{ s.updated_at | age }}</span>
+        </li>
+        {% endfor %}
+        {% if e.stories | length > 12 %}
+        <li class="is-other"><a href="{{ e.url }}" target="_blank">{{ e.stories | length - 12 }} more in Shortcut</a></li>
+        {% endif %}
+    </ul>
+</details>
+{% else %}
+<p class="row-meta"><a href="{{ e.url }}" target="_blank">{{ e.name }}</a> — {{ e.done }}/{{ e.total }}, all closed</p>
+{% endif %}
+{%- endmacro %}
+
+<span id="cycle-count" hidden>{{ big_rocks | rejectattr('status', 'equalto', 'on track') | rejectattr('status', 'equalto', 'unlinked') | list | length }}</span>
+
+{% if last_error %}<div class="notice notice-error">Cycle — {{ last_error }}</div>{% endif %}
+
+<div class="ledger-head">
+    <h2 class="ledger-title">
+        {% if note %}<a href="{{ note.url }}" target="_blank">{{ note.title }}</a>{% else %}Cycle{% endif %}
+    </h2>
+    <div class="ledger-tools">
+        <span class="row-meta">
+            {% if label %}{{ label }} · {% endif %}
+            {% if note %}note edited {{ note.last_edited | localdt }} · {% endif %}
+            {% if last_run %}fetched {{ last_run | localdt }}{% else %}not fetched yet{% endif %}
+        </span>
+        <button class="btn btn-quiet" hx-post="/api/cycle/refresh" hx-target="#cycle" hx-swap="innerHTML" hx-disabled-elt="this">Refresh</button>
+    </div>
+</div>
+
+{% if calendar %}
+<div class="cycle-bar">
+    <span class="cycle-label">Day {{ calendar.days_elapsed }} of {{ calendar.days_total }}</span>
+    <span class="meter"><span class="meter-fill" style="width: {{ calendar.pct }}%"></span></span>
+    <span class="row-meta">{{ calendar.days_left }} day{{ 's' if calendar.days_left != 1 }} left · ends {{ calendar.end }}</span>
+</div>
+{% endif %}
+
+<table class="ledger-table cycle-table">
+    <thead>
+    <tr>
+        <th>Status</th>
+        <th>Big rock</th>
+        <th class="num">Outputs</th>
+        <th class="num">Stories</th>
+        <th class="num">Last move</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for r in big_rocks %}
+    <tr class="rock-row is-{{ r.status | replace(' ', '-') }}">
+        <td class="cell-state">
+            <span class="mark {{ {'stalled': 'fail', 'behind': 'fail', 'on track': 'ok'}.get(r.status, 'none') }}">{{ r.status }}</span>
+        </td>
+        <td class="cell-title">
+            <span class="rock-name">{{ r.title }}</span>
+            {% if 'must_have' in r.tags %}<span class="mark fail">must-have</span>{% endif %}
+            {% for l in r.links %}<a class="rock-link" href="{{ l.url }}" target="_blank">{{ l.label }}</a>{% endfor %}
+        </td>
+        <td class="num">{% if r.outputs_total %}<span class="{{ 'is-bad' if r.outputs_done < r.outputs_total }}">{{ r.outputs_done }}/{{ r.outputs_total }}</span>{% else %}—{% endif %}</td>
+        <td class="num">{% if r.linked %}{{ r.pct }}%{% else %}—{% endif %}</td>
+        <td class="num" title="{{ r.last_activity | localdt }}">{% if r.linked %}{{ r.last_activity | age }}{% endif %}</td>
+    </tr>
+    <tr class="rock-sub is-{{ r.status | replace(' ', '-') }}">
+        <td></td>
+        <td colspan="4">
+            {% if r.outputs_total %}
+            <div class="outputs-line">
+                {% if r.todo %}<strong>Left</strong> <span class="todo-list">{{ r.todo | join(' · ') }}</span>
+                {% else %}<strong>All outputs delivered</strong>{% endif %}
+            </div>
+            {% else %}
+            <div class="outputs-line row-meta">No output declared in the note.</div>
+            {% endif %}
+            {% if r.linked %}
+                {% for e in r.epics %}{{ stories(e) }}{% endfor %}
+            {% else %}
+            <p class="row-meta">No epic mapped in config.yaml — add it under <code>cycle.epics</code>.</p>
+            {% endif %}
+        </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="empty">No big rock for this owner in the note.</td></tr>
+    {% endfor %}
+
+    {% if run %}
+    <tr class="rock-row is-run">
+        <td class="cell-state"><span class="mark none">run</span></td>
+        <td class="cell-title"><span class="rock-name">{{ run.label }}</span>
+            <span class="row-meta">where the cycle actually goes</span></td>
+        <td class="num">—</td>
+        <td class="num">{{ run.pct }}%</td>
+        <td class="num" title="{{ run.last_activity | localdt }}">{{ run.last_activity | age }}</td>
+    </tr>
+    <tr class="rock-sub is-run">
+        <td></td>
+        <td colspan="4">
+            <div class="outputs-line row-meta">{{ run.stories_done }}/{{ run.stories_total }} stories · {{ run.mine_open }} open to you</div>
+            {% for e in run.epics %}{{ stories(e) }}{% endfor %}
+        </td>
+    </tr>
+    {% endif %}
+    </tbody>
+</table>

@@ -32,3 +32,38 @@ watchers:
         components: []
         keywords: [france, europe, gra, rbx, sbg]
         include_maintenances: false
+
+# Optional: Approved tab — bot PRs you approved that are still not merged (automerge does not
+# always fire: major bump, red CI, conflicts, an approval dismissed by a new commit).
+# login/orgs fall back to watchers.github_reviews, remove the block to hide the tab.
+approved_prs:
+  enabled: true
+  interval_seconds: 900
+  authors: [renovate]              # bot login, searched as author:app/<login> (dependabot → dependabot)
+  stale_days: 3                   # approved longer ago than this and still open → one push
+  window_days: 7                  # how far back the "recently closed" list reaches
+
+# Optional: Cycle tab — objectives from a Slite note, progress from Shortcut epics.
+# Needs SLITE_API_KEY and SHORTCUT_API_TOKEN in .env, remove the block to hide the tab.
+# It follows the cycle on its own: newest note under parent_id, dates read off its title,
+# highest `<prefix>-<year>-C<n>` label, and the epics carrying it whose name contains the
+# big rock title. Only the exceptions below need touching.
+cycle:
+  enabled: false
+  interval_seconds: 1800
+  owner: Your Name                # matches the `_Owner_ @Your Name` line of a note section
+  shortcut_member: yourmention    # Shortcut mention name, flags your own stories
+  stall_days: 7                   # no Shortcut activity for that long → Web Push alert
+  behind_points: 10               # outputs delivered this far under the elapsed cycle → BEHIND
+  slite:
+    parent_id: xxxxxxxxxxxx       # collection holding one note per cycle
+    # note_id: yyyyyyyyyyyy       # pin one note instead of taking the newest
+  # label_prefix: Infra           # cycle labels look like Team-2026-C5
+  # label: Team-2026-C5          # pin one label instead of taking the highest
+  # start: 2026-09-01             # fallback when the note title carries no months
+  # end: 2026-10-31
+  epics:                          # override: big rock title → epic ids, for the odd one out
+    "Some big rock": [12345]
+  run:
+    label: RUN
+    match: RUN my-service         # the cycle epic whose name contains this

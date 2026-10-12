@@ -16,8 +16,10 @@
     <div class="wrap masthead-row">
         <a class="wordmark" href="/">Sentinel</a>
         <nav class="tabs">
-            <a class="tab {% if active == 'inbox' %}active{% endif %}" href="/">Inbox{% if nav_pending %}<span class="tab-count">{{ nav_pending }}</span>{% endif %}</a>
-            <a class="tab {% if active == 'my_prs' %}active{% endif %}" href="/my-prs">My PRs{% if nav_my_prs %}<span class="tab-count">{{ nav_my_prs }}</span>{% endif %}</a>
+            <a class="tab {% if active == 'inbox' %}active{% endif %}" href="/">Inbox<span class="tab-count" id="nav-pending" {% if not nav_pending %}hidden{% endif %}>{{ nav_pending }}</span></a>
+            <a class="tab {% if active == 'my_prs' %}active{% endif %}" href="/my-prs">My PRs<span class="tab-count" id="nav-my-prs" {% if not nav_my_prs %}hidden{% endif %}>{{ nav_my_prs }}</span></a>
+            {% if approved_enabled %}<a class="tab {% if active == 'approved' %}active{% endif %}" href="/approved">Approved<span class="tab-count" id="nav-approved" {% if not nav_approved %}hidden{% endif %}>{{ nav_approved }}</span></a>{% endif %}
+            {% if cycle_enabled %}<a class="tab {% if active == 'cycle' %}active{% endif %}" href="/cycle">Cycle<span class="tab-count" id="nav-cycle" {% if not nav_cycle %}hidden{% endif %}>{{ nav_cycle }}</span></a>{% endif %}
             <a class="tab {% if active == 'settings' %}active{% endif %}" href="/settings">Settings</a>
         </nav>
     </div>

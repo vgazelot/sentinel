@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Sentinel — Approved{% endblock %}
+{% block content %}
+<div id="approved" hx-get="/partials/approved?sort={{ sort }}&dir={{ 'desc' if desc else 'asc' }}" hx-trigger="every 60s" hx-swap="innerHTML">
+    {% include "partials/approved.html" %}
+</div>
+{% endblock %}

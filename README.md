@@ -15,6 +15,8 @@
 - 🔔 **Web Push notifications** — native OS notifications through your browser (Chrome/Firefox), no third-party service.
 - ✅ **Ack / snooze workflow** — every item nags you exactly once, then stays silent until something actually changes.
 - 📋 **Your open PRs** — one sortable ledger of every PR you authored across your orgs: CI, review decision, conflicts, age — so nothing rots forgotten.
+- 🤖 **Approved, not merged** (optional) — the bot PRs (Renovate, Dependabot) you approved that are *still* open: why each one is stuck (conflicts, red CI, an approval dismissed by a new commit), how long it has been waiting, and what merged over the last week. Approving is not merging — automerge rules do not always fire.
+- 🎯 **Cycle objectives** (optional) — your big rocks read from a [Slite](https://slite.com) note, joined with the [Shortcut](https://shortcut.com) epics that carry them: progress against the share of the cycle already elapsed, and a push notification when a big rock goes quiet for too long.
 
 Everything runs locally in a single Docker container with a SQLite file — no accounts, no cloud, no telemetry. The UI is a plain logbook: paper, ink, one signal colour, no build step.
 
@@ -85,6 +87,61 @@ Environment variables (`.env`):
 | `VAPID_CLAIM_EMAIL` | Contact email embedded in push claims (any address you own) |
 | `TZ` | Timezone for local time display and "snooze until tomorrow 9am" (default `UTC`) |
 | `CLAUDE_BRIDGE_URL` | Optional — URL of the host-side [Claude bridge](#ask-claude-optional) (`http://host.docker.internal:8301`). Empty = button hidden |
+
+## Cycle tab (optional)
+
+Hidden unless `SLITE_API_KEY` and `SHORTCUT_API_TOKEN` are in `.env` *and* `config.yaml` carries a
+`cycle:` block. Objectives come from the Slite note, live progress from Shortcut. It rolls over to the
+next cycle by itself: newest note under `parent_id`, dates read off its title, highest
+`<prefix>-<year>-C<n>` label, and the epics carrying that label whose name contains the big rock title.
+Everything commented out below is an override for when a convention is not respected.
+
+```yaml
+cycle:
+  enabled: true
+  interval_seconds: 1800
+  owner: Your Name                # matches the `_Owner_ @Your Name` line of a note section
+  shortcut_member: yourmention    # Shortcut mention name, flags your own stories
+  stall_days: 7                   # no activity for that long on a big rock → one Web Push
+  behind_points: 10               # outputs delivered this far under the elapsed cycle → BEHIND
+  slite:
+    parent_id: xxxxxxxxxxxx       # collection holding one note per cycle; the newest is picked
+    # note_id: yyyyyyyyyyyy       # ... unless you pin one here
+  # label: Team-2026-C5          # ... unless you pin one here
+  # start: 2026-09-01             # ... unless the note title carries no months
+  # end: 2026-10-31
+  epics:                          # override for a big rock whose epics are named differently
+    "Some big rock": [12345]
+  run:                            # the day-to-day epic, shown apart from the objectives
+    label: RUN
+    match: RUN my-service
+```
+
+Each row gets a verdict — `STALLED` (nothing moved for `stall_days`), `BEHIND` (outputs delivered lag the
+share of the cycle elapsed), `ON TRACK` — and rows are sorted worst first. The verdict is measured on the
+note's outputs, not on story progress: epics carry stories closed in earlier cycles, so a percentage can
+look healthy while nothing was delivered this cycle. Story % stays as a context column.
+
+## Approved tab (optional)
+
+Hidden unless `config.yaml` carries an `approved_prs:` block. One GraphQL search per refresh:
+the PRs opened by the listed bot accounts that carry a review of yours, open ones on top
+(sorted by blocker, worst first) and the recently closed ones folded underneath.
+
+```yaml
+approved_prs:
+  enabled: true
+  interval_seconds: 900
+  authors: [renovate]  # bot login, searched as author:app/<login>
+  stale_days: 3                   # approved longer ago than this and still open → one push
+  window_days: 7                  # how far back the "recently closed" list reaches
+```
+
+`login` and `orgs` fall back to `watchers.github_reviews`, so they live in one place. A review of
+yours in state `DISMISSED` keeps the PR in the list and flags it: a new commit wiped your approval,
+the PR is back to "review required" and will never merge on its own. The push fires once per PR past
+`stale_days` and re-arms every `stale_days` after that — a Renovate PR rebases constantly, so
+notifying on movement would be pure noise.
 
 ## Fallback notifier (macOS, optional)
 

@@ -11,7 +11,9 @@ from flask import Flask, jsonify, make_response, render_template, request, send_
 import config
 import db
 import engine
+import approved_prs
 import claude_review
+import cycle
 import github_pr
 import my_prs
 import notify
@@ -25,6 +27,8 @@ db.init()
 db.fail_stale_reviews()
 
 WATCHERS = build_watchers(config.load())
+CYCLE_CFG = config.load().get("cycle", {})
+APPROVED_CFG = config.load().get(approved_prs.NAME, {})
 
 scheduler = BackgroundScheduler(timezone="UTC")
 for i, watcher in enumerate(WATCHERS.values()):
@@ -50,6 +54,18 @@ if GH_CFG.get("login"):
         my_prs.refresh, "interval", seconds=GH_CFG.get("interval_seconds", 180), id=my_prs.NAME,
         args=[GH_CFG["login"], GH_CFG.get("orgs", [])], coalesce=True, max_instances=1,
         misfire_grace_time=300, next_run_time=datetime.now(timezone.utc) + timedelta(seconds=8),
+    )
+if approved_prs.enabled(APPROVED_CFG):
+    scheduler.add_job(
+        approved_prs.refresh, "interval", seconds=APPROVED_CFG.get("interval_seconds", 900),
+        id=approved_prs.NAME, args=[APPROVED_CFG], coalesce=True, max_instances=1,
+        misfire_grace_time=300, next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
+    )
+if cycle.enabled(CYCLE_CFG):
+    scheduler.add_job(
+        cycle.refresh, "interval", seconds=CYCLE_CFG.get("interval_seconds", 1800), id=cycle.NAME,
+        args=[CYCLE_CFG], coalesce=True, max_instances=1, misfire_grace_time=600,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=12),
     )
 scheduler.start()
 log.info("scheduler started, watchers: %s", list(WATCHERS))
@@ -78,7 +94,12 @@ def age(value: str | None) -> str:
 
 @app.context_processor
 def inject_counts():
-    return {"nav_pending": db.pending_count(), "nav_my_prs": len(my_prs.load()["prs"])}
+    off_track = (sum(1 for r in cycle.load()["big_rocks"] if r["status"] in ("stalled", "behind"))
+                 if cycle.enabled(CYCLE_CFG) else 0)
+    return {"nav_pending": db.pending_count(), "nav_my_prs": len(my_prs.load()["prs"]),
+            "nav_cycle": off_track, "cycle_enabled": cycle.enabled(CYCLE_CFG),
+            "nav_approved": len(approved_prs.load()["open_prs"]) if approved_prs.enabled(APPROVED_CFG) else 0,
+            "approved_enabled": approved_prs.enabled(APPROVED_CFG)}
 
 
 @app.template_filter("elapsed")
@@ -137,6 +158,16 @@ def my_prs_page():
     return render_template("my_prs.html", active="my_prs", **_my_prs_context())
 
 
+@app.get("/approved")
+def approved_page():
+    return render_template("approved.html", active="approved", **_approved_context())
+
+
+@app.get("/cycle")
+def cycle_page():
+    return render_template("cycle.html", active="cycle", **cycle.load())
+
+
 @app.get("/settings")
 def settings_page():
     return render_template(
@@ -183,6 +214,38 @@ def api_my_prs_refresh():
     if GH_CFG.get("login"):
         my_prs.refresh(GH_CFG["login"], GH_CFG.get("orgs", []))
     return partial_my_prs()
+
+
+def _approved_context():
+    key = request.args.get("sort", "status")
+    desc = request.args.get("dir", "asc") == "desc"
+    data = approved_prs.load()
+    return {**data, "prs": approved_prs.sort(data["open_prs"], key, desc),
+            "summary": approved_prs.summary(data), "sort": key, "desc": desc}
+
+
+@app.get("/partials/approved")
+def partial_approved():
+    return render_template("partials/approved.html", **_approved_context())
+
+
+@app.post("/api/approved/refresh")
+def api_approved_refresh():
+    if approved_prs.enabled(APPROVED_CFG):
+        approved_prs.refresh(APPROVED_CFG)
+    return partial_approved()
+
+
+@app.get("/partials/cycle")
+def partial_cycle():
+    return render_template("partials/cycle.html", **cycle.load())
+
+
+@app.post("/api/cycle/refresh")
+def api_cycle_refresh():
+    if cycle.enabled(CYCLE_CFG):
+        cycle.refresh(CYCLE_CFG)
+    return partial_cycle()
 
 
 @app.get("/partials/watchers")

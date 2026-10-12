@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Sentinel — Cycle{% endblock %}
+{% block content %}
+<div id="cycle" hx-get="/partials/cycle" hx-trigger="every 300s" hx-swap="innerHTML">
+    {% include "partials/cycle.html" %}
+</div>
+{% endblock %}
