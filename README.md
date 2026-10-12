@@ -127,7 +127,7 @@ Claude Code runs on the **host** — that is where your skills, repositories and
 
 A follow-up investigation answers with a push; a failure Claude traced to something else stops asking for you. Automatic runs are capped per day (`agents.max_runs_per_day`) and run at most `agents.concurrency` at a time.
 
-**Read-only by construction.** No Edit/Write tools anywhere. The on-demand modes get inspection commands and `gh` minus the subcommands that write. The automatic modes read third-party text (release notes, CI logs) with nobody watching, so they get a fixed allowlist of read-only `gh` subcommands (`pr view/diff/checks`, `run view/list`, `release view`, `issue view`, `search code`) plus text filters — no `gh api`, no file tools, no WebFetch, no MCP servers.
+**Read-only by construction.** Every run loads your *user* settings only (`--setting-sources user`): the allow rules of the project the bridge starts in would otherwise widen its lists — an allowed `tee` there wrote a file in a run meant to be read-only. No Edit/Write tools anywhere. The on-demand modes get inspection commands and `gh` minus the subcommands that write. The automatic modes read third-party text (release notes, CI logs) with nobody watching, so they get a fixed allowlist of read-only `gh` subcommands (`pr view/diff/checks`, `run view/list`, `release view`, `issue view`, `search code`) plus text filters — no `gh api`, no file tools, no WebFetch, no MCP servers.
 
 ```bash
 # 1. the bridge, kept alive by launchd (edit the plist: python3, claude binary, workspace dir)

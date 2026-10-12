@@ -15,9 +15,11 @@ Modes — prompt, model and tools are owned here, the app only sends URLs and co
   precheck  automatic: a dependency bump read before approval (release notes, removed pins)
   followup  automatic: a PR approved then merged broke a post-merge check — cause and next step
 
-The automatic modes read third-party text (release notes, CI logs) with nobody watching, so
-they get the strictest toolset: a fixed list of read-only gh subcommands, no file tools, no
-network beyond gh. `POST /review {"url", "mode"}` is kept for older Sentinel versions.
+Every run loads the user settings only (`--setting-sources user`): the allow rules of
+BRIDGE_CWD's project would otherwise widen the lists below. The automatic modes read
+third-party text (release notes, CI logs) with nobody watching, so they get the strictest
+toolset: a fixed list of read-only gh subcommands, no file tools, no network beyond gh.
+`POST /review {"url", "mode"}` is kept for older Sentinel versions.
 """
 import json
 import os
@@ -134,6 +136,9 @@ def run(mode: str, url: str, urls: list[str], context: dict) -> dict:
     cmd = [
         CLAUDE, "-p", prompt,
         "--output-format", "text",
+        # user settings only: allow rules from the project and local settings of BRIDGE_CWD would
+        # otherwise add to the lists below (an allowed `tee` wrote a file in a run meant read-only)
+        "--setting-sources", "user",
         # no MCP servers: gh is enough, and each configured server costs startup time
         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
         "--tools", tools,
