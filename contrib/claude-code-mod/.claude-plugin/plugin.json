@@ -1,0 +1,9 @@
+{
+  "name": "sentinel",
+  "version": "0.2.0",
+  "description": "Sentinel in Claude Code: what waits on you in the status line, toasts for new items, the inbox in a /sentinel pane",
+  "author": {
+    "name": "vgazelot"
+  },
+  "types": "./types/index.d.ts"
+}
