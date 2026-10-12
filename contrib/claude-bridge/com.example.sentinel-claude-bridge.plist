@@ -13,11 +13,14 @@
     <key>EnvironmentVariables</key>
     <dict>
         <!-- launchd has a minimal PATH: add the dirs of claude, node and gh; BRIDGE_CWD = where your CLAUDE.md/skills load from.
-             Optional: BRIDGE_PROMPT / BRIDGE_PROMPT_QUICK ({url} placeholder) and BRIDGE_MODEL / BRIDGE_MODEL_QUICK per mode -->
+             Optional: BRIDGE_LANG, BRIDGE_PROMPT / BRIDGE_PROMPT_<MODE> and BRIDGE_MODEL / BRIDGE_MODEL_<MODE> per mode -->
         <key>CLAUDE_BIN</key>
         <string>/path/to/bin/claude</string>
         <key>BRIDGE_CWD</key>
         <string>/path/to/your/workspace</string>
+        <!-- shared with Sentinel (CLAUDE_BRIDGE_TOKEN in its .env): only Sentinel can make the bridge run Claude -->
+        <key>BRIDGE_TOKEN</key>
+        <string>replace-with-a-long-random-string</string>
         <key>PATH</key>
         <string>/path/to/node/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>

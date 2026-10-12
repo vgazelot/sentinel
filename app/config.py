@@ -14,6 +14,8 @@ TZ = os.environ.get("TZ", "UTC")
 BASE_URL = os.environ.get("SENTINEL_BASE_URL", "http://localhost:8300/")
 # host-side claude-bridge (contrib/claude-bridge); empty = no Claude features at all
 CLAUDE_BRIDGE_URL = os.environ.get("CLAUDE_BRIDGE_URL", "").rstrip("/")
+# shared with the bridge (BRIDGE_TOKEN there): only this app may make it run Claude
+CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 # Cycle tab: Big Rocks note on Slite + epic progress on Shortcut; either missing = tab hidden
 SLITE_API_KEY = os.environ.get("SLITE_API_KEY", "")
 SHORTCUT_API_TOKEN = os.environ.get("SHORTCUT_API_TOKEN", "")

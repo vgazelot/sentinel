@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import requests
@@ -53,8 +54,10 @@ MODES = {
 }
 ON_DEMAND = ("deep", "quick")
 AUTOMATIC = ("precheck", "followup")
-# the first line the bridge prompts ask for: `Verdict: <token>`
+# the first line the bridge prompts ask for — only that line counts: a verdict quoted further down
+# (a log, a release note) must not stand for Claude's own
 VERDICT = re.compile(r"verdict\s*:\s*\**\s*([\w-]+)", re.I)
+MAX_ATTEMPTS = 3
 TONE = {"safe": "ok", "clean": "ok", "unrelated": "ok", "check": "warn", "unclear": "warn",
         "tidy-up": "warn", "risky": "bad", "caused-by-this-pr": "bad"}
 
@@ -63,8 +66,10 @@ def enabled() -> bool:
     return bool(config.CLAUDE_BRIDGE_URL)
 
 
-def request(subject: str, mode: str, url: str, context: dict | None = None, auto: bool = False) -> bool:
-    """Queue a run unless one is already queued/running; automatic runs obey the config and the daily cap."""
+def request(subject: str, mode: str, url: str, context: dict | Callable[[], dict] | None = None,
+            auto: bool = False) -> bool:
+    """Queue a run unless one is already queued/running; automatic runs obey the config and the daily cap.
+    `context` may be a callable: its fetches only happen when the run is actually queued."""
     if not enabled():
         return False
     current = db.get_run(subject, mode)
@@ -79,16 +84,19 @@ def request(subject: str, mode: str, url: str, context: dict | None = None, auto
         if used >= int(cfg["max_runs_per_day"]):
             log.info("daily cap reached, %s for %s not queued", mode, subject)
             return False
-    db.queue_run(subject, mode, url, context or {})
+    payload = context() if callable(context) else (context or {})
+    db.queue_run(subject, mode, url, payload, retry=auto and bool(current) and current["status"] == "error")
     return True
 
 
 def settled(run, **context) -> bool:
-    """An automatic run already covers this: done, under way, or failed less than an hour ago
-    (a bridge that was down gets another try, a broken one does not eat the daily cap)."""
+    """An automatic run already covers this: done, under way, failed less than an hour ago, or failed
+    MAX_ATTEMPTS times (a bridge that was down gets two more tries, a broken one stops there)."""
     if not run or any(json.loads(run["context"] or "{}").get(k) != v for k, v in context.items()):
         return False
-    return run["status"] != "error" or (run["finished_at"] or "") > db.ago(60)
+    if run["status"] != "error":
+        return True
+    return run["attempts"] >= MAX_ATTEMPTS or (run["finished_at"] or "") > db.ago(60)
 
 
 def tick():
@@ -105,7 +113,7 @@ def tick():
 def _execute(run):
     try:
         context = json.loads(run["context"] or "{}")
-        r = requests.post(f"{config.CLAUDE_BRIDGE_URL}/run", timeout=TIMEOUT,
+        r = requests.post(f"{config.CLAUDE_BRIDGE_URL}/run", timeout=TIMEOUT, headers=_auth(),
                           json={"mode": run["mode"], "url": run["url"], "urls": context.pop("urls", []),
                                 "context": context})
         data = r.json() if r.content else {}
@@ -133,12 +141,30 @@ def _announce(run, output: str):
 
 
 def verdict(output: str | None) -> tuple[str, str]:
-    """(token, tone) from the `Verdict: x` line, tone in ok/warn/bad; ("", "") if absent."""
-    m = VERDICT.search(output or "")
+    """(token, tone) from the first line, `Verdict: x`, tone in ok/warn/bad; ("", "") otherwise."""
+    first = next((line.strip(" *#>`") for line in (output or "").splitlines() if line.strip()), "")
+    m = VERDICT.match(first)
     if not m:
         return "", ""
     token = m.group(1).lower()
     return token, TONE.get(token, "warn")
+
+
+def _auth() -> dict:
+    return {"Authorization": f"Bearer {config.CLAUDE_BRIDGE_TOKEN}"} if config.CLAUDE_BRIDGE_TOKEN else {}
+
+
+def check_bridge():
+    """Scheduler job: the bridge answers, with this version's modes — an old bridge left running after
+    an upgrade 404s every automatic run in silence. Failing long enough becomes a health item."""
+    try:
+        r = requests.get(f"{config.CLAUDE_BRIDGE_URL}/healthz", headers=_auth(), timeout=10)
+        r.raise_for_status()
+        missing = set(MODES) - set(r.json().get("modes", []))
+        error = f"the bridge is an older version (no {', '.join(sorted(missing))}): restart it" if missing else ""
+    except (requests.RequestException, ValueError) as e:
+        error = f"the Claude bridge does not answer: {e}"
+    db.record_run("claude-bridge", error)
 
 
 _EMPHASIS = re.compile(r"\*\*|__|`")
