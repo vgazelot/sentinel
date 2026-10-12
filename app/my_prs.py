@@ -8,12 +8,11 @@ import json
 import logging
 from datetime import datetime, timezone
 
-import requests
-
 import checks
 import config
 import db
 import engine
+import github
 from watchers import WatchedItem
 
 log = logging.getLogger("sentinel.my_prs")
@@ -68,11 +67,7 @@ SORT_KEYS = {
 
 def refresh(login: str, orgs: list[str]):
     try:
-        try:
-            prs = fetch(login, orgs)
-        except requests.ConnectionError:
-            # GitHub drops idle keep-alive connections now and then: one retry on a fresh connection
-            prs = fetch(login, orgs)
+        prs = fetch(login, orgs)
     except Exception as e:
         log.warning("my_prs fetch failed: %s", e)
         db.record_run(NAME, str(e) or e.__class__.__name__)
@@ -83,21 +78,10 @@ def refresh(login: str, orgs: list[str]):
 
 
 def fetch(login: str, orgs: list[str]) -> list[dict]:
-    if not config.GITHUB_TOKEN:
-        raise RuntimeError("GITHUB_TOKEN missing from .env")
     q = f"is:pr is:open archived:false author:{login} " + " ".join(f"org:{o}" for o in orgs)
-    r = requests.post(
-        "https://api.github.com/graphql",
-        json={"query": QUERY, "variables": {"q": q}},
-        headers={"Authorization": f"Bearer {config.GITHUB_TOKEN}"},
-        timeout=20,
-    )
-    r.raise_for_status()
-    data = r.json()
-    if data.get("errors"):
-        raise RuntimeError(data["errors"][0].get("message", "GraphQL error"))
+    data = github.graphql(QUERY, {"q": q})
     stale = config.triage()["stale_review_days"]
-    return [_normalize(n, stale) for n in data["data"]["search"]["nodes"] if n]
+    return [_normalize(n, stale) for n in data["search"]["nodes"] if n]
 
 
 def _normalize(pr: dict, stale_days: int) -> dict:

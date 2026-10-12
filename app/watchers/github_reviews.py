@@ -15,10 +15,10 @@ import requests
 import checks
 import config
 import deps
+import github
 from watchers import WatchedItem, Watcher
 
 log = logging.getLogger("sentinel.github_reviews")
-GRAPHQL = "https://api.github.com/graphql"
 QUERY = """
 query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
@@ -51,17 +51,10 @@ class GithubReviewsWatcher(Watcher):
         self._bodies: dict[tuple[str, str], dict] = {}
 
     def fetch(self) -> list[WatchedItem]:
-        if not config.GITHUB_TOKEN:
-            raise RuntimeError("GITHUB_TOKEN missing from .env")
         q = f"is:pr is:open archived:false review-requested:{self.login} " + " ".join(f"org:{o}" for o in self.orgs)
-        r = requests.post(GRAPHQL, json={"query": QUERY, "variables": {"q": q}},
-                          headers={"Authorization": f"Bearer {config.GITHUB_TOKEN}"}, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("errors"):
-            raise RuntimeError(data["errors"][0].get("message", "GraphQL error"))
+        data = github.graphql(QUERY, {"q": q})
         items = []
-        for pr in data["data"]["search"]["nodes"]:
+        for pr in data["search"]["nodes"]:
             if pr:
                 item = self._item(pr)
                 if item:

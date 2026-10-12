@@ -19,14 +19,13 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-import requests
-
 import agents
 import checks
 import config
 import db
 import engine
 import evidence
+import github
 from watchers import WatchedItem
 
 log = logging.getLogger("sentinel.followup")
@@ -110,10 +109,7 @@ def refresh(cfg: dict):
     known = {(f"{p['repo']}#{p['number']}", c["name"]): c["before"]
              for p in load()["prs"] for c in p.get("post_checks") or [] if c.get("before") in ("failure", "success")}
     try:
-        try:
-            data = fetch(**opts, known=known)
-        except requests.ConnectionError:
-            data = fetch(**opts, known=known)
+        data = fetch(**opts, known=known)
     except Exception as e:
         log.warning("followup fetch failed: %s", e)
         db.record_run(NAME, str(e) or e.__class__.__name__)
@@ -128,28 +124,14 @@ def refresh(cfg: dict):
 
 def fetch(login: str, orgs: list[str], authors: list[str], stale_days: int, window_days: int,
           known: dict | None = None) -> dict:
-    if not config.GITHUB_TOKEN:
-        raise RuntimeError("GITHUB_TOKEN missing from .env")
     scope = (f"is:pr archived:false reviewed-by:{login} -author:{login} "
              + " ".join(f"org:{o}" for o in orgs)
              + "".join(f" author:app/{a}" for a in authors))
     since = (datetime.now(timezone.utc) - timedelta(days=window_days)).strftime("%Y-%m-%d")
-    r = requests.post(
-        "https://api.github.com/graphql",
-        json={"query": QUERY, "variables": {
-            "open": f"{scope} is:open",
-            "closed": f"{scope} is:closed closed:>={since}",
-        }},
-        headers={"Authorization": f"Bearer {config.GITHUB_TOKEN}"},
-        timeout=30,
-    )
-    r.raise_for_status()
-    payload = r.json()
-    if payload.get("errors"):
-        raise RuntimeError(payload["errors"][0].get("message", "GraphQL error"))
+    data = github.graphql(QUERY, {"open": f"{scope} is:open", "closed": f"{scope} is:closed closed:>={since}"}, timeout=45)
     prs = []
     for bucket in ("open", "closed"):
-        for node in payload["data"][bucket]["nodes"]:
+        for node in data[bucket]["nodes"]:
             pr = _normalize(node, login, stale_days) if node else None
             if pr:
                 prs.append(pr)
