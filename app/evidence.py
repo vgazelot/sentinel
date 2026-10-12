@@ -31,6 +31,8 @@ def _headers() -> dict:
 
 def _get(path: str, **params):
     r = requests.get(f"{API}{path}", params=params, headers=_headers(), timeout=30)
+    if r.status_code >= 500:  # listing a long workflow history 502s now and then: once more
+        r = requests.get(f"{API}{path}", params=params, headers=_headers(), timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -85,7 +87,8 @@ def workflow_history(repo: str, url: str, branch: str, limit: int = 8) -> str:
 
 
 def previous_outcome(repo: str, url: str, branch: str) -> str:
-    """The same job in the previous run of the same workflow on `branch`: failure / success / absent.
+    """The same job in the previous run of the same workflow on `branch`: failure / success / absent,
+    or unknown when GitHub did not answer (not cached: the next refresh asks again).
 
     The merge commit's first parent says nothing when the job did not run there (a `paths` filter, a
     matrix leg): the previous run of the workflow is where "already broken" is decided."""
@@ -111,7 +114,7 @@ def previous_outcome(repo: str, url: str, branch: str) -> str:
                 break
     except requests.RequestException as e:
         log.info("previous run of %s not found: %s", url, e)
-        return "absent"  # not cached: next refresh tries again
+        return "unknown"
     _previous[key] = result
     return result
 

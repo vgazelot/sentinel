@@ -107,11 +107,13 @@ def enabled(cfg: dict | None = None) -> bool:
 
 def refresh(cfg: dict):
     opts = settings(cfg)
+    known = {(f"{p['repo']}#{p['number']}", c["name"]): c["before"]
+             for p in load()["prs"] for c in p.get("post_checks") or [] if c.get("before") in ("failure", "success")}
     try:
         try:
-            data = fetch(**opts)
+            data = fetch(**opts, known=known)
         except requests.ConnectionError:
-            data = fetch(**opts)
+            data = fetch(**opts, known=known)
     except Exception as e:
         log.warning("followup fetch failed: %s", e)
         db.record_run(NAME, str(e) or e.__class__.__name__)
@@ -124,7 +126,8 @@ def refresh(cfg: dict):
         _investigate(data)
 
 
-def fetch(login: str, orgs: list[str], authors: list[str], stale_days: int, window_days: int) -> dict:
+def fetch(login: str, orgs: list[str], authors: list[str], stale_days: int, window_days: int,
+          known: dict | None = None) -> dict:
     if not config.GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN missing from .env")
     scope = (f"is:pr archived:false reviewed-by:{login} -author:{login} "
@@ -151,7 +154,7 @@ def fetch(login: str, orgs: list[str], authors: list[str], stale_days: int, wind
             if pr:
                 prs.append(pr)
     for pr in prs:
-        _settle_before(pr)
+        _settle_before(pr, known or {})
     prs.sort(key=lambda p: (STAGES.index(p["stage"]), p["merged_at"] or p["approved_at"]))
     return {"prs": prs, "window_days": window_days, "stale_days": stale_days}
 
@@ -230,12 +233,14 @@ def _landing(pr: dict) -> dict:
             "landed_at": max(done) if done and all(c["state"] != "pending" for c in post) else None}
 
 
-def _settle_before(pr: dict):
+def _settle_before(pr: dict, known: dict):
     """A failing check that did not run on the parent commit: compare with the previous run of its
-    workflow on the base branch (cached — the past does not change), then stage again."""
+    workflow on the base branch (cached — the past does not change), then stage again. GitHub not
+    answering keeps what the last refresh knew: an API hiccup must not turn into a false alarm."""
     pending = [c for c in pr.get("post_checks") or [] if c["state"] == "failure" and c["before"] == "absent"]
     for c in pending:
-        c["before"] = evidence.previous_outcome(pr["repo"], c["url"], pr["base"])
+        outcome = evidence.previous_outcome(pr["repo"], c["url"], pr["base"])
+        c["before"] = known.get((f"{pr['repo']}#{pr['number']}", c["name"]), "absent") if outcome == "unknown" else outcome
     if pending:
         pr["stage"] = stage(pr)
 

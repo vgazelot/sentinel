@@ -58,9 +58,19 @@ class StageTest(SentinelTest):
 
         pr = self.norm(checks=[("apply", "COMPLETED", "FAILURE")])
         with mock.patch("evidence.previous_outcome", return_value="failure") as previous:
-            followup._settle_before(pr)
+            followup._settle_before(pr, {})
         self.assertEqual(pr["stage"], "inherited")
         previous.assert_called_once()
+
+    def test_github_not_answering_keeps_what_the_last_refresh_knew(self):
+        from unittest import mock
+
+        import followup
+
+        pr = self.norm(checks=[("apply", "COMPLETED", "FAILURE")])
+        with mock.patch("evidence.previous_outcome", return_value="unknown"):
+            followup._settle_before(pr, {("acme/x#7", "apply"): "failure"})
+        self.assertEqual(pr["stage"], "inherited", "a 502 does not turn into a false alarm")
 
     def test_cancelled_runs_are_not_failures(self):
         self.assertEqual(self.norm(checks=[("apply", "COMPLETED", "CANCELLED"), ("plan", "COMPLETED", "SUCCESS")])["stage"],
