@@ -11,6 +11,8 @@ services:
     volumes:
       - ./data:/data
       - ./config.yaml:/app/config.yaml:ro
+      # client certificate for monitoring fronts behind mutual TLS (Zabbix, Grafana watchers)
+      - ${SENTINEL_CERTS:-./data/certs}:/certs:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
       interval: 30s

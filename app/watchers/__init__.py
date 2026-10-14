@@ -28,7 +28,9 @@ class Watcher(ABC):
 
 def build_watchers(cfg: dict) -> dict[str, Watcher]:
     from watchers.github_reviews import GithubReviewsWatcher
+    from watchers.grafana import GrafanaWatcher
     from watchers.statuspage import StatuspageWatcher
+    from watchers.zabbix import ZabbixWatcher
 
     watchers: dict[str, Watcher] = {}
     wcfg = cfg.get("watchers", {})
@@ -42,6 +44,11 @@ def build_watchers(cfg: dict) -> dict[str, Watcher]:
     if sp.get("enabled"):
         for instance in sp.get("instances", []):
             w = StatuspageWatcher(instance, sp.get("interval_seconds", 300))
+            watchers[w.name] = w
+
+    for key, cls in (("zabbix", ZabbixWatcher), ("grafana", GrafanaWatcher)):
+        if wcfg.get(key, {}).get("enabled"):
+            w = cls(wcfg[key])
             watchers[w.name] = w
 
     return watchers

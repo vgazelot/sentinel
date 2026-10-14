@@ -350,3 +350,12 @@ a.fileref:hover { color: var(--hot); }
     .facts > div { grid-template-columns: 1fr; gap: 2px; }
     .dl-threads, .inline-form { padding-left: 12px; }
 }
+
+/* Watch: Zabbix + dashboards read back */
+.watch-dash { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line-2); }
+.watch-dash:first-of-type { border-top: 0; }
+.watch-dash-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.watch-change { align-items: center; }
+.spark { flex: none; width: 110px; height: 28px; }
+.spark .band { fill: var(--neutral-soft); }
+.spark path { fill: none; stroke: var(--warn); stroke-width: 1.5; vector-effect: non-scaling-stroke; }

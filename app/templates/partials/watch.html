@@ -1,0 +1,87 @@
+{% macro spark(s) -%}
+<svg class="spark" viewBox="0 0 {{ s.width }} {{ s.height }}" preserveAspectRatio="none" aria-hidden="true">
+    {% if s.band %}<rect class="band" x="0" y="{{ s.band.y }}" width="{{ s.width }}" height="{{ s.band.h }}"></rect>{% endif %}
+    <path d="{{ s.path }}"></path>
+</svg>
+{%- endmacro %}
+
+<div class="page-head">
+    <div>
+        <h1>Watch</h1>
+        <p class="muted">
+            {% if to_look %}{{ to_look }} to look at{% else %}Nothing to look at{% endif %}
+            {% if zabbix %} · Zabbix {{ zabbix.read }}{% endif %}
+            {% if grafana %} · dashboards {{ grafana.read }}{% endif %}
+        </p>
+    </div>
+</div>
+
+{% if not zabbix and not grafana %}
+<p class="muted">First read in progress: Zabbix and the dashboards show up here within a few minutes.</p>
+{% endif %}
+
+{% if zabbix %}
+<section class="card">
+    <h2>Zabbix <span class="muted">· {{ zabbix.look | length }} open{% if zabbix.quiet_for %} · nothing new for {{ zabbix.quiet_for }}{% endif %}</span></h2>
+    {% if zabbix.look %}
+    <ul class="compact-list">
+        {% for r in zabbix.look %}
+        <li class="compact">
+            <span class="dot {{ 'bad' if r.level >= 4 else 'warn' }} small"></span>
+            <a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
+            <span class="compact-meta">{{ r.host }} · {{ r.severity }} · {{ r.age }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No open problem.</p>
+    {% endif %}
+    {% if zabbix.known %}
+    <details class="dep-prs" id="watch-known">
+        <summary>{{ zabbix.known | length }} known, listed without pushing</summary>
+        <ul class="compact-list">
+            {% for r in zabbix.known %}
+            <li class="compact other">
+                <span class="dot neutral small"></span>
+                <a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
+                <span class="compact-meta">{{ r.host }} · {{ r.age }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </details>
+    {% endif %}
+    {% if zabbix.hidden %}<p class="muted">{{ zabbix.hidden }}</p>{% endif %}
+</section>
+{% endif %}
+
+{% if grafana %}
+<section class="card">
+    <h2>Dashboards <span class="muted">· {{ grafana.cards | length }} dashboards, {{ grafana.series }} curves, last 30 min against the {{ grafana.hours }} h before</span></h2>
+    {% for c in grafana.cards %}
+    <div class="watch-dash">
+        <div class="watch-dash-head">
+            <span class="dot {{ 'bad' if c.error else ('warn' if c.anomalies else 'ok') }} small"></span>
+            <a href="{{ c.link }}" target="_blank" rel="noopener">{{ c.title }}</a>
+            <span class="compact-meta">
+                {% if c.error %}unreadable: {{ c.error }}{% elif c.anomalies %}{{ c.anomalies | length }} changed{% else %}nothing changed{% endif %}
+                · {{ c.panels }} panels · {{ c.series }} curves
+            </span>
+        </div>
+        {% if c.anomalies %}
+        <ul class="compact-list">
+            {% for a in c.anomalies[:8] %}
+            <li class="compact watch-change">
+                {{ spark(a.spark) }}
+                <span class="compact-title">{{ a.series }}</span>
+                <span class="compact-meta">{{ a.panel }} · {{ a.text }}{% if not a.confirmed %} · first read{% endif %}</span>
+            </li>
+            {% endfor %}
+            {% if c.anomalies | length > 8 %}
+            <li class="compact other"><a href="{{ c.link }}" target="_blank" rel="noopener">{{ c.anomalies | length - 8 }} more in Grafana</a></li>
+            {% endif %}
+        </ul>
+        {% endif %}
+    </div>
+    {% endfor %}
+</section>
+{% endif %}
