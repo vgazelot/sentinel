@@ -97,6 +97,11 @@ class WebTest(SentinelTest):
         self.assertIn("Summarize", review)
         self.assertIn("Title 6", inbox, "the sentence of the title, capitalised")
 
+    def test_every_stylesheet_comment_is_closed(self):
+        with open("/app/static/style.css") as f:
+            css = f.read()
+        self.assertEqual(css.count("/*"), css.count("*/"), "an open comment swallows every rule after it")
+
     def test_titles_lose_their_prefix(self):
         import main
 
