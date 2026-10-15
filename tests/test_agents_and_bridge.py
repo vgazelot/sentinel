@@ -67,7 +67,7 @@ class AgentsTest(SentinelTest):
         cfg["watchers"]["zabbix"] = {"enabled": True, "url": "https://z", "claude": True}
         with open(self.cfg_path, "w") as f:
             yaml.safe_dump(cfg, f)
-        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 3, "token": True}, raise_for_status=lambda: None)), \
+        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 4, "token": True}, raise_for_status=lambda: None)), \
                 mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
             agents.check_bridge()
         self.assertIn("no console", db.watcher_states()["claude-bridge"]["last_error"], "the Claude button needs a bridge with consoles")
