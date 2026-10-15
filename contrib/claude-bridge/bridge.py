@@ -42,9 +42,17 @@ Each console is a session of the bridge's own tmux server (`tmux -L sentinel`) r
 the window detaches, the session goes on (`tmux -L sentinel attach -t <name>` from any terminal). The browser
 cannot send the token: it attaches with a ticket valid once and for a minute, that only Sentinel can ask
 for, and only from an origin in BRIDGE_ORIGINS — any other page gets nothing, not even a read.
+
+Sessions — every Claude Code session running on this host, in a console or in any other terminal:
+    GET  /sessions → {"sessions": [{"id", "name", "status", "waiting_for", "console", "title", "context"}]}
+From `claude agents --json` (Claude Code's own list), the console each one runs in, its title (the end of its
+transcript) and `context`: what contrib/claude-code-context publishes about it (<CLAUDE_CONFIG_DIR>/context-advisor/
+<session id>.json: story, context size, cold cache, advice) — the advisor owns a session's story, read here as is.
+`POST /console` takes an optional `story` (`sc-12345`): the session starts linked to it (CONTEXT_STORY).
 """
 import base64
 import fcntl
+import glob
 import hashlib
 import hmac
 import json
@@ -199,13 +207,14 @@ LOOKOUT_MODES = ("scout", "assess", "dig")
 MATERIAL_MODES = ("precheck", "followup", "brief", "whyred", "asks") + LOOKOUT_MODES
 TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
             **{mode: ("", [], []) for mode in MATERIAL_MODES}}
-API = 4  # what /healthz reports: Sentinel refuses an older bridge
+API = 5  # what /healthz reports: Sentinel refuses an older bridge
 
 TMUX = os.environ.get("TMUX_BIN") or shutil.which("tmux") or "tmux"
 TMUX_CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmux.conf")
 CONSOLE_COMMAND = os.environ.get("BRIDGE_CONSOLE_COMMAND", "claude")
 ORIGINS = {o.strip() for o in os.environ.get("BRIDGE_ORIGINS", "http://localhost:8300,http://127.0.0.1:8300").split(",") if o.strip()}
 CONSOLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
+STORY = re.compile(r"sc-\d{3,7}")
 TICKET_SECONDS = 60
 MAX_FRAME = 1 << 20
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -289,23 +298,42 @@ def consoles() -> list[dict]:
     return [{"name": n, "created": int(c), "attached": int(a)} for n, c, a in rows]
 
 
-def open_console(name: str, prompt: str) -> bool:
+def open_console(name: str, prompt: str, story: str = "") -> bool:
     """Start the session unless it runs (True when started); without a prompt there is nothing to start."""
     if _tmux("has-session", "-t", f"={name}").returncode == 0:
         return False
     if not prompt:
         raise LookupError(f"no console {name}")
     shell = pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
+    linked = ["-e", f"CONTEXT_STORY={story}"] if STORY.fullmatch(story) else []
     # the prompt travels in the environment: the shell expands "$SENTINEL_PROMPT", it never parses it
     started = _tmux("new-session", "-d", "-s", name, "-x", "120", "-y", "32", "-c", CWD, "-e", f"SENTINEL_PROMPT={prompt}",
-                    shell, "-lic", f'{CONSOLE_COMMAND} "$SENTINEL_PROMPT"')
+                    *linked, shell, "-lic", f'{CONSOLE_COMMAND} "$SENTINEL_PROMPT"')
     if started.returncode:
         raise RuntimeError(started.stderr.strip() or f"tmux exited {started.returncode}")
     return True
 
 
 def end_console(name: str):
+    """Over when this returns: Claude takes a few seconds to shut down after the hangup, and a session listed meanwhile
+    would read as one running in another terminal."""
+    panes = {pid for pid, console in _console_pids().items() if console == name}
+    claude = {pid for pid, ppid in _parents().items() if str(pid) in panes or str(ppid) in panes}
     _tmux("kill-session", "-t", f"={name}")
+    deadline = time.monotonic() + 10
+    while claude and time.monotonic() < deadline:
+        time.sleep(0.2)
+        claude = {pid for pid in claude if _running(pid)}
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
 
 
 def ticket(name: str) -> str:
@@ -406,6 +434,90 @@ def attach(sock, name: str):
         os.waitpid(pid, 0)
 
 
+# --- Sessions -----------------------------------------------------------------------------------
+CLAUDE_HOME = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
+ADVISOR = os.path.join(CLAUDE_HOME, "context-advisor")  # written by contrib/claude-code-context, one file per session
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+TITLE_TAIL = 1 << 20
+ADVISOR_DAYS = 7
+
+
+def _parents() -> dict[int, int]:
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10)
+    pairs = (line.split() for line in out.stdout.splitlines())
+    return {int(p[0]): int(p[1]) for p in pairs if len(p) == 2 and p[0].isdigit() and p[1].isdigit()}
+
+
+def _console_pids() -> dict[str, str]:
+    """pid of each console's shell → console name; none without a tmux server (or without tmux)."""
+    try:
+        out = _tmux("list-panes", "-a", "-F", "#{pane_pid}\t#{session_name}")
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return dict(line.split("\t", 1) for line in out.stdout.splitlines() if "\t" in line) if not out.returncode else {}
+
+
+def _advisor(session_id: str) -> dict:
+    """What the context advisor publishes about the session: its story, its context, its advice."""
+    try:
+        with open(os.path.join(ADVISOR, f"{session_id}.json")) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _title(session_id: str) -> str:
+    """Claude Code's title for the session: the last `ai-title` near the end of its transcript, if any."""
+    path = next(iter(glob.glob(os.path.join(CLAUDE_HOME, "projects", "*", f"{session_id}.jsonl"))), "")
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(os.path.getsize(path) - TITLE_TAIL, 0))
+            tail = f.read()
+    except OSError:
+        return ""
+    for line in reversed(tail.splitlines()):
+        if b'"ai-title"' in line:
+            try:
+                return str(json.loads(line).get("aiTitle") or "")[:200]
+            except (ValueError, AttributeError):
+                continue
+    return ""
+
+
+def live_sessions() -> list[dict]:
+    """The sessions Claude Code says are running (`claude agents --json`, its interface for scripts), each with the
+    console it runs in, its title and what the context advisor publishes about it."""
+    out = subprocess.run([CLAUDE, "agents", "--json"], capture_output=True, text=True, timeout=30)
+    if out.returncode:
+        raise RuntimeError(f"claude agents exited {out.returncode}: {(out.stderr or out.stdout).strip()[-500:]}")
+    consoles = _console_pids()
+    parents = _parents() if consoles else {}
+    rows = []
+    for s in json.loads(out.stdout):
+        sid, pid = str(s.get("sessionId") or ""), s.get("pid")
+        known = bool(SESSION_ID.fullmatch(sid))
+        rows.append({
+            "id": sid, "name": str(s.get("name") or ""), "status": str(s.get("status") or ""),
+            "waiting_for": str(s.get("waitingFor") or ""),
+            # the pane's shell runs claude, or execs into it
+            "console": consoles.get(str(pid)) or consoles.get(str(parents.get(pid))) or "",
+            "title": _title(sid) if known else "",
+            "context": _advisor(sid) if known else {},
+        })
+    # a console whose Claude has not started yet
+    rows += [{"id": "", "name": "", "status": "starting", "waiting_for": "", "console": name, "title": "", "context": {}}
+             for name in sorted(set(consoles.values()) - {r["console"] for r in rows})]
+    stale = time.time() - ADVISOR_DAYS * 86400
+    for path in glob.glob(os.path.join(ADVISOR, "*.json")):  # the advisor writes, it cannot delete
+        try:
+            if os.path.getmtime(path) < stale:
+                os.remove(path)
+        except OSError:  # another read pruned it first
+            pass
+    return rows
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, payload: dict):
         body = json.dumps(payload).encode()
@@ -436,6 +548,11 @@ class Handler(BaseHTTPRequestHandler):
                                     "modes": sorted(PROMPTS), "lang": LANG, "console": bool(shutil.which(TMUX))})
         if path == "/console":
             return self._json(200, {"consoles": consoles()})
+        if path == "/sessions":
+            try:
+                return self._json(200, {"sessions": live_sessions()})
+            except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
+                return self._json(500, {"error": str(e)})
         self._json(404, {"error": "not found"})
 
     def _console_ws(self, query: str):
@@ -463,7 +580,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/console/end":
                 end_console(name)
                 return self._json(200, {"ended": name})
-            started = open_console(name, str(data.get("prompt") or "")[:8000])
+            started = open_console(name, str(data.get("prompt") or "")[:8000], str(data.get("story") or ""))
         except LookupError as e:
             return self._json(404, {"error": str(e)})
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:

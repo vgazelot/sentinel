@@ -14,6 +14,7 @@ function syncBadge(badgeId, sourceId) {
 let shown = null;
 function updateBadges() {
     const attention = syncBadge('nav-attention', 'attention-count');
+    syncBadge('nav-sessions', 'sessions-count');
     syncBadge('nav-cycle', 'cycle-count');
     syncBadge('nav-watch', 'watch-count');
     syncBadge('nav-lookout', 'lookout-count');
@@ -36,7 +37,8 @@ function renderLight() {
 }
 
 // --- Selection -----------------------------------------------------------------------------
-const rows = () => [...document.querySelectorAll('#rows .it')];
+// the rows you can see: a folded group (Sessions' tickets to start) is skipped
+const rows = () => [...document.querySelectorAll('#rows .it')].filter((r) => !r.closest('details:not([open])'));
 let selected = { key: null, index: 0 };
 
 function select(row, { load = true } = {}) {
@@ -87,6 +89,11 @@ function openSelected() {
 }
 
 document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-unselect]')) {  // a button filling the pane on its own (Sessions' New)
+        rows().forEach((r) => r.classList.remove('sel'));
+        selected = { key: null, index: selected.index };
+        return;
+    }
     const row = e.target.closest('#rows .it');
     if (!row) return;
     if (row.dataset.detail) select(row);
@@ -94,7 +101,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-    if (e.target.closest('#console')) return;  // every key, Escape included, belongs to Claude there
+    if (e.target.closest('#console, .console-term')) return;  // every key, Escape included, belongs to Claude there
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target.closest('input, textarea, select')) {
         if (e.key === 'Escape') e.target.blur();
@@ -120,6 +127,11 @@ function toast(text, bad) {
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 8000 : 3500);
 }
+// a session just started: its row shows on the list's next poll, selected
+document.addEventListener('select-key', (e) => {
+    selected = { key: e.detail.key, index: selected.index };
+    htmx.trigger('#list', 'refresh');
+});
 document.addEventListener('acted', (e) => {
     toast(e.detail.error || e.detail.notice || (rows().length ? '' : 'Inbox zero'), !!e.detail.error);
     reselect({ next: true });
@@ -128,7 +140,7 @@ document.addEventListener('acted', (e) => {
 // a Done, a Later or a review sent from the pane: the row slides out while the request runs
 document.addEventListener('htmx:beforeRequest', (e) => {
     const cfg = e.detail.requestConfig;
-    if (cfg.verb !== 'post' || !e.detail.elt.closest('#detail') || cfg.path.startsWith('/api/agent')) return;
+    if (cfg.verb !== 'post' || !e.detail.elt.closest('#detail') || /^\/api\/(agent|sessions)/.test(cfg.path)) return;
     const row = rows().find((r) => r.dataset.key === selected.key);
     if (row) row.classList.add('leaving');
 });

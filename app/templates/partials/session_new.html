@@ -1,0 +1,11 @@
+{% from "partials/detail_macros.html" import top %}
+{{ top('', 'new session', '') }}
+<div class="d-body">
+    <h2 class="d-title">New session</h2>
+    {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
+    <form hx-post="/api/sessions/new" hx-disabled-elt="find button">
+        <textarea class="field" name="prompt" rows="5" autofocus
+                  placeholder="What should Claude work on? Name its ticket (sc-12345) and the session goes under its big rock.">{{ prompt }}</textarea>
+        <div class="bar"><button class="btn primary">Start</button><span class="muted">Claude Code in a console here: leave the page, it goes on.</span></div>
+    </form>
+</div>

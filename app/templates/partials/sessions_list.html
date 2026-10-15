@@ -1,0 +1,29 @@
+{% import "partials/list_macros.html" as l with context %}
+{# the context size, on a session that would rather start fresh #}
+{% macro size(r) -%}{% if r.advice %}<span class="tag warn">{{ r.tokens // 1000 }}k</span>{% endif %}{%- endmacro %}
+{% macro session_row(r) -%}
+{% call l.row(r.key, (r.title | subject).text, r.tone, r.icon, '/partials/session?key=' ~ (r.key | urlencode), r.url, r.at | age if r.at else '', size(r)) %}
+{% if r.story %}<span class="mono">{{ r.story }}</span> · {% endif %}{{ r.word }}{% if r.where %} · {{ r.where }}{% endif %}
+{% endcall %}
+{%- endmacro %}
+<span id="sessions-count" hidden>{{ waiting }}</span>
+<header class="list-head">
+    <h1>Sessions</h1>
+    <button type="button" class="btn small" data-unselect hx-get="/partials/session?key=new" hx-target="#detail" title="Claude Code on a new task, in a console here">New</button>
+</header>
+{% if error %}<div class="notice bad s-error">{{ error }}</div>{% endif %}
+<div class="scroll" id="rows">
+{% for g in groups %}
+    <div class="grp">{{ g.title }} <span>{{ g.rows | length }}</span></div>
+    {% for r in g.rows %}{{ session_row(r) }}{% endfor %}
+    {% if g.later %}
+    <details class="fold s-later" id="later-{{ g.title | domid }}">
+        <summary>{{ g.later | length }} to start</summary>
+        {% for r in g.later %}{{ session_row(r) }}{% endfor %}
+    </details>
+    {% endif %}
+{% else %}
+    <div class="zero"><p class="zero-title">No session running</p><p>New starts one here, in a console.</p></div>
+{% endfor %}
+</div>
+<footer class="hints"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>⏎</kbd> open the ticket</span></footer>

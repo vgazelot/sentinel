@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Sentinel — Sessions{% endblock %}
+{% block content %}
+<section class="pane list" id="list" hx-get="/partials/sessions" hx-trigger="every 5s, refresh" hx-swap="innerHTML">
+    {% include "partials/sessions_list.html" %}
+</section>
+<section class="pane detail" id="detail">
+    <div class="d-empty"><p>Select a session or a ticket</p><p class="muted"><kbd>↑</kbd> <kbd>↓</kbd> to move · <kbd>⏎</kbd> open the ticket</p></div>
+</section>
+{% endblock %}

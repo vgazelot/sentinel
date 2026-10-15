@@ -29,12 +29,15 @@
     <symbol id="i-pulse" viewBox="0 0 16 16"><path d="M1.5 8.5h3l1.75-4.5 3.5 8 1.75-3.5h3"/></symbol>
     <symbol id="i-compass" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M10.4 5.6L9 9l-3.4 1.4L7 7z"/></symbol>
     <symbol id="i-out" viewBox="0 0 16 16"><path d="M6.5 3.5h-3v9h9v-3M9 2.5h4.5V7M13.5 2.5L7.5 8.5"/></symbol>
+    <symbol id="i-term" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/><path d="M4.5 6.25l2 1.75-2 1.75M8.5 10.25h3"/></symbol>
+    <symbol id="i-arc" viewBox="0 0 16 16"><path d="M8 1.75A6.25 6.25 0 1 1 1.75 8"/></symbol>
 </svg>
 <div class="app">
     <aside class="side">
         <a class="brand" href="/"><span class="logo"></span>Sentinel</a>
         <nav class="side-nav">
             <a class="nav {% if active == 'inbox' %}on{% endif %}" href="/"><svg><use href="#i-inbox"/></svg>Inbox<span class="n hot" id="nav-attention" {% if not nav_attention %}hidden{% endif %}>{{ nav_attention }}</span></a>
+            {% if sessions_enabled %}<a class="nav {% if active == 'sessions' %}on{% endif %}" href="/sessions"><svg><use href="#i-term"/></svg>Sessions<span class="n hot" id="nav-sessions" {% if not nav_sessions %}hidden{% endif %}>{{ nav_sessions }}</span></a>{% endif %}
             {% if cycle_enabled %}<a class="nav {% if active == 'cycle' %}on{% endif %}" href="/cycle"><svg><use href="#i-target"/></svg>Cycle<span class="n" id="nav-cycle" {% if not nav_cycle %}hidden{% endif %}>{{ nav_cycle }}</span></a>{% endif %}
             {% if watch_enabled %}<a class="nav {% if active == 'watch' %}on{% endif %}" href="/watch"><svg><use href="#i-pulse"/></svg>Watch<span class="n" id="nav-watch" {% if not nav_watch %}hidden{% endif %}>{{ nav_watch }}</span></a>{% endif %}
             {% if lookout_enabled %}<a class="nav {% if active == 'lookout' %}on{% endif %}" href="/lookout"><svg><use href="#i-compass"/></svg>Lookout<span class="n" id="nav-lookout" {% if not nav_lookout %}hidden{% endif %}>{{ nav_lookout }}</span></a>{% endif %}

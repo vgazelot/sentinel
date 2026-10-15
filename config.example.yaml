@@ -120,6 +120,11 @@ cycle:
     label: RUN
     match: RUN my-service         # the cycle epic whose name contains this
 
+# Sessions page (needs the Claude bridge; the Cycle tab files the sessions under your tickets).
+# What Pick up tells the fresh session it starts on a ticket — {story} = sc-12345
+# sessions:
+#   resume_prompt: "Pick up {story}: read it and its latest \"Handoff\" comment if any, check its branch and pull requests, sum up in two lines where it stands, then carry on from the next step."
+
 # Optional: Lookout — a tech watch that keeps a handful of finds a week out of hundreds of links.
 # Needs Claude (CLAUDE_BRIDGE_URL): Claude reads the new titles against your profile, keeps the few worth
 # a closer look, reads those and scores them. One push a week; remove the block to hide the tab.

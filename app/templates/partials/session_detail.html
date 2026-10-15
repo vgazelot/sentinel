@@ -1,0 +1,48 @@
+{% from "partials/detail_macros.html" import top %}
+{% set s = row.session %}
+{% set url = (facts and facts.url) or row.url %}
+{% if s and s.console %}
+{# a console of the bridge: the real Claude Code, attached when the pane shows it (static/console.js) #}
+<div class="s-live">
+    <div class="d-top">
+        {% if row.story %}<span class="mono">{{ row.story }}</span>{% endif %}<span class="s-title">{{ (row.title | subject).text }}</span><span class="console-state"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn small ghost" hx-post="/api/sessions/end" hx-vals='{"name": "{{ s.console }}"}'
+                hx-confirm="End this Claude session? Its transcript stays." title="Stops Claude Code and closes the console">End</button>
+        {% if url %}<a class="d-open" href="{{ url }}" target="_blank" rel="noopener" data-open>Ticket</a>{% endif %}
+    </div>
+    {% if row.advice %}
+    <div class="s-advice"><span>{{ row.advice }}</span>{% if row.fresh %}
+        <button type="button" class="btn small primary" data-term-type="{{ row.fresh }}" title="Types {{ row.fresh }}: the session writes where it stands into its ticket, then a fresh one picks up from there. Enter to confirm.">Start fresh</button>{% endif %}</div>
+    {% endif %}
+    {% if error %}<div class="notice bad s-notice">{{ error }}</div>{% endif %}
+    <div class="console-term s-term" data-attach="/api/console/{{ s.console }}/attach"></div>
+</div>
+{% else %}
+{{ top(row.story, facts.state if facts else row.word, url) }}
+<div class="d-body">
+    {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
+    {% if row.group %}<div class="d-kicker">{{ row.group }}</div>{% endif %}
+    <h2 class="d-title">{{ (row.title | subject).text }}</h2>
+    {% if s %}
+    <p class="d-why">Runs in another terminal: <span class="mono">{{ s.name }}</span>, {{ row.word }}{% if row.at %} {{ row.at | age }} ago{% endif %}. Sentinel shows here the sessions it starts.</p>
+    {% if row.advice %}<p class="d-note">{{ row.advice }}{% if row.fresh %} <code>{{ row.fresh }}</code> in its terminal writes where it stands into its ticket, then starts fresh from there.{% endif %}</p>{% endif %}
+    {% else %}
+    <div class="bar">
+        <button type="button" class="btn primary" hx-post="/api/sessions/start" hx-vals='{"story": "{{ row.story[3:] }}"}' hx-disabled-elt="this">Pick up</button>
+        <span class="muted">A fresh session reads the ticket and its last handoff, then carries on.</span>
+    </div>
+    {% endif %}
+    {% if facts and facts.prs %}
+    <div class="d-list">
+        {% for p in facts.prs %}<a class="d-pr" href="{{ p.url }}" target="_blank" rel="noopener"><span class="t">{{ (p.title | subject).text or p.ref }}<small>{{ 'draft' if p.draft else 'open' }}</small></span><span class="mono">{{ p.ref }}</span></a>{% endfor %}
+    </div>
+    {% endif %}
+    {% if facts and facts.note %}
+    <section class="d-sec">
+        <h3>{{ 'Last handoff' if facts.note.handoff else 'Last comment' }} <span class="muted">{{ facts.note.at | age }} ago</span></h3>
+        <div class="md">{{ facts.note.text | md | safe }}</div>
+    </section>
+    {% elif facts_error %}<p class="muted">Shortcut: {{ facts_error }}</p>{% endif %}
+</div>
+{% endif %}

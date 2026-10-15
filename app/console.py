@@ -39,15 +39,27 @@ def _bridge(path: str, payload: dict) -> dict:
     return data
 
 
+def start(name: str, prompt: str = "", story: str = "") -> dict:
+    """Start the session unless it runs (no prompt = reopen only), linked to `story` if given: the bridge's answer, a
+    ticket in it."""
+    data = _bridge("/console", {"name": name, "prompt": prompt, **({"story": story} if story else {})})
+    _alive["at"] = 0.0
+    return data
+
+
+def end(name: str):
+    _bridge("/console/end", {"name": name})
+    _alive["at"] = 0.0
+
+
 def answer(name: str, title: str, prompt: str = ""):
-    """Start the session unless it runs (no prompt = reopen only), and give the page its way in."""
+    """Start the session unless it runs, and give the page its way in."""
     if not enabled():
         return jsonify({"error": "CLAUDE_BRIDGE_URL not configured"}), 503
     try:
-        data = _bridge("/console", {"name": name, "prompt": prompt})
+        data = start(name, prompt)
     except (requests.RequestException, RuntimeError, ValueError) as e:
         return jsonify({"error": f"the Claude bridge: {e}"}), 502
-    _alive["at"] = 0.0
     return jsonify({"name": name, "title": title, "ws": f"{_ws_base()}/console/ws?ticket={data['ticket']}"})
 
 
@@ -81,8 +93,7 @@ def api_end(name: str):
     if not NAME.fullmatch(name):
         abort(404)
     try:
-        _bridge("/console/end", {"name": name})
+        end(name)
     except (requests.RequestException, RuntimeError, ValueError) as e:
         return jsonify({"error": f"the Claude bridge: {e}"}), 502
-    _alive["at"] = 0.0
     return jsonify({"ended": name})

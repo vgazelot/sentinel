@@ -10,6 +10,7 @@ import config
 log = logging.getLogger("sentinel.shortcut")
 API = "https://api.app.shortcut.com/api/v3"
 DONE_TYPES = {"done"}
+HANDOFF = re.compile(r"\bhandoff\b", re.I)
 
 
 def _get(path: str):
@@ -69,7 +70,8 @@ def member_id(mention_name: str) -> str:
 def epic(epic_id: int, owner_id: str = "") -> dict:
     """Epic + its stories, normalized. `owner_id` marks which stories are yours."""
     meta = _get(f"/epics/{epic_id}")
-    stories = _get(f"/epics/{epic_id}/stories")
+    # an archived story keeps its last state (often In Development): it is neither open nor done
+    stories = [s for s in _get(f"/epics/{epic_id}/stories") if not s.get("archived")]
     types, names = _states(), _state_names()
     open_stories, done, mine_open = [], 0, 0
     last_activity = last_activity_mine = ""
@@ -108,4 +110,24 @@ def epic(epic_id: int, owner_id: str = "") -> dict:
         "last_activity": last_activity,
         "last_activity_mine": last_activity_mine,
         "stories": open_stories,
+    }
+
+
+def story(story_id: int) -> dict:
+    """A story as the Sessions page shows it before a session picks it up: its state, its open pull requests and
+    the last handoff a session wrote in it (else its last comment)."""
+    s = _get(f"/stories/{story_id}")
+    comments = sorted((c for c in s.get("comments") or [] if (c.get("text") or "").strip() and not c.get("deleted")),
+                      key=lambda c: c["created_at"])
+    handoffs = [c for c in comments if HANDOFF.search(c["text"].strip().splitlines()[0])]
+    note = (handoffs or comments or [None])[-1]
+    return {
+        "id": s["id"],
+        "name": s["name"],
+        "url": s["app_url"],
+        "state": _state_names().get(s["workflow_state_id"], "?"),
+        "prs": [{"url": p["url"], "ref": f"{p['url'].split('/')[-3]}#{p['number']}", "title": p.get("title") or "",
+                 "draft": bool(p.get("draft"))}
+                for p in s.get("pull_requests") or [] if not p.get("closed") and not p.get("merged")],
+        "note": {"text": note["text"], "at": note["created_at"][:19] + "Z", "handoff": note in handoffs} if note else None,
     }
