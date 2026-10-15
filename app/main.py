@@ -33,6 +33,7 @@ db.init()
 db.fail_stale_runs()
 
 WATCHERS = build_watchers(config.load())
+engine.retire(set(WATCHERS))
 GH = config.github()
 CYCLE_CFG = config.load().get(cycle.NAME, {})
 FOLLOWUP_CFG = config.load().get(followup.NAME, {})

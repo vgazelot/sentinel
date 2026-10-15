@@ -195,7 +195,7 @@ class GrafanaTest(SentinelTest):
     def test_what_is_there_at_start_is_recorded_without_a_push(self):
         import engine
 
-        self.assertEqual(self.w.name, "grafana:abc")
+        self.assertTrue(self.w.name.startswith("grafana:abc-"))
         with mock.patch("requests.Session.get", side_effect=self.get):
             engine.run_watcher(self.w)
         [item] = self.fetch()
@@ -217,6 +217,36 @@ class GrafanaTest(SentinelTest):
             engine.run_watcher(self.w)
         self.assertEqual(len(self.pushes), 1)
 
+    def test_after_a_restart_a_change_is_read_twice_like_any_other(self):
+        self.seed(self.w.name)
+        self.assertEqual(self.fetch(), [], "a seeded source does not take what it reads first as its baseline")
+        self.assertEqual(len(self.fetch()), 1)
+
+    def test_the_same_dashboard_twice_is_two_sources(self):
+        from watchers import build_watchers
+
+        links = ["https://grafana.example.com/d/abc/pipeline?var-source=web", "https://grafana.example.com/d/abc/pipeline?var-source=api",
+                 "https://grafana.example.com/d/abc/pipeline"]
+        names = list(build_watchers({"watchers": {"grafana": {**GRAFANA, "enabled": True, "dashboards": links}}}))
+        self.assertEqual(len(set(names)), 3)
+        self.assertIn("grafana:abc", names)
+
+    def test_a_source_gone_from_the_config_is_retired(self):
+        import db
+        import engine
+        from watchers import WatchedItem
+
+        def item(ext):
+            return WatchedItem(external_id=ext, title=ext, url="https://x", fingerprint="stop", lane="watch", urgency="now")
+
+        engine.process("grafana:old", [item("a")])
+        engine.process("grafana:abc", [item("b")])
+        engine.process("github_reviews", [item("c")])
+        db.record_run("grafana:old", "404 Not Found")
+        engine.retire({"grafana:abc", "github_reviews"})
+        self.assertEqual(sorted(r["external_id"] for r in db.items("state = 'pending'")), ["b", "c"])
+        self.assertNotIn("grafana:old", db.watcher_states(), "its failure no longer lights the health light")
+
     def test_a_drift_is_listed_never_an_item(self):
         w = self.watcher("https://grafana.example.com/d/gauge/queues")
         self.assertEqual(self.fetch(w), [])
@@ -227,13 +257,12 @@ class GrafanaTest(SentinelTest):
         import db
         import engine
 
-        self.seed("grafana:abc")
         with mock.patch("requests.Session.get", side_effect=self.get):
             engine.run_watcher(self.w)
             self.down = True
             engine.run_watcher(self.w)
-        self.assertEqual(len(db.items("watcher = 'grafana:abc' AND state = 'pending'")), 1, "the engine keeps its item")
-        self.assertIn("unreachable", db.watcher_states()["grafana:abc"]["last_error"])
+        self.assertEqual(len(db.items("watcher = ? AND state = 'pending'", self.w.name)), 1, "the engine keeps its item")
+        self.assertIn("unreachable", db.watcher_states()[self.w.name]["last_error"])
         self.assertIn("unreachable", self.card()["error"])
 
     def test_one_unreadable_panel_keeps_its_items_and_the_rest_is_read(self):

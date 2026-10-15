@@ -156,6 +156,23 @@ def wake_snoozed():
     _push([(r["id"], r["title"], "Snooze expired", r["url"]) for r in loud])
 
 
+# sources named from the config: one per status page, one per dashboard link
+CONFIGURED = ("statuspage:", "grafana:")
+
+
+def retire(current: set[str]):
+    """A configured source gone from the config (a link removed or edited) is never read again: its items
+    are resolved and its state dropped, else they wait forever and its last failure keeps the light red."""
+    with db.connect() as conn:
+        names = {r["watcher"] for r in conn.execute("SELECT DISTINCT watcher FROM items WHERE state != 'resolved'")}
+        names |= {r["watcher"] for r in conn.execute("SELECT DISTINCT watcher FROM watcher_state")}
+        for name in sorted(n for n in names if n.startswith(CONFIGURED) and n not in current):
+            log.info("%s is no longer in the config: its items are resolved", name)
+            conn.execute("UPDATE items SET state = 'resolved', resolved_at = ?, missed = 0 WHERE watcher = ? AND state != 'resolved'",
+                         (db.now(), name))
+            conn.execute("DELETE FROM watcher_state WHERE watcher = ?", (name,))
+
+
 def check_health():
     """A polling job failing for a while is an item of its own: silent failures are the worst kind."""
     minutes = config.triage().get("health_minutes", 30)

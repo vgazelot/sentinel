@@ -70,6 +70,8 @@ A review request whose author is a Bot and whose title parses as a bump (or carr
 
 `GET /api/summary?since=<notification id>` → `attention`, per-section `counts`, `landing` (follow-up stages), up to 25 items needing you (id, lane, ref, title, url, why, claude headline), notifications after `since`, `seq`. Item actions answer JSON unless the request comes from HTMX (`_done()`): `POST /api/items/<id>/ack|unack|snooze|unsnooze`, `POST /api/items/bulk {ids, action: ack|forever|snooze, duration}`.
 
+Sources named from the config (`statuspage:<name>`, `grafana:<uid>[-<vars hash>]`) that left it are retired at start (`engine.retire`): their items resolved, their state dropped — a removed link must not wait forever or keep a failure lit.
+
 ## Adding a watcher
 
 1 file in `watchers/` (class with `name`, `interval_seconds`, `fetch()` returning `WatchedItem`s with lane + urgency + a fingerprint that changes only when an ack should re-open), register it in `build_watchers()`, 1 block in `config.yaml`. Diff, state, grace, notifications are already handled. A source computing its own state (like my_prs/followup) calls `engine.process(name, items)` after `db.record_run(name)`.

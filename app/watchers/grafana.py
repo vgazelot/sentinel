@@ -4,15 +4,17 @@ the others go on being read.
 
 Each curve's last 30 min is compared with the hours before it (`quart.verdicts`); every change is
 listed on the Watch page. A counter that stops, or a whole-number gauge that changes, is also an
-inbox item (lane `watch`, pushed) once seen on two reads in a row — the first read after a start
+inbox item (lane `watch`, pushed) once seen on two reads in a row. The first read of a new source
 counts as seen: what is there already is the engine's baseline, recorded without pushing.
 """
+import hashlib
 import logging
 import os
 from urllib.parse import urlparse
 
 import requests
 
+import db
 import quart
 from watchers import WatchedItem, Watcher
 
@@ -27,7 +29,9 @@ class GrafanaWatcher(Watcher):
             self.base, self.uid, self.variables = quart.parse_dashboard_url(link)
         except ValueError:
             self.base, self.uid, self.variables = "", "", {}
-        self.name = f"grafana:{self.uid or order}"
+        # the same dashboard may be watched twice, with other variables: each link is its own source
+        tag = hashlib.sha1(repr(sorted(self.variables.items())).encode()).hexdigest()[:6] if self.variables else ""
+        self.name = f"grafana:{self.uid or order}" + (f"-{tag}" if tag else "")
         self.interval_seconds = cfg.get("interval_seconds", 300)
         self.window_minutes = int(cfg.get("window_hours", 6) * 60)
         self.points = cfg.get("points", 120)
@@ -64,13 +68,14 @@ class GrafanaWatcher(Watcher):
                                                  "panels": 0, "series": 0, "unread": 0, "anomalies": [],
                                                  "window_minutes": self.window_minutes})
             raise
-        first = self._seen is None
+        # a new source: what is there is the baseline; after a restart, a change is read twice like any other
+        baseline = self._seen is None and not db.watcher_states().get(self.name, {}).get("seeded")
         seen = set()
         kept = {pid: self._kept.get(pid, []) for pid in card.pop("unread_ids")}
         for a in card["anomalies"]:
             key = f"{self.uid}:{a['panel_id']}:{a['series']}:{a['kind']}"
             seen.add(key)
-            a["confirmed"] = first or key in self._seen
+            a["confirmed"] = baseline or key in (self._seen or ())
             a["item"] = a["confirmed"] and quart.pushes(a)
             if a["item"]:
                 kept.setdefault(a["panel_id"], []).append(self._item(key, card, a))
