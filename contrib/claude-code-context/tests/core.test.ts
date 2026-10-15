@@ -11,6 +11,7 @@ import {
   prices,
   projectFromPrompt,
   projectFromTool,
+  published,
   report,
   resumePrompt,
   settingsFrom,
@@ -18,6 +19,7 @@ import {
   storyFromTool,
   usd,
 } from '../hooks/core'
+import shared from './published'
 
 describe('cost', () => {
   test('reading a big context again is cheap, writing it again once the cache expired is not', async () => {
@@ -36,6 +38,28 @@ describe('cost', () => {
     expect(isCold(0, 61 * 60_000, 60)).toBe(true)
     expect(isCold(0, 59 * 60_000, 60)).toBe(false)
     expect(isCold(null, 10 ** 12, 60)).toBe(false)
+  })
+})
+
+describe('published', () => {
+  const base = { anchor: { project: null, story: 'sc-123' }, pinned: true, model: 'claude-opus-5-5', settings: DEFAULTS, handoff: '/handoff' }
+
+  test('what the advisor would say, priced, for a launcher to show as is', async () => {
+    const cold = published({ ...base, tokens: 366_000, lastResponseAt: 0, now: 2 * 3_600_000 })
+    expect([cold.story, cold.pinned, cold.cold, cold.advise, usd(cold.nextUsd), usd(cold.freshUsd)]).toEqual(['sc-123', true, true, 'cold', '$2.93', '$0.58'])
+    const big = published({ ...base, tokens: 400_000, lastResponseAt: 0, now: 60_000 })
+    expect([big.cold, big.advise, usd(big.nextUsd)]).toEqual([false, 'handoff', '$0.08'])
+    expect(published({ ...base, tokens: 120_000, lastResponseAt: 0, now: 2 * 3_600_000 }).advise).toBe('')
+  })
+
+  test('the file Sentinel reads: tests/published.ts, which its own tests read too', async () => {
+    const p = published({ ...base, anchor: { project: 'mesh', story: 'sc-1234' }, tokens: 366_000, lastResponseAt: 1_000_000, now: 1_000_000 + 2 * 3_600_000 })
+    expect(p).toEqual(shared)
+  })
+
+  test('no answer yet: the cache is not cold, nothing to advise', async () => {
+    const p = published({ ...base, tokens: 200_000, lastResponseAt: null, now: 10 ** 12 })
+    expect([p.cold, p.advise, p.answeredAt]).toEqual([false, '', null])
   })
 })
 
@@ -73,21 +97,23 @@ describe('linked project', () => {
 
 describe('status line', () => {
   test('a fresh session, then size, cold cache, quota, project and story', async () => {
-    expect(statusText({ tokens: 0, cold: false, project: null, story: null, handoffAt: 350_000 })).toBe('fresh context')
-    expect(statusText({ tokens: 208_000, cold: true, quota5h: 41.5, project: 'mesh', story: 'sc-1202', handoffAt: 350_000 }))
+    expect(statusText({ tokens: 0, cold: false, project: null, story: null, handoffAt: 350_000, handoff: '/handoff' })).toBe('fresh context')
+    expect(statusText({ tokens: 208_000, cold: true, quota5h: 41.5, project: 'mesh', story: 'sc-1202', handoffAt: 350_000, handoff: '/handoff' }))
       .toBe('208k · cold · 5 h quota 42% · mesh · sc-1202')
   })
 
   test('past the threshold, a handoff is advised, or something to hand off to asked for', async () => {
-    expect(statusText({ tokens: 400_000, cold: false, project: null, story: 'sc-1201', handoffAt: 350_000 })).toBe('400k · /handoff advised')
-    expect(statusText({ tokens: 400_000, cold: false, project: 'mesh', story: null, handoffAt: 350_000 })).toBe('400k · /handoff advised')
-    expect(statusText({ tokens: 400_000, cold: false, project: null, story: null, handoffAt: 350_000 })).toBe('400k · big context, nothing to hand off to')
+    expect(statusText({ tokens: 400_000, cold: false, project: null, story: 'sc-1201', handoffAt: 350_000, handoff: '/handoff' })).toBe('400k · /handoff advised')
+    expect(statusText({ tokens: 400_000, cold: false, project: 'mesh', story: null, handoffAt: 350_000, handoff: '/context-handoff' })).toBe(
+      '400k · /context-handoff advised',
+    )
+    expect(statusText({ tokens: 400_000, cold: false, project: null, story: null, handoffAt: 350_000, handoff: '/handoff' })).toBe('400k · big context, nothing to hand off to')
   })
 })
 
 describe('texts', () => {
   test('the guard prices the send and offers to start over from the story, with or without a handoff', async () => {
-    const text = guardText({ tokens: 366_000, model: 'claude-opus-5-5', idleMs: 92 * 60_000, project: 'mesh', story: 'sc-1205', settings: DEFAULTS })
+    const text = guardText({ tokens: 366_000, model: 'claude-opus-5-5', idleMs: 92 * 60_000, project: 'mesh', story: 'sc-1205', settings: DEFAULTS, handoff: '/handoff' })
     expect(text).toContain('1 h 32')
     expect(text).toContain('≈ $2.93 just to read it again')
     expect(text).toContain('/fresh to start over from project mesh and sc-1205 if it is up to date (≈ $0.58)')
@@ -95,7 +121,7 @@ describe('texts', () => {
   })
 
   test('with nothing linked, the guard offers /clear, /load-project and /ticket', async () => {
-    const text = guardText({ tokens: 200_000, model: 'claude-opus-5-5', idleMs: 3 * 3_600_000, project: null, story: null, settings: DEFAULTS })
+    const text = guardText({ tokens: 200_000, model: 'claude-opus-5-5', idleMs: 3 * 3_600_000, project: null, story: null, settings: DEFAULTS, handoff: '/handoff' })
     expect(text).toContain('/clear to start from scratch')
     expect(text).toContain('/load-project <name> or /ticket sc-12345')
     expect(text).not.toContain('/fresh')
@@ -130,6 +156,7 @@ describe('texts', () => {
     const text = report({
       tokens: 366_000, window: 1_000_000, model: 'claude-opus-5-5', cold: true, idleMs: 92 * 60_000, costUsd: 14.33,
       quota: { five_hour: 41, seven_day: 63 }, project: 'mesh', story: 'sc-1205', pinned: false, settings: DEFAULTS,
+      handoff: '/handoff',
     })
     expect(text).toBe([
       'Context: 366k (37% of 1M) · cache cold for 1 h 32',

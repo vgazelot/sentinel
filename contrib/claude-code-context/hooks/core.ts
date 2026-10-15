@@ -114,23 +114,25 @@ export function where(a: Anchor): string {
   return [a.project && `project ${a.project}`, a.story].filter(Boolean).join(' and ')
 }
 
+/** `handoff`: the command that hands off — `/handoff`, or `/context-handoff` when another plugin holds the name. */
 export type View = Anchor & {
   tokens: number
   cold: boolean
   quota5h?: number
   handoffAt: number
+  handoff: string
 }
 
 export function statusText(v: View): string {
   const parts = [v.tokens ? kTokens(v.tokens) + (v.cold ? ' · cold' : '') : 'fresh context']
   const anchored = Boolean(v.project || v.story)
-  if (v.tokens >= v.handoffAt) parts.push(anchored ? '/handoff advised' : 'big context, nothing to hand off to')
+  if (v.tokens >= v.handoffAt) parts.push(anchored ? `${v.handoff} advised` : 'big context, nothing to hand off to')
   if (v.quota5h !== undefined) parts.push(`5 h quota ${Math.round(v.quota5h)}%`)
   if (anchored && v.tokens < v.handoffAt) parts.push(...[v.project, v.story].filter((x): x is string => Boolean(x)))
   return parts.join(' · ')
 }
 
-export type Guard = Anchor & { tokens: number; model: string; idleMs: number; settings: Settings }
+export type Guard = Anchor & { tokens: number; model: string; idleMs: number; settings: Settings; handoff: string }
 
 const LINK = '/load-project <name> or /ticket sc-12345'
 
@@ -138,7 +140,7 @@ export function guardText(g: Guard): string {
   const next = usd(nextSendUsd(g.tokens, g.model, true))
   const fresh = usd(freshUsd(g.settings, g.model))
   const ways = g.project || g.story
-    ? `/fresh to start over from ${where(g)} if it is up to date (≈ ${fresh}); /handoff to write the state there first (≈ ${next} then ${fresh})`
+    ? `/fresh to start over from ${where(g)} if it is up to date (≈ ${fresh}); ${g.handoff} to write the state there first (≈ ${next} then ${fresh})`
     : `/clear to start from scratch (≈ ${fresh}); nothing linked, ${LINK} to link one`
   return `Cold cache: the session has slept for ${since(g.idleMs)} with ${kTokens(g.tokens)} of context. This message would cost ≈ ${next} just to read it again. Enter to send it anyway (your text is back in the prompt); ${ways}.`
 }
@@ -168,6 +170,47 @@ export function handoffPrompt(a: Anchor, tokens: number): string {
   return lines.join('\n')
 }
 
+/** What a session publishes for a launcher such as Sentinel: its anchor, its context, and the advice its status line
+ * gives, figured here so that the launcher shows it and never works it out again. */
+export type Published = Anchor & {
+  pinned: boolean
+  tokens: number
+  answeredAt: number | null
+  cold: boolean
+  advise: 'cold' | 'handoff' | ''
+  nextUsd: number
+  freshUsd: number
+  /** The command that hands off, empty when another plugin holds the name. */
+  handoff: string
+}
+
+export type Publish = {
+  anchor: Anchor
+  pinned: boolean
+  tokens: number
+  model: string
+  lastResponseAt: number | null
+  now: number
+  settings: Settings
+  handoff: string
+}
+
+export function published(p: Publish): Published {
+  const cold = isCold(p.lastResponseAt, p.now, p.settings.ttlMin)
+  return {
+    ...p.anchor,
+    pinned: p.pinned,
+    tokens: p.tokens,
+    answeredAt: p.lastResponseAt,
+    cold,
+    // the two moments the advisor speaks: the guard before a cold send, the handoff offer past the threshold
+    advise: cold && p.tokens >= p.settings.coldMin ? 'cold' : p.tokens >= p.settings.handoffAt ? 'handoff' : '',
+    nextUsd: nextSendUsd(p.tokens, p.model, cold),
+    freshUsd: freshUsd(p.settings, p.model),
+    handoff: p.handoff,
+  }
+}
+
 export function resumePrompt(a: Anchor): string {
   const steps = [
     a.project && `run the resume-project skill with "${a.project}" (it loads the project memory and its handoff.md)`,
@@ -191,6 +234,7 @@ export type Report = Anchor & {
   quota: Record<string, number>
   pinned: boolean
   settings: Settings
+  handoff: string
 }
 
 export function report(r: Report): string {
@@ -206,7 +250,7 @@ export function report(r: Report): string {
   lines.push([r.costUsd !== undefined ? `Session ≈ ${usd(r.costUsd)}` : null, quota.length ? `quota ${quota.join(', ')}` : null].filter(Boolean).join(' · '))
   const story = r.story && `${r.story}${r.pinned ? '' : ' (detected)'}`
   lines.push(r.project || r.story
-    ? `Picks up from: ${where({ project: r.project, story })} · /handoff writes the state there then starts fresh, /fresh starts fresh from it right away`
+    ? `Picks up from: ${where({ project: r.project, story })} · ${r.handoff} writes the state there then starts fresh, /fresh starts fresh from it right away`
     : `Nothing linked: ${LINK} to be able to start fresh without losing anything`)
   return lines.filter(Boolean).join('\n')
 }

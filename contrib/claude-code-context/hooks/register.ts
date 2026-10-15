@@ -11,6 +11,7 @@ import {
   kTokens,
   projectFromPrompt,
   projectFromTool,
+  published,
   report,
   resumePrompt,
   settingsFrom,
@@ -23,10 +24,19 @@ import {
 
 // A session's context, what it costs and when to hand off. The durable state of a piece of work lives
 // in its story and, when the session loaded one, in its project's memory: a heavy session writes where
-// it stands there, then a fresh session starts from it.
+// it stands there, then a fresh session starts from it. What the status line shows is also written to
+// <CLAUDE_CONFIG_DIR>/context-advisor/<session id>.json, for a launcher such as Sentinel to show.
 const TICK_MS = 30_000
 const BYPASS_MS = 3 * 60_000
 const LINK = '/load-project <name> or /ticket sc-12345'
+const COMMANDS = [
+  ['budget', 'Session context: size, cache, cost, quota, linked project and ticket'],
+  ['fresh', 'Starts fresh from the linked project / story, without reading the current context again'],
+  ['ticket', 'Links the session to a story (args: sc-12345), or shows the linked one'],
+] as const
+const HANDOFF = 'Writes the state into the linked project memory / story, then starts fresh from it'
+// /handoff, or this name when another plugin holds that one (a skill of the same name)
+const HANDOFF_NAMES = ['handoff', 'context-handoff'] as const
 
 const ctx = {
   settings: DEFAULTS as Settings,
@@ -38,6 +48,7 @@ const ctx = {
   handoff: null as string | null,
   resumeAfterClear: null as Anchor | null,
   nudged: false,
+  handoffCommand: '/handoff',
 }
 
 const anchor = (): Anchor => ({ project: ctx.project, story: ctx.story })
@@ -60,8 +71,49 @@ async function figures($: $T) {
 
 async function refresh($: $T) {
   const f = await figures($)
-  $.ui.status(statusText({ tokens: f.tokens, cold: f.cold, quota5h: f.quota.five_hour, ...anchor(), handoffAt: ctx.settings.handoffAt }))
+  $.ui.status(
+    statusText({ tokens: f.tokens, cold: f.cold, quota5h: f.quota.five_hour, ...anchor(), handoffAt: ctx.settings.handoffAt, handoff: ctx.handoffCommand }),
+  )
+  void publish($, f)
   return f
+}
+
+/** Where the session's state is published: one file per session id, read by a launcher such as Sentinel. */
+async function publishedPath($: $T) {
+  const home = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
+  return `${home}/context-advisor/${await $.session.id()}.json`
+}
+
+async function publish($: $T, f: Awaited<ReturnType<typeof figures>>) {
+  try {
+    const state = published({
+      anchor: anchor(),
+      pinned: ctx.pinned,
+      tokens: f.tokens,
+      model: f.model,
+      lastResponseAt: ctx.lastResponseAt,
+      now: f.now,
+      settings: ctx.settings,
+      handoff: ctx.handoffCommand,
+    })
+    await $.fs.write(await publishedPath($), JSON.stringify(state))
+  } catch (err) {
+    $.ui.log(`context: publish failed: ${String(err)}`, { to: 'debug' })
+  }
+}
+
+/** A session gets back what it was linked to, from what was published for it; nothing published, nothing linked. Says whether anything was. */
+async function restore($: $T) {
+  let saved: Record<string, unknown> | null = null
+  try {
+    saved = JSON.parse(await $.fs.read(await publishedPath($)))
+  } catch {
+    // never published, or unreadable: the conversation starts unlinked
+  }
+  ctx.story = typeof saved?.story === 'string' ? saved.story : null
+  ctx.project = typeof saved?.project === 'string' ? saved.project : null
+  ctx.pinned = saved?.pinned === true
+  return saved !== null
 }
 
 async function remember($: $T) {
@@ -94,11 +146,38 @@ export const register: Register = on => {
     })
     const saved = await $.store.get(`last:${await $.session.id()}`)
     if (typeof saved === 'number') ctx.lastResponseAt = saved
+    // a reload or a respawn starts the module over: the session keeps what it published;
+    // nothing published yet, a launcher may have started it on a story (Sentinel's Pick up): linked as /ticket would
+    const restored = await restore($)
+    const preset = findStory((await $.env.get('CONTEXT_STORY')) ?? '')
+    if (preset && !restored) {
+      ctx.story = preset
+      ctx.pinned = true
+    }
 
-    await $.command.register({ name: 'budget', description: 'Session context: size, cache, cost, quota, linked project and ticket' })
-    await $.command.register({ name: 'handoff', description: 'Writes the state into the linked project memory / story, then starts fresh from it' })
-    await $.command.register({ name: 'fresh', description: 'Starts fresh from the linked project / story, without reading the current context again' })
-    await $.command.register({ name: 'ticket', description: 'Links the session to a story (args: sc-12345), or shows the linked one' })
+    // a name another plugin holds is refused: the other commands, the status line and the guard still work
+    const refused: string[] = []
+    const take = async (name: string, description: string) => {
+      try {
+        await $.command.register({ name, description })
+        return true
+      } catch {
+        refused.push(`/${name}`)
+        return false
+      }
+    }
+    for (const [name, description] of COMMANDS) await take(name, description)
+    ctx.handoffCommand = ''
+    for (const name of HANDOFF_NAMES) {
+      if (await take(name, HANDOFF)) {
+        ctx.handoffCommand = `/${name}`
+        break
+      }
+    }
+    if (refused.length) {
+      const instead = ctx.handoffCommand && ctx.handoffCommand !== '/handoff' ? `; its handoff is ${ctx.handoffCommand}` : ''
+      $.ui.toast(`context: ${refused.join(', ')} already belong to another plugin here${instead}.`, { timeoutMs: 15_000 })
+    }
 
     $.clock.every(TICK_MS, () => void refresh($))
     void refresh($)
@@ -110,17 +189,23 @@ export const register: Register = on => {
     if ((e.source === 'resume' || e.source === 'fork') && typeof e.seconds_since_last_response === 'number') {
       ctx.lastResponseAt = (await $.clock.now()) - e.seconds_since_last_response * 1000
     }
+    // a fork carries on the same work; a resumed conversation may be another one
+    if (e.source === 'resume') await restore($)
     if (e.source === 'clear') {
       const a = ctx.resumeAfterClear
       ctx.resumeAfterClear = null
       ctx.lastResponseAt = null
       ctx.bypassUntil = 0
       ctx.nudged = false
+      if (!a) {
+        ctx.story = null
+        ctx.pinned = false
+        ctx.project = null
+      }
+      void refresh($) // a new session id: published now, not at the next tick
       if (a) return { ...result, initialUserMessage: resumePrompt(a) }
-      ctx.story = null
-      ctx.pinned = false
-      ctx.project = null
     }
+    if (e.source === 'resume' || e.source === 'fork') void refresh($)
     if (e.source === 'compact' && anchored()) {
       ctx.nudged = false
       return { ...result, additionalContext: [...(result.additionalContext ?? []), compactContext(anchor())] }
@@ -144,7 +229,7 @@ export const register: Register = on => {
       ctx.bypassUntil = f.now + BYPASS_MS
       const typed = e.text
       $.clock.after(50, () => void $.prompt.fill({ text: typed }))
-      return { drop: guardText({ tokens: f.tokens, model: f.model, idleMs: f.idleMs, ...anchor(), settings: ctx.settings }) }
+      return { drop: guardText({ tokens: f.tokens, model: f.model, idleMs: f.idleMs, ...anchor(), settings: ctx.settings, handoff: ctx.handoffCommand }) }
     }
     return next(e)
   })
@@ -187,9 +272,9 @@ export const register: Register = on => {
         $.ui.toast(`${kTokens(f.tokens)} of context and nothing linked: ${LINK} to be able to start fresh without losing anything.`, { timeoutMs: 15_000 })
       } else if (ctx.settings.auto && !e.answer.trim().endsWith('?')) {
         void startHandoff($)
-      } else {
-        await $.prompt.suggest({ text: '/handoff' })
-        $.ui.toast(`${kTokens(f.tokens)} of context: /handoff writes the state into ${where(anchor())} then starts fresh (Tab to take it).`, { timeoutMs: 15_000 })
+      } else if (ctx.handoffCommand) {
+        await $.prompt.suggest({ text: ctx.handoffCommand })
+        $.ui.toast(`${kTokens(f.tokens)} of context: ${ctx.handoffCommand} writes the state into ${where(anchor())} then starts fresh (Tab to take it).`, { timeoutMs: 15_000 })
       }
     }
     return done
@@ -200,11 +285,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'handoff' }, async $ => {
-    if (!anchored()) return { text: `Nothing linked to this session: ${LINK}, then /handoff.` }
-    await startHandoff($)
-    return { text: `Handing off: the state goes into ${where(anchor())}, then a fresh session picks up from there.` }
-  })
+  // under the name it got: a /handoff held by another plugin is that plugin's to run
+  for (const command of HANDOFF_NAMES) {
+    on('command.run', { command }, async ($, e, next) => {
+      if (`/${e.command}` !== ctx.handoffCommand) return next(e)
+      if (!anchored()) return { text: `Nothing linked to this session: ${LINK}, then ${ctx.handoffCommand}.` }
+      await startHandoff($)
+      return { text: `Handing off: the state goes into ${where(anchor())}, then a fresh session picks up from there.` }
+    })
+  }
 
   on('command.run', { command: 'fresh' }, async $ => {
     if (!anchored()) return { text: `Nothing linked to this session: ${LINK}, then /fresh.` }
@@ -237,6 +326,7 @@ export const register: Register = on => {
         ...anchor(),
         pinned: ctx.pinned,
         settings: ctx.settings,
+        handoff: ctx.handoffCommand,
       }),
     }
   })

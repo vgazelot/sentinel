@@ -1,7 +1,7 @@
 {
   "name": "context",
-  "version": "0.2.0",
-  "description": "Context advisor: size, cache, cost and quota of the session, a guard before an expensive send, a handoff written into the ticket and the project memory, then a fresh start from them",
+  "version": "0.3.0",
+  "description": "Context advisor: size, cache, cost and quota of the session, a guard before an expensive send, a handoff written into the ticket and the project memory, then a fresh start from them; publishes each session's story and figures for a launcher such as Sentinel",
   "author": {
     "name": "vgazelot"
   }
