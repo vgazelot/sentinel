@@ -6,7 +6,7 @@
     <div class="row-main">
         <a class="row-title" href="{{ v.url }}" target="_blank" rel="noopener noreferrer">{{ v.title }}</a>
         <div class="row-meta">
-            <span class="tag {{ 'ok' if v.score >= 9 }}">{{ v.score }}/10 · {{ v.verdict }}</span>
+            {% if v.score is not none %}<span class="tag {{ 'ok' if v.score >= 9 }}">{{ v.score }}/10 · {{ v.verdict }}</span>{% endif %}
             {% if v.category %}<span class="tag">{{ v.category }}</span>{% endif %}
             {% for m in v.mentions if m.label %}{% if m.discussion %}<a href="{{ m.discussion }}" target="_blank" rel="noopener noreferrer">{{ m.label }}{% if m.points %} {{ m.points }}{% endif %}</a>{% else %}<span>{{ m.label }}</span>{% endif %}{% endfor %}
             {% if v.facts.stars %}<span>★ {{ '%.1fk' % (v.facts.stars / 1000) if v.facts.stars >= 1000 else v.facts.stars }}</span>{% endif %}

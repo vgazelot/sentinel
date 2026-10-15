@@ -455,6 +455,10 @@ class LookoutWebTest(LookoutBase):
 
         with mock.patch("config.lookout", return_value={**config.lookout(), "threshold": 9}):
             self.assertIn("Kept for later", self.client.get("/lookout?tab=try").get_data(as_text=True))
+        self.client.post(f"/api/lookout/{self.ids['A launch post']}/feedback", data={"value": "try"})
+        page = self.client.get("/lookout?tab=try")
+        self.assertEqual(page.status_code, 200, "a link never scored, kept to try through the API")
+        self.assertIn("A launch post", page.get_data(as_text=True))
 
     def test_feedback_takes_a_find_out_of_the_list(self):
         resp = self.client.post(f"/api/lookout/{self.ids['A scheduler worth a look']}/feedback", data={"value": "noise"})
