@@ -313,7 +313,10 @@ def attach(sock, name: str):
     binary frames; binary frames in are keystrokes, a text frame `{"cols", "rows"}` resizes."""
     pid, fd = pty.fork()
     if pid == 0:
-        os.execvpe(TMUX, _tmux_argv("attach-session", "-t", f"={name}"), _console_env())
+        try:
+            os.execvpe(TMUX, _tmux_argv("attach-session", "-t", f"={name}"), _console_env())
+        finally:
+            os._exit(127)  # the child of a threaded server: never back into its loop
     try:
         while True:
             ready, _, _ = select.select([sock, fd], [], [], 60)
@@ -384,10 +387,11 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _console_ws(self, query: str):
-        """No token here (a browser cannot send one): a local Host, Sentinel's origin, a fresh ticket."""
+        """No token here (a browser cannot send one): a local Host, Sentinel's origin, a fresh ticket — redeemed
+        first, so a refused attempt burns it before its request line reaches the log."""
+        name = redeem(parse_qs(query).get("ticket", [""])[0])
         if self.headers.get("Host", "").rsplit(":", 1)[0] not in LOCAL_HOSTS or self.headers.get("Origin") not in ORIGINS:
             return self._json(403, {"error": "unknown host or origin"})
-        name = redeem(parse_qs(query).get("ticket", [""])[0])
         key = self.headers.get("Sec-WebSocket-Key", "")
         if not name or not key or self.headers.get("Upgrade", "").lower() != "websocket":
             return self._json(401, {"error": "a WebSocket with a fresh ticket from Sentinel"})

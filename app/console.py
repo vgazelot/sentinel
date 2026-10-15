@@ -16,7 +16,7 @@ import config
 
 bp = Blueprint("console", __name__)
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
-_alive: dict = {"at": 0.0, "names": set()}
+_alive: dict = {"at": 0.0, "rows": []}
 
 
 def enabled() -> bool:
@@ -30,8 +30,10 @@ def _ws_base() -> str:
 def _bridge(path: str, payload: dict) -> dict:
     r = requests.post(f"{config.CLAUDE_BRIDGE_URL}{path}", json=payload, headers=agents._auth(), timeout=20)
     data = r.json() if r.content else {}
-    if r.status_code == 404:
+    if r.status_code == 404 and str(data.get("error", "")).startswith("no console"):
         abort(404)
+    if r.status_code == 404:
+        raise RuntimeError("this bridge has no console — restart it (launchctl bootout, then bootstrap)")
     if r.status_code >= 400:
         raise RuntimeError(data.get("error") or f"bridge HTTP {r.status_code}")
     return data
@@ -49,18 +51,22 @@ def answer(name: str, title: str, prompt: str = ""):
     return jsonify({"name": name, "title": title, "ws": f"{_ws_base()}/console/ws?ticket={data['ticket']}"})
 
 
-def alive() -> set[str]:
-    """Sessions still running, for the buttons: read at most every 5 s, none when the bridge is away."""
+def sessions() -> list[dict]:
+    """Consoles still running ({name, created, attached}): read at most every 5 s, none when the bridge is away."""
     if not enabled():
-        return set()
+        return []
     if time.monotonic() - _alive["at"] > 5:
         try:
             r = requests.get(f"{config.CLAUDE_BRIDGE_URL}/console", headers=agents._auth(), timeout=2)
-            names = {c["name"] for c in r.json().get("consoles", [])} if r.ok else set()
-        except (requests.RequestException, ValueError, KeyError, TypeError):
-            names = set()
-        _alive.update(at=time.monotonic(), names=names)
-    return _alive["names"]
+            rows = r.json().get("consoles", []) if r.ok else []
+        except (requests.RequestException, ValueError, AttributeError):
+            rows = []
+        _alive.update(at=time.monotonic(), rows=rows)
+    return _alive["rows"]
+
+
+def alive() -> set[str]:
+    return {c.get("name") for c in sessions()}
 
 
 @bp.post("/api/console/<name>/attach")

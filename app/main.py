@@ -12,6 +12,7 @@ from flask import Flask, jsonify, make_response, redirect, render_template, requ
 
 import agents
 import config
+import console
 import cycle
 import db
 import deps
@@ -86,6 +87,16 @@ def local_and_same_origin():
     if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site") or (origin and urlparse(origin).netloc != request.host):
         return "cross-site request refused", 403
     return None
+
+
+
+@app.after_request
+def not_in_a_frame(resp):
+    """No page of another site may show Sentinel in a frame: a click on Claude and the keys typed after
+    it would reach a live shell (clickjacking)."""
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    return resp
 
 
 # --- Template filters ----------------------------------------------------------------
@@ -354,7 +365,9 @@ def settings_page():
         "settings.html", active="settings",
         push_enabled=bool(config.VAPID_PRIVATE_KEY) and not config.PUSH_DISABLED,
         subscriptions=db.subscriptions(), triage=config.triage(), agent_cfg=config.agents(),
-        bridge=config.CLAUDE_BRIDGE_URL, **_watchers_context(), **_agents_context(),
+        bridge=config.CLAUDE_BRIDGE_URL, consoles=[{**c, "started": datetime.fromtimestamp(c["created"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+                  for c in console.sessions()],
+        **_watchers_context(), **_agents_context(),
     )
 
 

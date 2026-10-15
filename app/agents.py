@@ -197,6 +197,8 @@ def check_bridge():
             error = "the bridge runs an older version: restart it (launchctl bootout, then bootstrap)"
         elif not info.get("token"):
             error = "the bridge has no BRIDGE_TOKEN: any local page could make it run Claude — set it"
+        elif not info.get("console") and config.load().get("watchers", {}).get("zabbix", {}).get("claude"):
+            error = "the bridge has no console (zabbix.claude is on): restart it, and install tmux on its PATH"
         else:
             error = ""
     except (requests.RequestException, ValueError) as e:

@@ -37,6 +37,21 @@
         <div><dt>Reviewers' comments on your PRs</dt><dd>{{ 'turned into a to-do automatically' if agent_cfg.asks else 'on demand only' }}</dd></div>
         <div><dt>Parallel runs</dt><dd>{{ agent_cfg.concurrency }}</dd></div>
     </dl>
+    {% if consoles %}
+    <table class="table">
+        <thead><tr><th>Console</th><th>Window</th><th class="num">Started</th><th></th></tr></thead>
+        <tbody>
+        {% for c in consoles %}
+        <tr>
+            <td><span class="ref">{{ c.name }}</span></td>
+            <td>{{ 'open' if c.attached else 'closed' }}</td>
+            <td class="num">{{ c.started | age }} ago</td>
+            <td class="num"><button type="button" class="btn small ghost claude" data-console="/api/console/{{ c.name }}/attach">Open</button></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
     {% if recent_runs %}
     <table class="table">
         <thead><tr><th>Subject</th><th>Mode</th><th>Status</th><th class="num">When</th></tr></thead>

@@ -60,6 +60,17 @@ class AgentsTest(SentinelTest):
                 agents.check_bridge()
             error = db.watcher_states()["claude-bridge"]["last_error"]
             self.assertIn(expected, error) if expected else self.assertEqual(error, "")
+        import yaml
+
+        with open(self.cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["watchers"]["zabbix"] = {"enabled": True, "url": "https://z", "claude": True}
+        with open(self.cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 3, "token": True}, raise_for_status=lambda: None)), \
+                mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
+            agents.check_bridge()
+        self.assertIn("no console", db.watcher_states()["claude-bridge"]["last_error"], "the Claude button needs a bridge with consoles")
 
     def test_material_is_fetched_only_when_a_run_is_queued(self):
         import agents
@@ -202,10 +213,13 @@ class ConsoleBridgeTest(SentinelTest):
             conn.close()
             return status
 
-        t = b.ticket("zabbix-1")
-        self.assertEqual(upgrade(t, "https://evil.example"), 403)
+        burnt = b.ticket("zabbix-1")
+        self.assertEqual(upgrade(burnt, "https://evil.example"), 403)
+        self.assertEqual(upgrade(burnt, "http://localhost:8300"), 401, "a refused attempt burns the ticket")
         self.assertEqual(upgrade("forged", "http://localhost:8300"), 401)
-        with mock.patch.object(b, "attach") as attach:
+        t, attached = b.ticket("zabbix-1"), threading.Event()
+        with mock.patch.object(b, "attach", side_effect=lambda sock, name: attached.set()) as attach:
             self.assertEqual(upgrade(t, "http://localhost:8300"), 101)
+            self.assertTrue(attached.wait(5), "the server reached attach before the mock left")
         self.assertEqual(attach.call_args.args[1], "zabbix-1")
         self.assertEqual(upgrade(t, "http://localhost:8300"), 401, "a ticket opens once")
