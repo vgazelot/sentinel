@@ -9,7 +9,10 @@ import {
   isCold,
   nextSendUsd,
   prices,
+  projectFromPrompt,
+  projectFromTool,
   report,
+  resumePrompt,
   settingsFrom,
   statusText,
   storyFromTool,
@@ -51,51 +54,88 @@ describe('linked story', () => {
   })
 })
 
-describe('status line', () => {
-  test('a fresh session, then size, cold cache, quota and story', async () => {
-    expect(statusText({ tokens: 0, cold: false, story: null, handoffAt: 350_000 })).toBe('fresh context')
-    expect(statusText({ tokens: 208_000, cold: true, quota5h: 41.5, story: 'sc-1202', handoffAt: 350_000 })).toBe('208k · cold · 5 h quota 42% · sc-1202')
+describe('linked project', () => {
+  test('a typed /load-project or /resume-project names the project, with or without the plugin prefix', async () => {
+    expect(projectFromPrompt('/load-project mesh fix the jwks rotation')).toBe('mesh')
+    expect(projectFromPrompt('/project-memory:resume-project php-image')).toBe('php-image')
+    expect(projectFromPrompt('/wrapup-project')).toBe(null)
+    expect(projectFromPrompt('load-project mesh')).toBe(null)
   })
 
-  test('past the threshold, a handoff is advised, or a ticket asked for', async () => {
-    expect(statusText({ tokens: 400_000, cold: false, story: 'sc-1', handoffAt: 350_000 })).toBe('400k · /handoff advised')
-    expect(statusText({ tokens: 400_000, cold: false, story: null, handoffAt: 350_000 })).toBe('400k · big context, no ticket')
+  test('so does the Skill tool when the model loads it', async () => {
+    expect(projectFromTool('Skill', { skill: 'project-memory:load-project', args: 'mesh the jwks rotation' })).toBe('mesh')
+    expect(projectFromTool('Skill', { skill: 'resume-project', args: ' run' })).toBe('run')
+    expect(projectFromTool('Skill', { skill: 'project-memory:create-project', args: 'service-mesh' })).toBe(null)
+    expect(projectFromTool('Skill', { skill: 'load-project' })).toBe(null)
+    expect(projectFromTool('Bash', { command: '/load-project mesh' })).toBe(null)
+  })
+})
+
+describe('status line', () => {
+  test('a fresh session, then size, cold cache, quota, project and story', async () => {
+    expect(statusText({ tokens: 0, cold: false, project: null, story: null, handoffAt: 350_000 })).toBe('fresh context')
+    expect(statusText({ tokens: 208_000, cold: true, quota5h: 41.5, project: 'mesh', story: 'sc-1202', handoffAt: 350_000 }))
+      .toBe('208k · cold · 5 h quota 42% · mesh · sc-1202')
+  })
+
+  test('past the threshold, a handoff is advised, or something to hand off to asked for', async () => {
+    expect(statusText({ tokens: 400_000, cold: false, project: null, story: 'sc-1201', handoffAt: 350_000 })).toBe('400k · /handoff advised')
+    expect(statusText({ tokens: 400_000, cold: false, project: 'mesh', story: null, handoffAt: 350_000 })).toBe('400k · /handoff advised')
+    expect(statusText({ tokens: 400_000, cold: false, project: null, story: null, handoffAt: 350_000 })).toBe('400k · big context, nothing to hand off to')
   })
 })
 
 describe('texts', () => {
   test('the guard prices the send and offers to start over from the story, with or without a handoff', async () => {
-    const text = guardText({ tokens: 366_000, model: 'claude-opus-5-5', idleMs: 92 * 60_000, story: 'sc-1205', settings: DEFAULTS })
+    const text = guardText({ tokens: 366_000, model: 'claude-opus-5-5', idleMs: 92 * 60_000, project: 'mesh', story: 'sc-1205', settings: DEFAULTS })
     expect(text).toContain('1 h 32')
     expect(text).toContain('≈ $2.93 just to read it again')
-    expect(text).toContain('/fresh to start over from sc-1205 if it is up to date (≈ $0.58)')
-    expect(text).toContain('/handoff to write the state into it first (≈ $2.93 then $0.58)')
+    expect(text).toContain('/fresh to start over from project mesh and sc-1205 if it is up to date (≈ $0.58)')
+    expect(text).toContain('/handoff to write the state there first (≈ $2.93 then $0.58)')
   })
 
-  test('without a story, the guard offers /clear and /ticket', async () => {
-    const text = guardText({ tokens: 200_000, model: 'claude-opus-5-5', idleMs: 3 * 3_600_000, story: null, settings: DEFAULTS })
+  test('with nothing linked, the guard offers /clear, /load-project and /ticket', async () => {
+    const text = guardText({ tokens: 200_000, model: 'claude-opus-5-5', idleMs: 3 * 3_600_000, project: null, story: null, settings: DEFAULTS })
     expect(text).toContain('/clear to start from scratch')
-    expect(text).toContain('/ticket sc-12345')
+    expect(text).toContain('/load-project <name> or /ticket sc-12345')
     expect(text).not.toContain('/fresh')
   })
 
-  test('the handoff is written in English, ends on a checkable line, and stops on the wrong story', async () => {
-    const text = handoffPrompt('sc-1202', 380_000)
+  test('a story handoff is written in English, ends on a checkable line, and stops on the wrong work', async () => {
+    const text = handoffPrompt({ project: null, story: 'sc-1202' }, 380_000)
     expect(text.endsWith('HANDOFF-OK sc-1202')).toBe(true)
     expect(text).toContain('in English')
-    expect(text).toContain('If sc-1202 is not the story of the current work')
+    expect(text).toContain('If sc-1202 is not what the current work is about')
+    expect(text).not.toContain('handoff.md')
+  })
+
+  test('a project handoff syncs its memory and handoff.md without asking, pushes nothing, and confirms on the project', async () => {
+    const text = handoffPrompt({ project: 'mesh', story: 'sc-1202' }, 380_000)
+    expect(text).toContain('do the doc sync of /wrapup-project')
+    expect(text).toContain('overwrite its handoff.md')
+    expect(text).toContain('Ask nothing')
+    expect(text).toContain('commit and push nothing')
+    expect(text).toContain('Write in sc-1202, in English')
+    expect(text.endsWith('HANDOFF-OK mesh')).toBe(true)
+  })
+
+  test('the fresh session resumes the project, then the story', async () => {
+    expect(resumePrompt({ project: 'mesh', story: 'sc-1202' })).toBe(
+      'Pick up project mesh and sc-1202: run the resume-project skill with "mesh" (it loads the project memory and its handoff.md); '
+      + 'then read sc-1202 and its latest "Handoff" comment, check the linked branch and PR. Sum up in two lines where things stand, then carry on from the next step.')
+    expect(resumePrompt({ project: null, story: 'sc-1202' })).toContain('Pick up sc-1202: read sc-1202')
   })
 
   test('the report gives size, cache, costs, quota and story', async () => {
     const text = report({
       tokens: 366_000, window: 1_000_000, model: 'claude-opus-5-5', cold: true, idleMs: 92 * 60_000, costUsd: 14.33,
-      quota: { five_hour: 41, seven_day: 63 }, story: 'sc-1205', pinned: false, settings: DEFAULTS,
+      quota: { five_hour: 41, seven_day: 63 }, project: 'mesh', story: 'sc-1205', pinned: false, settings: DEFAULTS,
     })
     expect(text).toBe([
       'Context: 366k (37% of 1M) · cache cold for 1 h 32',
       'Next send ≈ $2.93 · fresh ≈ $0.58',
       'Session ≈ $14.33 · quota 5 h 41%, 7 d 63%',
-      'Story: sc-1205 (detected) · /handoff writes the state into it then starts fresh, /fresh starts fresh from it right away',
+      'Picks up from: project mesh and sc-1205 (detected) · /handoff writes the state there then starts fresh, /fresh starts fresh from it right away',
     ].join('\n'))
   })
 })

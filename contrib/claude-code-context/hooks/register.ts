@@ -7,30 +7,41 @@ import {
   guardText,
   handoffPrompt,
   isCold,
+  key,
   kTokens,
+  projectFromPrompt,
+  projectFromTool,
   report,
   resumePrompt,
   settingsFrom,
   statusText,
   storyFromTool,
+  where,
+  type Anchor,
   type Settings,
 } from './core'
 
 // A session's context, what it costs and when to hand off. The durable state of a piece of work lives
-// in its story: a heavy session writes where it stands there, then a fresh session starts from it.
+// in its story and, when the session loaded one, in its project's memory: a heavy session writes where
+// it stands there, then a fresh session starts from it.
 const TICK_MS = 30_000
 const BYPASS_MS = 3 * 60_000
+const LINK = '/load-project <name> or /ticket sc-12345'
 
 const ctx = {
   settings: DEFAULTS as Settings,
   story: null as string | null,
   pinned: false,
+  project: null as string | null,
   lastResponseAt: null as number | null,
   bypassUntil: 0,
   handoff: null as string | null,
-  resumeAfterClear: null as string | null,
+  resumeAfterClear: null as Anchor | null,
   nudged: false,
 }
+
+const anchor = (): Anchor => ({ project: ctx.project, story: ctx.story })
+const anchored = () => Boolean(ctx.project || ctx.story)
 
 async function figures($: $T) {
   const [usage, model, now] = await Promise.all([$.session.usage(), $.session.model(), $.clock.now()])
@@ -49,7 +60,7 @@ async function figures($: $T) {
 
 async function refresh($: $T) {
   const f = await figures($)
-  $.ui.status(statusText({ tokens: f.tokens, cold: f.cold, quota5h: f.quota.five_hour, story: ctx.story, handoffAt: ctx.settings.handoffAt }))
+  $.ui.status(statusText({ tokens: f.tokens, cold: f.cold, quota5h: f.quota.five_hour, ...anchor(), handoffAt: ctx.settings.handoffAt }))
   return f
 }
 
@@ -58,15 +69,14 @@ async function remember($: $T) {
 }
 
 async function startHandoff($: $T) {
-  const story = ctx.story
-  if (!story) return
+  if (!anchored()) return
   const f = await figures($)
-  ctx.handoff = story
-  await $.prompt.submit({ text: handoffPrompt(story, f.tokens) })
+  ctx.handoff = key(anchor())
+  await $.prompt.submit({ text: handoffPrompt(anchor(), f.tokens) })
 }
 
-async function resumeFresh($: $T, story: string) {
-  ctx.resumeAfterClear = story
+async function resumeFresh($: $T, a: Anchor) {
+  ctx.resumeAfterClear = a
   $.clock.after(100, () => void $.command.run({ command: 'clear' }))
 }
 
@@ -85,9 +95,9 @@ export const register: Register = on => {
     const saved = await $.store.get(`last:${await $.session.id()}`)
     if (typeof saved === 'number') ctx.lastResponseAt = saved
 
-    await $.command.register({ name: 'budget', description: 'Session context: size, cache, cost, quota and linked ticket' })
-    await $.command.register({ name: 'handoff', description: 'Writes the state into the linked story, then starts fresh from it' })
-    await $.command.register({ name: 'fresh', description: 'Starts fresh from the linked story, without reading the current context again' })
+    await $.command.register({ name: 'budget', description: 'Session context: size, cache, cost, quota, linked project and ticket' })
+    await $.command.register({ name: 'handoff', description: 'Writes the state into the linked project memory / story, then starts fresh from it' })
+    await $.command.register({ name: 'fresh', description: 'Starts fresh from the linked project / story, without reading the current context again' })
     await $.command.register({ name: 'ticket', description: 'Links the session to a story (args: sc-12345), or shows the linked one' })
 
     $.clock.every(TICK_MS, () => void refresh($))
@@ -101,24 +111,31 @@ export const register: Register = on => {
       ctx.lastResponseAt = (await $.clock.now()) - e.seconds_since_last_response * 1000
     }
     if (e.source === 'clear') {
-      const story = ctx.resumeAfterClear
+      const a = ctx.resumeAfterClear
       ctx.resumeAfterClear = null
       ctx.lastResponseAt = null
       ctx.bypassUntil = 0
       ctx.nudged = false
-      if (story) return { ...result, initialUserMessage: resumePrompt(story) }
+      if (a) return { ...result, initialUserMessage: resumePrompt(a) }
       ctx.story = null
       ctx.pinned = false
+      ctx.project = null
     }
-    if (e.source === 'compact' && ctx.story) {
+    if (e.source === 'compact' && anchored()) {
       ctx.nudged = false
-      return { ...result, additionalContext: [...(result.additionalContext ?? []), compactContext(ctx.story)] }
+      return { ...result, additionalContext: [...(result.additionalContext ?? []), compactContext(anchor())] }
     }
     return result
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind !== 'composer' || e.text.startsWith('/')) return next(e)
+    if (e.origin.kind !== 'composer') return next(e)
+    const loaded = projectFromPrompt(e.text)
+    if (loaded) {
+      ctx.project = loaded
+      void refresh($)
+    }
+    if (e.text.startsWith('/')) return next(e)
     const named = findStory(e.text)
     if (named && !ctx.pinned) ctx.story = named
 
@@ -127,19 +144,21 @@ export const register: Register = on => {
       ctx.bypassUntil = f.now + BYPASS_MS
       const typed = e.text
       $.clock.after(50, () => void $.prompt.fill({ text: typed }))
-      return { drop: guardText({ tokens: f.tokens, model: f.model, idleMs: f.idleMs, story: ctx.story, settings: ctx.settings }) }
+      return { drop: guardText({ tokens: f.tokens, model: f.model, idleMs: f.idleMs, ...anchor(), settings: ctx.settings }) }
     }
     return next(e)
   })
 
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
-    if (!ctx.pinned && !e.agentId) {
-      const story = storyFromTool(e.tool, e as unknown as Record<string, unknown>)
-      if (story && story !== ctx.story) {
-        ctx.story = story
-        void refresh($)
-      }
+    if (e.agentId) return result
+    const args = e as unknown as Record<string, unknown>
+    const project = projectFromTool(e.tool, args)
+    const story = ctx.pinned ? null : storyFromTool(e.tool, args)
+    if ((project && project !== ctx.project) || (story && story !== ctx.story)) {
+      ctx.project = project ?? ctx.project
+      ctx.story = story ?? ctx.story
+      void refresh($)
     }
     return result
   })
@@ -151,12 +170,12 @@ export const register: Register = on => {
     void remember($)
 
     if (ctx.handoff) {
-      const story = ctx.handoff
+      const confirm = ctx.handoff
       ctx.handoff = null
-      if (e.answer.includes(`HANDOFF-OK ${story}`)) {
-        await resumeFresh($, story)
+      if (e.answer.includes(`HANDOFF-OK ${confirm}`)) {
+        await resumeFresh($, anchor())
       } else {
-        $.ui.toast(`Handoff not confirmed: check story ${story} before starting fresh.`, { timeoutMs: 15_000 })
+        $.ui.toast(`Handoff not confirmed: check ${where(anchor())} before starting fresh.`, { timeoutMs: 15_000 })
       }
       return done
     }
@@ -164,13 +183,13 @@ export const register: Register = on => {
     const f = await refresh($)
     if (!ctx.nudged && f.tokens >= ctx.settings.handoffAt) {
       ctx.nudged = true
-      if (!ctx.story) {
-        $.ui.toast(`${kTokens(f.tokens)} of context and no ticket linked: /ticket sc-12345 to be able to start fresh without losing anything.`, { timeoutMs: 15_000 })
+      if (!anchored()) {
+        $.ui.toast(`${kTokens(f.tokens)} of context and nothing linked: ${LINK} to be able to start fresh without losing anything.`, { timeoutMs: 15_000 })
       } else if (ctx.settings.auto && !e.answer.trim().endsWith('?')) {
         void startHandoff($)
       } else {
         await $.prompt.suggest({ text: '/handoff' })
-        $.ui.toast(`${kTokens(f.tokens)} of context: /handoff writes the state into ${ctx.story} then starts fresh (Tab to take it).`, { timeoutMs: 15_000 })
+        $.ui.toast(`${kTokens(f.tokens)} of context: /handoff writes the state into ${where(anchor())} then starts fresh (Tab to take it).`, { timeoutMs: 15_000 })
       }
     }
     return done
@@ -182,15 +201,15 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'handoff' }, async $ => {
-    if (!ctx.story) return { text: 'No ticket linked to this session: /ticket sc-12345, then /handoff.' }
+    if (!anchored()) return { text: `Nothing linked to this session: ${LINK}, then /handoff.` }
     await startHandoff($)
-    return { text: `Handing off: the state goes into ${ctx.story}, then a fresh session picks up from the story.` }
+    return { text: `Handing off: the state goes into ${where(anchor())}, then a fresh session picks up from there.` }
   })
 
   on('command.run', { command: 'fresh' }, async $ => {
-    if (!ctx.story) return { text: 'No story linked to this session: /ticket sc-12345, then /fresh.' }
-    await resumeFresh($, ctx.story)
-    return { text: `Fresh session: it reads ${ctx.story} and carries on.` }
+    if (!anchored()) return { text: `Nothing linked to this session: ${LINK}, then /fresh.` }
+    await resumeFresh($, anchor())
+    return { text: `Fresh session: it picks up ${where(anchor())} and carries on.` }
   })
 
   on('command.run', { command: 'ticket' }, async ($, e) => {
@@ -215,7 +234,7 @@ export const register: Register = on => {
         idleMs: f.idleMs,
         costUsd: f.usage.cost?.usd,
         quota: f.quota,
-        story: ctx.story,
+        ...anchor(),
         pinned: ctx.pinned,
         settings: ctx.settings,
       }),
