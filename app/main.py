@@ -22,6 +22,7 @@ import insight
 import my_prs
 import notify
 from watchers import build_watchers
+from console import bp as console_bp
 from watch_views import bp as watch_bp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -29,6 +30,7 @@ log = logging.getLogger("sentinel")
 
 app = Flask(__name__)
 app.register_blueprint(watch_bp)
+app.register_blueprint(console_bp)
 db.init()
 db.fail_stale_runs()
 

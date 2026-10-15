@@ -45,6 +45,19 @@
     {% block content %}{% endblock %}
 </div>
 <div id="toast" role="status" hidden></div>
+{% if claude_enabled %}
+<section id="console" class="console" hidden aria-label="Claude Code">
+    <header class="console-head">
+        <span class="console-title"></span><span class="console-state"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn small ghost" data-console-do="size" title="Bigger or smaller">Expand</button>
+        <button type="button" class="btn small ghost" data-console-do="end" title="Stop this Claude session">End</button>
+        <button type="button" class="btn small ghost" data-console-do="close" title="Close the window: the session goes on, the same button reopens it">Close</button>
+    </header>
+    <div class="console-term"></div>
+</section>
+<script src="/static/console.js"></script>
+{% endif %}
 <script src="/static/app.js"></script>
 </body>
 </html>

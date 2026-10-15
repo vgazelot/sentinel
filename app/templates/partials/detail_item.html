@@ -23,8 +23,8 @@
     <div class="bar">
         {% if v.lane == 'incident' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Status page</a>
         {% elif v.lane == 'watch' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open in {{ p.source | capitalize }}</a>
-        {% set claude = claude_uri(v.external_id) if p.source == 'zabbix' else '' %}
-        {% if claude %}<a class="btn claude" href="{{ claude }}" title="Opens a VS Code terminal running Claude Code on this problem: a ticket, then a read-only investigation">Claude</a>{% endif %}
+        {% set claude = zabbix_console(v.external_id) if p.source == 'zabbix' else '' %}
+        {% if claude %}<button type="button" class="btn claude" data-console="{{ claude }}" title="Claude Code on this problem, in a window: a ticket, then a read-only investigation. Closing the window keeps the session.">Claude</button>{% endif %}
         {% elif v.lane == 'followup' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open the PR</a>{% endif %}
         <span class="spacer"></span>
         {{ triage(v) }}

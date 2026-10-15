@@ -3,14 +3,13 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, abort, jsonify, render_template
+from flask import Blueprint, abort, render_template
 
 import config
+import console
 import quart
 
 bp = Blueprint("watch", __name__)
-# contrib/vscode-sentinel: opens a VS Code terminal running Claude Code on the problem
-CLAUDE_URI = "vscode://sentinel.sentinel-claude/zabbix?event={eventid}"
 CLAUDE_PROMPT = """A Zabbix alert is open. Open a ticket for it — or reuse the open one already about this host or problem — and start investigating, read-only: change nothing on any host until I say so.
 
 Problem: {name}
@@ -42,21 +41,22 @@ def _enabled() -> bool:
 
 
 def _claude() -> bool:
-    return bool(_watchers().get("zabbix", {}).get("claude"))
+    return bool(_watchers().get("zabbix", {}).get("claude")) and console.enabled()
 
 
-def claude_uri(eventid: str | None) -> str:
-    """The inbox detail of a Zabbix item: its external id is the event id."""
-    return CLAUDE_URI.format(eventid=eventid) if eventid and _claude() else ""
+def zabbix_console(eventid: str | None) -> str:
+    """The Claude button of a Zabbix item's detail: its external id is the event id."""
+    return f"/api/zabbix/{eventid}/console" if eventid and str(eventid).isdigit() and _claude() else ""
 
 
 def context() -> dict:
     snap, now = quart.snapshot(), time.time()
     zabbix = grafana = None
     if z := snap["zabbix"]:
-        on = _claude()
+        alive = console.alive() if _claude() else None
         rows = [{**r, "age": duration(now - r["since"]),
-                 "claude": CLAUDE_URI.format(eventid=r["eventid"]) if on and r.get("eventid") else ""} for r in z["problems"]]
+                 "console": f"/api/zabbix/{r['eventid']}/console" if alive is not None and r.get("eventid") else "",
+                 "console_alive": alive is not None and f"zabbix-{r.get('eventid')}" in alive} for r in z["problems"]]
         newest = max((r["since"] for r in z["problems"]), default=None)
         hidden = [f"{n} {label}" for n, label in ((z["acked"], "acknowledged"), (z["dependent"], "hidden behind the problem they depend on"),
                                                    (z["disabled"], "on disabled hosts or items")) if n]
@@ -86,8 +86,8 @@ def context() -> dict:
 @bp.app_context_processor
 def nav() -> dict:
     if not _enabled():
-        return {"watch_enabled": False, "claude_uri": claude_uri}
-    return {"watch_enabled": True, "nav_watch": context()["to_look"], "claude_uri": claude_uri}
+        return {"watch_enabled": False, "zabbix_console": zabbix_console}
+    return {"watch_enabled": True, "nav_watch": context()["to_look"], "zabbix_console": zabbix_console}
 
 
 @bp.get("/watch")
@@ -100,17 +100,17 @@ def partial_watch():
     return render_template("partials/watch.html", **context())
 
 
-@bp.get("/api/zabbix/<eventid>/claude")
-def api_zabbix_claude(eventid: str):
-    """What the VS Code extension types into Claude Code: only a problem still open, built here —
-    the link it was opened from carries nothing but the event id."""
+@bp.post("/api/zabbix/<int:eventid>/console")
+def api_zabbix_console(eventid: int):
+    """A console on a problem still open: its first prompt is built here from what Zabbix said, the page
+    only names the event."""
     cfg = _watchers().get("zabbix", {})
     z = quart.snapshot()["zabbix"]
-    row = next((r for r in (z["problems"] if z and cfg.get("claude") else []) if r.get("eventid") == eventid), None)
+    row = next((r for r in (z["problems"] if z and _claude() else []) if r.get("eventid") == str(eventid)), None)
     if not row:
         abort(404)
     since = datetime.fromtimestamp(row["since"], ZoneInfo(config.TZ)).strftime("%d/%m %H:%M")
     prompt = (cfg.get("claude_prompt") or CLAUDE_PROMPT).strip().format(
         name=row["name"], host=row["host"], severity=row["severity"], since=since,
         age=duration(time.time() - row["since"]), url=row["url"] or z["web_url"])
-    return jsonify({"title": f"Zabbix · {row['host']}", "prompt": prompt})
+    return console.answer(f"zabbix-{eventid}", row["host"], prompt)

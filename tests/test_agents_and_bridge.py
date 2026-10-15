@@ -133,3 +133,79 @@ class BridgeTest(SentinelTest):
         with mock.patch.object(b.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="ok")) as run:
             b.run("precheck", "https://github.com/a/b/pull/1", [], {"material": "the diff"})
         self.assertIn("the diff", run.call_args.args[0][2])
+
+
+class ConsoleBridgeTest(SentinelTest):
+    """The bridge's console: tmux on the host, attached from the browser with a one-time ticket."""
+
+    def test_websocket_handshake_and_frames(self):
+        import os
+        import socket
+
+        b = bridge()
+        self.assertEqual(b._ws_accept("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")  # RFC 6455 §1.3
+        ours, theirs = socket.socketpair()
+        self.addCleanup(ours.close)
+        self.addCleanup(theirs.close)
+        mask, payload = os.urandom(4), "é".encode() * 200
+        theirs.sendall(bytes([0x82, 0x80 | 126]) + len(payload).to_bytes(2, "big") + mask
+                       + bytes(c ^ mask[i % 4] for i, c in enumerate(payload)))
+        self.assertEqual(b._ws_read(ours), (2, payload))
+        theirs.sendall(bytes([0x82, 5]) + b"hello")
+        with self.assertRaises(ConnectionError, msg="a browser always masks"):
+            b._ws_read(ours)
+        self.assertEqual(b._ws_frame(b"x" * 70000)[:2], bytes([0x82, 127]))
+
+    def test_a_ticket_opens_once_and_for_a_minute(self):
+        b = bridge()
+        t = b.ticket("zabbix-1")
+        self.assertEqual((b.redeem(t), b.redeem(t)), ("zabbix-1", None))
+        old = b.ticket("zabbix-1")
+        with mock.patch.object(b.time, "monotonic", return_value=b.time.monotonic() + 61):
+            self.assertIsNone(b.redeem(old))
+
+    def test_a_session_runs_your_shell_with_the_prompt_in_its_environment(self):
+        b = bridge()
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs["env"]))
+            return mock.Mock(returncode=1 if "has-session" in argv else 0, stderr="")
+
+        with mock.patch.object(b.subprocess, "run", side_effect=run), mock.patch.dict("os.environ", {"BRIDGE_TOKEN": "secret"}):
+            self.assertTrue(b.open_console("zabbix-1", 'a "quote" $(id)'))
+        argv, env = calls[-1]
+        self.assertEqual(argv[argv.index("-e") + 1], 'SENTINEL_PROMPT=a "quote" $(id)')
+        self.assertEqual(argv[-2:], ["-lic", f'{b.CONSOLE_COMMAND} "$SENTINEL_PROMPT"'], "the shell expands the variable, never parses the prompt")
+        self.assertEqual(argv[:4], [b.TMUX, "-u", "-L", "sentinel"])
+        self.assertNotIn("BRIDGE_TOKEN", env)
+        with mock.patch.object(b.subprocess, "run", return_value=mock.Mock(returncode=1, stderr="")), self.assertRaises(LookupError):
+            b.open_console("zabbix-1", "")  # reopening an ended session starts nothing
+
+    def test_the_websocket_wants_sentinel_origin_and_a_ticket(self):
+        import http.client
+        import threading
+
+        b = bridge()
+        server = b.ThreadingHTTPServer(("127.0.0.1", 0), b.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+
+        def upgrade(ticket, origin):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", f"/console/ws?ticket={ticket}", headers={
+                "Host": f"localhost:{port}", "Upgrade": "websocket", "Connection": "Upgrade", "Origin": origin,
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version": "13"})
+            status = conn.getresponse().status
+            conn.close()
+            return status
+
+        t = b.ticket("zabbix-1")
+        self.assertEqual(upgrade(t, "https://evil.example"), 403)
+        self.assertEqual(upgrade("forged", "http://localhost:8300"), 401)
+        with mock.patch.object(b, "attach") as attach:
+            self.assertEqual(upgrade(t, "http://localhost:8300"), 101)
+        self.assertEqual(attach.call_args.args[1], "zabbix-1")
+        self.assertEqual(upgrade(t, "http://localhost:8300"), 401, "a ticket opens once")

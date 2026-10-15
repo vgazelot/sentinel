@@ -335,11 +335,12 @@ class WatchPageTest(SentinelTest):
         self.assertIn("First read in progress", main.app.test_client().get("/watch").get_data(as_text=True))
 
 
-class ClaudeButtonTest(SentinelTest):
-    """The Claude button: a vscode:// link holding the event id only, the prompt built by Sentinel."""
+class ConsoleButtonTest(SentinelTest):
+    """The Claude button opens a console: the page names the event, Sentinel writes the prompt, the bridge runs it."""
 
     def setUp(self):
         super().setUp()
+        import console
         import main
         import quart
 
@@ -349,6 +350,23 @@ class ClaudeButtonTest(SentinelTest):
         quart.publish("zabbix", {"read_at": 1700000000, "problems": [row], "web_url": "https://zabbix.example.com",
                                  "acked": 0, "dependent": 0, "disabled": 0})
         self.addCleanup(quart.publish, "zabbix", None)
+        for p in (mock.patch("config.CLAUDE_BRIDGE_URL", "http://host.docker.internal:8301"),
+                  mock.patch("config.CLAUDE_BRIDGE_TOKEN", "tok"),
+                  mock.patch("requests.get", side_effect=self.bridge_get),
+                  mock.patch("requests.post", side_effect=self.bridge_post)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.posts, self.alive = [], []
+        console._alive["at"] = 0.0
+
+    def bridge_get(self, url, **kwargs):
+        return mock.Mock(ok=True, json=lambda: {"consoles": [{"name": n, "created": 1, "attached": 0} for n in self.alive]})
+
+    def bridge_post(self, url, json=None, headers=None, **kwargs):
+        self.posts.append((url, json, headers))
+        if json.get("prompt") or json["name"] in self.alive or url.endswith("/end"):
+            return mock.Mock(status_code=200, content=b"{}", json=lambda: {"name": json["name"], "ticket": "T1", "started": True})
+        return mock.Mock(status_code=404, content=b"{}", json=lambda: {"error": "no console"})
 
     def configure(self, **zabbix):
         import yaml
@@ -361,23 +379,41 @@ class ClaudeButtonTest(SentinelTest):
 
     def test_off_by_default(self):
         self.configure()
-        self.assertNotIn(b"vscode://", self.client.get("/partials/watch").data)
-        self.assertEqual(self.client.get("/api/zabbix/42/claude").status_code, 404)
+        self.assertNotIn(b"data-console", self.client.get("/partials/watch").data)
+        self.assertEqual(self.client.post("/api/zabbix/42/console").status_code, 404)
 
-    def test_the_link_names_the_event_and_the_prompt_comes_from_sentinel(self):
+    def test_the_button_names_the_event_and_sentinel_writes_the_prompt(self):
         self.configure(claude=True)
-        self.assertIn(b'href="vscode://sentinel.sentinel-claude/zabbix?event=42"', self.client.get("/partials/watch").data)
-        answer = self.client.get("/api/zabbix/42/claude").get_json()
-        self.assertEqual(answer["title"], "Zabbix · kafka-1.example.net")
-        for part in ("read-only", "Consumer delay above 1h", "kafka-1.example.net", "high", "eventid=42"):
-            self.assertIn(part, answer["prompt"])
-        self.assertEqual(self.client.get("/api/zabbix/43/claude").status_code, 404)
+        self.assertIn(b'data-console="/api/zabbix/42/console"', self.client.get("/partials/watch").data)
+        answer = self.client.post("/api/zabbix/42/console").get_json()
+        self.assertEqual(answer, {"name": "zabbix-42", "title": "kafka-1.example.net", "ws": "ws://localhost:8301/console/ws?ticket=T1"})
+        url, sent, headers = self.posts[0]
+        self.assertEqual((url, sent["name"], headers), ("http://host.docker.internal:8301/console", "zabbix-42", {"Authorization": "Bearer tok"}))
+        for part in ("read-only", "reuse the open one", "Consumer delay above 1h", "kafka-1.example.net", "high", "eventid=42"):
+            self.assertIn(part, sent["prompt"])
+        self.assertEqual(self.client.post("/api/zabbix/43/console").status_code, 404)
 
     def test_the_prompt_follows_the_config(self):
         self.configure(claude=True, claude_prompt="Ticket for {name} on {host} ({severity}), {url}\n")
-        self.assertEqual(self.client.get("/api/zabbix/42/claude").get_json()["prompt"],
-                         "Ticket for Consumer delay above 1h on kafka-1.example.net (high), "
-                         "https://zabbix.example.com/tr_events.php?triggerid=t1&eventid=42")
+        self.client.post("/api/zabbix/42/console")
+        self.assertEqual(self.posts[0][1]["prompt"], "Ticket for Consumer delay above 1h on kafka-1.example.net (high), "
+                                                     "https://zabbix.example.com/tr_events.php?triggerid=t1&eventid=42")
+
+    def test_a_running_session_shows_and_reopens_without_a_prompt(self):
+        self.configure(claude=True)
+        self.alive = ["zabbix-42"]
+        self.assertIn(b"claude alive", self.client.get("/partials/watch").data)
+        self.assertEqual(self.client.post("/api/console/zabbix-42/attach").get_json()["ws"], "ws://localhost:8301/console/ws?ticket=T1")
+        self.assertEqual(self.posts[-1][1], {"name": "zabbix-42", "prompt": ""})
+        self.alive = []
+        self.assertEqual(self.client.post("/api/console/zabbix-42/attach").status_code, 404, "an ended session is not restarted")
+        self.assertEqual(self.client.post("/api/console/zabbix-42/end").get_json(), {"ended": "zabbix-42"})
+        self.assertEqual(self.client.post("/api/console/Bad_Name/end").status_code, 404)
+
+    def test_another_site_cannot_open_a_console(self):
+        self.configure(claude=True)
+        resp = self.client.post("/api/zabbix/42/console", headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"})
+        self.assertEqual((resp.status_code, self.posts), (403, []))
 
     def test_the_inbox_detail_has_it_too(self):
         import db
@@ -389,4 +425,5 @@ class ClaudeButtonTest(SentinelTest):
                                               fingerprint="4", severity="high", lane="watch", urgency="now",
                                               payload={"source": "zabbix", "name": "Consumer delay above 1h", "host": "kafka-1"})])
         item = db.items("watcher = 'zabbix'")[0]
-        self.assertIn(b'href="vscode://sentinel.sentinel-claude/zabbix?event=42"', self.client.get(f"/partials/item/{item['id']}").data)
+        self.assertIn(b'data-console="/api/zabbix/42/console"', self.client.get(f"/partials/item/{item['id']}").data)
+        self.assertIn(b'id="console"', self.client.get("/watch").data, "the window is on every page")

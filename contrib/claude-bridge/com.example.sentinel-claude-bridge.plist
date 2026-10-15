@@ -13,7 +13,8 @@
     <key>EnvironmentVariables</key>
     <dict>
         <!-- launchd has a minimal PATH: add the dirs of claude, node and gh; BRIDGE_CWD = where your CLAUDE.md/skills load from.
-             Optional: BRIDGE_LANG, BRIDGE_PROMPT / BRIDGE_PROMPT_<MODE> and BRIDGE_MODEL / BRIDGE_MODEL_<MODE> per mode -->
+             Optional: BRIDGE_LANG, BRIDGE_PROMPT / BRIDGE_PROMPT_<MODE> and BRIDGE_MODEL / BRIDGE_MODEL_<MODE> per mode;
+             the console needs tmux on that PATH (BRIDGE_CONSOLE_COMMAND, BRIDGE_ORIGINS optional) -->
         <key>CLAUDE_BIN</key>
         <string>/path/to/bin/claude</string>
         <key>BRIDGE_CWD</key>

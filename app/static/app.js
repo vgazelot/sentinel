@@ -93,6 +93,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+    if (e.target.closest('#console')) return;  // every key, Escape included, belongs to Claude there
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target.closest('input, textarea, select')) {
         if (e.key === 'Escape') e.target.blur();
