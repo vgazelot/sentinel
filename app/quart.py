@@ -72,22 +72,37 @@ def graphite_targets(panel: dict, variables: dict[str, list[str]]) -> tuple[str,
     return (ds["uid"], targets) if targets else None
 
 
-def verdicts(series: list[dict], window_minutes: int) -> list[dict]:
-    """Graphite render output → one dict per curve that changed: kind, series, text, values, discrete."""
+def defaults(dashboard: dict) -> dict[str, list[str]]:
+    """The values a dashboard's template variables are saved with: what Grafana uses when the link names none."""
+    out = {}
+    for v in (dashboard.get("templating") or {}).get("list", []):
+        value = (v.get("current") or {}).get("value")
+        if v.get("name") and value not in (None, "", []):
+            out[v["name"]] = value if isinstance(value, list) else [value]
+    return out
+
+
+def verdicts(series: list[dict], window_minutes: int, volume: bool = False) -> list[dict]:
+    """Graphite render output → one dict per curve that changed: kind, series, text, values, discrete.
+
+    `volume`: the curves count things. Counts are whole numbers too, but a step of one is noise there:
+    only a gauge (a status, a number of nodes) changes state on any step."""
     out = []
     for s in series:
         name = s["target"]
         if IGNORE.search(name):
             continue
+        # a wildcard target (…all.*) hides the counts its curves are: their names tell
+        counts = volume or bool(VOLUME.search(name))
         values = [v for v, _ in s["datapoints"]][:-1]
         n_recent = max(3, len(values) * RECENT_MINUTES // window_minutes)
         recent, before = values[-n_recent:], values[:-n_recent]
         known = [v for v in before if v is not None]
         if len(before) < 10:
             continue
-        found = _stop(known, before, recent) or _state(known, before, recent) or _drift(known, before, recent, n_recent)
+        found = _stop(known, before, recent) or _state(known, before, recent, counts) or _drift(known, before, recent, n_recent)
         if found:
-            out.append({"series": name, "values": values, **found})
+            out.append({"series": name, "values": values, "volume": counts, **found})
     return out
 
 
@@ -97,12 +112,12 @@ def _stop(known, before, recent):
     return None
 
 
-def _state(known, before, recent):
+def _state(known, before, recent, volume):
     tail = [v for v in recent if v is not None][-2:]
     if len(known) < 0.8 * len(before) or len(set(known)) != 1 or len(tail) != 2:
         return None
     v0 = known[0]
-    discrete = float(v0).is_integer() and all(float(v).is_integer() for v in tail)
+    discrete = not volume and float(v0).is_integer() and all(float(v).is_integer() for v in tail)
     moved = all(v != v0 for v in tail) if discrete else all(abs(v - v0) >= 0.2 * max(abs(v0), 1e-9) for v in tail)
     if moved:
         return {"kind": "state", "text": f"went from {_num(v0)} to {_num(tail[-1])}", "discrete": discrete}

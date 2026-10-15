@@ -28,7 +28,7 @@ class GrafanaWatcher(Watcher):
         self.cert = (cfg["client_cert"], cfg["client_key"]) if cfg.get("client_cert") else None
         self.verify = cfg.get("ca_cert") or True
         self._seen: set[str] = set()
-        self._kept: dict[str, list[WatchedItem]] = {}
+        self._kept: dict[str, dict] = {}  # dashboard uid → panel id → confirmed items
 
     def _session(self) -> requests.Session:
         s = requests.Session()
@@ -47,18 +47,20 @@ class GrafanaWatcher(Watcher):
             except (requests.RequestException, KeyError, ValueError) as e:
                 failed += 1
                 log.warning("grafana %s: %s", uid, e)
-                cards.append({"uid": uid, "title": uid, "link": link, "error": str(e)[:200], "panels": 0, "series": 0, "anomalies": []})
-                items.extend(self._kept.get(uid, []))
+                cards.append({"uid": uid, "title": uid, "link": link, "error": str(e)[:200], "panels": 0, "series": 0,
+                              "unread": 0, "anomalies": []})
+                items.extend(i for panel_items in self._kept.get(uid, {}).values() for i in panel_items)
                 continue
-            kept = []
+            before = self._kept.get(uid, {})
+            kept = {pid: before.get(pid, []) for pid in card.pop("unread_ids")}
             for a in card["anomalies"]:
                 key = f"{uid}:{a['panel_id']}:{a['series']}:{a['kind']}"
                 seen.add(key)
                 a["confirmed"] = key in self._seen
                 if a["confirmed"]:
-                    kept.append(self._item(key, card, a))
+                    kept.setdefault(a["panel_id"], []).append(self._item(key, card, a))
             self._kept[uid] = kept
-            items.extend(kept)
+            items.extend(i for panel_items in kept.values() for i in panel_items)
             cards.append(card)
         if self.dashboards and failed == len(self.dashboards):
             raise RuntimeError("no dashboard could be read")
@@ -70,23 +72,35 @@ class GrafanaWatcher(Watcher):
         r = s.get(f"{base}/api/dashboards/uid/{uid}", timeout=30)
         r.raise_for_status()
         dashboard = r.json()["dashboard"]
-        card = {"uid": uid, "title": dashboard.get("title", uid), "link": link, "error": None, "panels": 0, "series": 0, "anomalies": []}
+        variables = {**quart.defaults(dashboard), **variables}
+        card = {"uid": uid, "title": dashboard.get("title", uid), "link": link, "error": None, "panels": 0, "series": 0,
+                "unread": 0, "unread_ids": [], "anomalies": []}
+        error = None
         for panel in quart.panels(dashboard):
             graphite = quart.graphite_targets(panel, variables)
             if not graphite:
                 continue
             ds, targets = graphite
+            card["panels"] += 1
             params = [("target", t) for t in targets] + [
                 ("from", f"-{self.window_minutes}min"), ("until", "now"), ("format", "json"), ("maxDataPoints", self.points)]
-            r = s.get(f"{base}/api/datasources/proxy/uid/{ds}/render", params=params, timeout=60)
-            r.raise_for_status()
-            series = r.json()
-            card["panels"] += 1
+            try:
+                r = s.get(f"{base}/api/datasources/proxy/uid/{ds}/render", params=params, timeout=60)
+                r.raise_for_status()
+                series = r.json()
+            except (requests.RequestException, ValueError) as e:
+                # one panel that cannot be read keeps what was known of it, the others are still read
+                error = e
+                card["unread"] += 1
+                card["unread_ids"].append(panel.get("id"))
+                continue
             card["series"] += len(series)
             volume = bool(quart.VOLUME.search(" ".join(targets)))
-            for a in quart.verdicts(series, self.window_minutes):
+            for a in quart.verdicts(series, self.window_minutes, volume):
                 spark = quart.sparkline(a.pop("values"))
-                card["anomalies"].append({**a, "panel": panel.get("title", ""), "panel_id": panel.get("id"), "volume": volume, "spark": spark})
+                card["anomalies"].append({**a, "panel": panel.get("title", ""), "panel_id": panel.get("id"), "spark": spark})
+        if error is not None and card["unread"] == card["panels"]:
+            raise error
         return card
 
     def _item(self, key: str, card: dict, a: dict) -> WatchedItem:

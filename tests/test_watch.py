@@ -39,6 +39,16 @@ class DetectionTest(SentinelTest):
     def test_a_small_step_of_a_rate_is_not_a_change(self):
         self.assertEqual(self.found("app.ping.all.count", [42.67] * 110 + [46.55] * 9), [])
 
+    def test_a_counter_stepping_by_a_few_is_not_a_state_change(self):
+        import quart
+
+        # seen on a real ping counter behind a …all.* target: 32 → 29 is whole numbers, but a count, not a status
+        self.assertEqual(quart.verdicts([series("app.ping.all.count", [32.0] * 110 + [29.0] * 9)], WINDOW), [])
+        [a] = quart.verdicts([series("app.ping.all.count", [32.0] * 110 + [12.0] * 9)], WINDOW)
+        self.assertEqual((a["kind"], a["discrete"], a["volume"]), ("state", False, True))
+        # a panel whose targets count things says so for curves an alias renamed
+        self.assertEqual(quart.verdicts([series("ping", [32.0] * 110 + [29.0] * 9)], WINDOW, volume=True), [])
+
     def test_a_drift_out_of_the_usual_band(self):
         base = [100.0 + i % 5 for i in range(110)]
         [a] = self.found("app.delay.all.upper", base + [420.0] * 9)
@@ -100,9 +110,11 @@ class ZabbixTest(SentinelTest):
         with mock.patch("requests.post", side_effect=post):
             items = self.watcher().fetch()
 
-        self.assertEqual([(i.external_id, i.urgency, i.lane) for i in items], [("1", "now", "incident"), ("2", "quiet", "incident")])
-        self.assertTrue(items[1].payload["known"])
+        # known noise stays on the Watch page, out of the inbox
+        self.assertEqual([(i.external_id, i.urgency, i.lane) for i in items], [("1", "now", "incident")])
         self.assertEqual(items[0].url, "https://zabbix.example.com/tr_events.php?triggerid=t1&eventid=1")
+        self.assertEqual([(r["name"], r["known"]) for r in quart.snapshot()["zabbix"]["problems"]],
+                         [("Consumer delay above 1h", False), ("Interface bandwidth usage too high", True)])
         self.assertEqual(post.bodies[0]["auth"], "tok")
         self.assertTrue(post.bodies[2]["params"]["skipDependent"])
         snap = quart.snapshot()["zabbix"]
@@ -119,10 +131,12 @@ class ZabbixTest(SentinelTest):
             self.watcher().fetch()
 
 
-DASHBOARD = {"dashboard": {"title": "Pipeline", "panels": [
+DASHBOARD = {"dashboard": {"title": "Pipeline", "templating": {"list": [{"name": "source", "current": {"value": "web"}}]}, "panels": [
     {"type": "row", "panels": [
         {"id": 1, "title": "Pulled", "type": "timeseries", "datasource": {"type": "graphite", "uid": "g1"},
          "targets": [{"target": "aliasByNode(stats_counts.app.pulled.$source, 3)"}]},
+        {"id": 3, "title": "Accepted", "type": "timeseries", "datasource": {"type": "graphite", "uid": "g1"},
+         "targets": [{"target": "stats_counts.app.accepted.all"}]},
     ]},
     {"id": 2, "title": "Logs", "type": "logs", "datasource": {"type": "loki", "uid": "l1"}, "targets": [{"expr": "{app=\"x\"}"}]},
 ]}}
@@ -139,6 +153,8 @@ class GrafanaTest(SentinelTest):
                                                     "https://grafana.example.com/d/other/x"]})
         self.renders = []
         self.down = False
+        self.panel_down = False
+        self.accepted_stops = False
 
     def get(self, url, params=None, timeout=None):
         resp = mock.Mock()
@@ -149,6 +165,10 @@ class GrafanaTest(SentinelTest):
             resp.json = lambda: DASHBOARD
         elif url.endswith("/api/dashboards/uid/other"):
             resp.json = lambda: QUIET
+        elif ("target", "stats_counts.app.accepted.all") in params:
+            if self.panel_down:
+                raise requests.HTTPError("500 Server Error")
+            resp.json = lambda: [series("accepted", [50.0] * 110 + ([0.0] if self.accepted_stops else [50.0]) * 9)]
         else:
             self.renders.append(params)
             resp.json = lambda: [series("total", [50.0] * 110 + [0.0] * 9)]
@@ -163,8 +183,8 @@ class GrafanaTest(SentinelTest):
 
         self.assertEqual(self.fetch(), [], "one read alone pushes nothing")
         card = quart.snapshot()["grafana"]["dashboards"][0]
-        self.assertEqual((card["panels"], card["series"], card["anomalies"][0]["confirmed"]), (1, 1, False))
-        self.assertIn(("target", "aliasByNode(stats_counts.app.pulled.*, 3)"), self.renders[0])
+        self.assertEqual((card["panels"], card["series"], card["anomalies"][0]["confirmed"]), (2, 2, False))
+        self.assertIn(("target", "aliasByNode(stats_counts.app.pulled.*, 3)"), self.renders[0], "the link's value wins over the saved one")
 
         [item] = self.fetch()
         self.assertEqual((item.urgency, item.lane, item.fingerprint), ("now", "incident", "stop"))
@@ -178,6 +198,22 @@ class GrafanaTest(SentinelTest):
         self.down = True
         self.assertEqual(self.fetch(), [kept])
         self.assertIn("unreachable", quart.snapshot()["grafana"]["dashboards"][0]["error"])
+
+    def test_one_unreadable_panel_keeps_its_items_and_the_rest_is_read(self):
+        import quart
+
+        self.accepted_stops = True
+        self.fetch()
+        self.assertEqual(len(self.fetch()), 2)
+        self.panel_down = True
+        items = self.fetch()
+        self.assertEqual(sorted(i.payload["panel"] for i in items), ["Accepted", "Pulled"])
+        self.assertEqual(quart.snapshot()["grafana"]["dashboards"][0]["unread"], 1)
+
+    def test_saved_variable_values_fill_a_link_that_names_none(self):
+        self.w.dashboards = ["https://grafana.example.com/d/abc/pipeline"]
+        self.fetch()
+        self.assertIn(("target", "aliasByNode(stats_counts.app.pulled.web, 3)"), self.renders[0])
 
     def test_no_dashboard_readable_fails_the_read(self):
         self.w.dashboards = self.w.dashboards[:1]

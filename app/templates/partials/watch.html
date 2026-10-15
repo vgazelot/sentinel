@@ -60,11 +60,11 @@
     {% for c in grafana.cards %}
     <div class="watch-dash">
         <div class="watch-dash-head">
-            <span class="dot {{ 'bad' if c.error else ('warn' if c.anomalies else 'ok') }} small"></span>
+            <span class="dot {{ 'bad' if c.error else ('warn' if c.anomalies or c.unread else 'ok') }} small"></span>
             <a href="{{ c.link }}" target="_blank" rel="noopener">{{ c.title }}</a>
             <span class="compact-meta">
                 {% if c.error %}unreadable: {{ c.error }}{% elif c.anomalies %}{{ c.anomalies | length }} changed{% else %}nothing changed{% endif %}
-                · {{ c.panels }} panels · {{ c.series }} curves
+                · {{ c.panels }} panels · {{ c.series }} curves{% if c.unread %} · {{ c.unread }} panel{{ 's' if c.unread > 1 }} unreadable{% endif %}
             </span>
         </div>
         {% if c.anomalies %}

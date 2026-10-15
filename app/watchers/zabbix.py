@@ -1,8 +1,9 @@
 """Zabbix problems still open, as incidents.
 
 Dependent problems are hidden the way the Zabbix front hides them (`skipDependent`), and so are the
-ones on disabled hosts or items; acknowledged ones are only counted: somebody holds them. A problem at `push_severity` or above is pushed unless
-its name matches `quiet` (known noise, listed without pushing).
+ones on disabled hosts or items; acknowledged ones are only counted: somebody holds them. A problem
+at `push_severity` or above is pushed. One whose name matches `quiet` is known noise: listed on the
+Watch page, never an inbox item.
 """
 import logging
 import os
@@ -78,15 +79,17 @@ class ZabbixWatcher(Watcher):
             row = {"host": hosts[p["objectid"]], "name": p["name"], "severity": SEVERITIES[level], "level": level,
                    "since": int(p["clock"]), "known": known, "url": url}
             rows.append(row)
+            if known:
+                continue  # known noise stays on the Watch page, out of the inbox
             items.append(WatchedItem(
                 external_id=p["eventid"],
                 title=f"{row['host']} · {p['name']}",
                 url=url,
                 fingerprint=str(level),
                 severity=row["severity"],
-                payload={"source": "zabbix", "name": p["name"], "host": row["host"], "since": row["since"], "known": known},
+                payload={"source": "zabbix", "name": p["name"], "host": row["host"], "since": row["since"]},
                 lane="incident",
-                urgency="now" if level >= self.push_severity and not known else "quiet",
+                urgency="now" if level >= self.push_severity else "quiet",
             ))
         rows.sort(key=lambda r: (r["known"], -r["level"], -r["since"]))
         quart.publish("zabbix", {"read_at": time.time(), "problems": rows, "web_url": self.web_url, **counts})
