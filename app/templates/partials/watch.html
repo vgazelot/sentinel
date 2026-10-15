@@ -29,10 +29,10 @@
     {% if zabbix.look %}
     <ul class="compact-list">
         {% for r in zabbix.look %}
-        <li class="compact">
+        <li class="compact watch-problem">
             <span class="dot {{ 'bad' if r.level >= 4 else 'warn' }} small"></span>
-            <a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
-            <span class="compact-meta">{{ r.host }} · {{ r.severity }} · {{ r.age }}</span>
+            <div><a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
+                <div class="compact-meta">{{ r.host }} · {{ r.severity }} · {{ r.age }}</div></div>
         </li>
         {% endfor %}
     </ul>
@@ -44,10 +44,10 @@
         <summary>{{ zabbix.known | length }} known noise</summary>
         <ul class="compact-list">
             {% for r in zabbix.known %}
-            <li class="compact other">
+            <li class="compact other watch-problem">
                 <span class="dot neutral small"></span>
-                <a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
-                <span class="compact-meta">{{ r.host }} · {{ r.age }}</span>
+                <div><a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
+                    <div class="compact-meta">{{ r.host }} · {{ r.age }}</div></div>
             </li>
             {% endfor %}
         </ul>
@@ -66,7 +66,7 @@
     <div class="watch-dash">
         <div class="watch-dash-head">
             <span class="dot {{ 'bad' if c.error else ('warn' if c.anomalies or c.unread else 'ok') }} small"></span>
-            <a href="{{ c.link }}" target="_blank" rel="noopener">{{ c.title }}</a>
+            <a class="compact-title" href="{{ c.link }}" target="_blank" rel="noopener">{{ c.title }}</a>
             <span class="compact-meta">
                 {% if c.error %}unreadable: {{ c.error }}{% elif c.anomalies %}{{ c.anomalies | length }} changed{% else %}nothing changed{% endif %}
                 · {{ c.panels }} panels · {{ c.series }} curves{% if c.unread %} · {{ c.unread }} panel{{ 's' if c.unread > 1 }} unreadable{% endif %}
