@@ -1,6 +1,6 @@
 {% import "partials/list_macros.html" as l with context %}
 <span id="attention-count" hidden>{{ attention }}</span>
-<span id="status-src" hidden data-ok="{{ 1 if status.ok else 0 }}" data-text="{{ status.text }}" data-ts="{{ status.since or '' }}"></span>
+<span id="status-src" hidden data-text="{{ status }}"></span>
 <header class="list-head">
     <h1>Inbox</h1>
     <nav class="seg">

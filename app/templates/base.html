@@ -38,8 +38,7 @@
             {% if watch_enabled %}<a class="nav {% if active == 'watch' %}on{% endif %}" href="/watch"><svg><use href="#i-pulse"/></svg>Watch<span class="n" id="nav-watch" {% if not nav_watch %}hidden{% endif %}>{{ nav_watch }}</span></a>{% endif %}
         </nav>
         <div class="side-foot">
-            <a class="light {{ 'ok' if status.ok else 'down' }}" id="light" href="/settings" data-ok="{{ 1 if status.ok else 0 }}" data-text="{{ status.text }}" data-ts="{{ status.since or '' }}">
-                <i></i><span>{% if status.ok %}Up to date{% if status.since %} · {{ status.since | age }} ago{% endif %}{% else %}{{ status.text }}{% endif %}</span></a>
+            <a class="light" id="light" href="/settings" {% if not status %}hidden{% endif %}><i></i><span>{{ status }}</span></a>
             <a class="nav {% if active == 'settings' %}on{% endif %}" href="/settings"><svg><use href="#i-gear"/></svg>Settings</a>
         </div>
     </aside>

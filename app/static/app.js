@@ -25,24 +25,14 @@ function updateBadges() {
     shown = attention;
 }
 
-// the sidebar light: refreshed by every list poll, its age ticking in between
-function ago(ts) {
-    const s = (Date.now() - Date.parse(ts)) / 1000;
-    if (!(s >= 0)) return '';
-    return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
-}
+// the sidebar light: lit only while a source fails, refreshed by every list poll
 function renderLight() {
     const light = document.getElementById('light');
     const src = document.getElementById('status-src');
-    if (!light) return;
-    if (src) Object.assign(light.dataset, { ok: src.dataset.ok, text: src.dataset.text, ts: src.dataset.ts });
-    const ok = light.dataset.ok === '1';
-    light.classList.toggle('ok', ok);
-    light.classList.toggle('down', !ok);
-    light.querySelector('span').textContent = ok
-        ? `Up to date${light.dataset.ts ? ' · ' + ago(light.dataset.ts) : ''}` : light.dataset.text;
+    if (!light || !src) return;
+    light.hidden = !src.dataset.text;
+    light.querySelector('span').textContent = src.dataset.text;
 }
-setInterval(renderLight, 15000);
 
 // --- Selection -----------------------------------------------------------------------------
 const rows = () => [...document.querySelectorAll('#rows .it')];

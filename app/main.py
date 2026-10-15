@@ -172,13 +172,10 @@ def inject_nav():
             "claude_enabled": agents.enabled(), "agent_modes": agents.MODES, "status": _status()}
 
 
-def _status() -> dict:
-    """The sidebar light: Sentinel's own health, instead of an inbox row per failing source."""
+def _status() -> str:
+    """The sidebar light: lit only while a source fails, instead of an inbox row per failing source."""
     down = db.items("lane = 'health' AND state != 'resolved'")
-    if down:
-        return {"ok": False, "text": down[0]["title"], "since": json.loads(down[0]["payload"] or "{}").get("since")}
-    runs = [st["last_run"] for st in db.watcher_states().values() if st.get("last_run")]
-    return {"ok": True, "text": "Up to date", "since": max(runs) if runs else None}
+    return down[0]["title"] if down else ""
 
 
 # --- View models -------------------------------------------------------------------------
