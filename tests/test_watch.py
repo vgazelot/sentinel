@@ -333,3 +333,60 @@ class WatchPageTest(SentinelTest):
         quart.publish("zabbix", None)
         quart.publish("grafana", {})
         self.assertIn("First read in progress", main.app.test_client().get("/watch").get_data(as_text=True))
+
+
+class ClaudeButtonTest(SentinelTest):
+    """The Claude button: a vscode:// link holding the event id only, the prompt built by Sentinel."""
+
+    def setUp(self):
+        super().setUp()
+        import main
+        import quart
+
+        self.client = main.app.test_client()
+        row = {"eventid": "42", "host": "kafka-1.example.net", "name": "Consumer delay above 1h", "severity": "high", "level": 4,
+               "since": 1700000000, "known": False, "url": "https://zabbix.example.com/tr_events.php?triggerid=t1&eventid=42", "item": True}
+        quart.publish("zabbix", {"read_at": 1700000000, "problems": [row], "web_url": "https://zabbix.example.com",
+                                 "acked": 0, "dependent": 0, "disabled": 0})
+        self.addCleanup(quart.publish, "zabbix", None)
+
+    def configure(self, **zabbix):
+        import yaml
+
+        with open(self.cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["watchers"]["zabbix"] = {"enabled": True, "url": "https://zabbix.example.com/api_jsonrpc.php", **zabbix}
+        with open(self.cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+    def test_off_by_default(self):
+        self.configure()
+        self.assertNotIn(b"vscode://", self.client.get("/partials/watch").data)
+        self.assertEqual(self.client.get("/api/zabbix/42/claude").status_code, 404)
+
+    def test_the_link_names_the_event_and_the_prompt_comes_from_sentinel(self):
+        self.configure(claude=True)
+        self.assertIn(b'href="vscode://sentinel.sentinel-claude/zabbix?event=42"', self.client.get("/partials/watch").data)
+        answer = self.client.get("/api/zabbix/42/claude").get_json()
+        self.assertEqual(answer["title"], "Zabbix · kafka-1.example.net")
+        for part in ("read-only", "Consumer delay above 1h", "kafka-1.example.net", "high", "eventid=42"):
+            self.assertIn(part, answer["prompt"])
+        self.assertEqual(self.client.get("/api/zabbix/43/claude").status_code, 404)
+
+    def test_the_prompt_follows_the_config(self):
+        self.configure(claude=True, claude_prompt="Ticket for {name} on {host} ({severity}), {url}\n")
+        self.assertEqual(self.client.get("/api/zabbix/42/claude").get_json()["prompt"],
+                         "Ticket for Consumer delay above 1h on kafka-1.example.net (high), "
+                         "https://zabbix.example.com/tr_events.php?triggerid=t1&eventid=42")
+
+    def test_the_inbox_detail_has_it_too(self):
+        import db
+        import engine
+        from watchers import WatchedItem
+
+        self.configure(claude=True)
+        engine.process("zabbix", [WatchedItem(external_id="42", title="kafka-1 · Consumer delay above 1h", url="https://zabbix.example.com/x",
+                                              fingerprint="4", severity="high", lane="watch", urgency="now",
+                                              payload={"source": "zabbix", "name": "Consumer delay above 1h", "host": "kafka-1"})])
+        item = db.items("watcher = 'zabbix'")[0]
+        self.assertIn(b'href="vscode://sentinel.sentinel-claude/zabbix?event=42"', self.client.get(f"/partials/item/{item['id']}").data)

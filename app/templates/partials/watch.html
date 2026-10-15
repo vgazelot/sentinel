@@ -34,6 +34,7 @@
             <span class="dot {{ 'bad' if r.level >= 4 else 'warn' }} small"></span>
             <div><a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
                 <div class="compact-meta">{{ r.host }} · {{ r.severity }} · {{ r.age }}{% if r.item %} · in the Inbox{% endif %}</div></div>
+            {% if r.claude %}<a class="btn small ghost claude" href="{{ r.claude }}" title="Opens a VS Code terminal running Claude Code on this problem: a ticket, then a read-only investigation">Claude</a>{% endif %}
         </li>
         {% endfor %}
     </ul>
@@ -49,6 +50,7 @@
                 <span class="dot neutral small"></span>
                 <div><a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
                     <div class="compact-meta">{{ r.host }} · {{ r.age }}</div></div>
+                {% if r.claude %}<a class="btn small ghost claude" href="{{ r.claude }}" title="Opens a VS Code terminal running Claude Code on this problem: a ticket, then a read-only investigation">Claude</a>{% endif %}
             </li>
             {% endfor %}
         </ul>

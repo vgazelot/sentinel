@@ -76,7 +76,7 @@ class ZabbixWatcher(Watcher):
             level = int(p["severity"])
             known = any(q.search(p["name"]) for q in self.quiet)
             url = f"{self.web_url}/tr_events.php?triggerid={p['objectid']}&eventid={p['eventid']}" if self.web_url else ""
-            row = {"host": hosts[p["objectid"]], "name": p["name"], "severity": SEVERITIES[level], "level": level,
+            row = {"eventid": p["eventid"], "host": hosts[p["objectid"]], "name": p["name"], "severity": SEVERITIES[level], "level": level,
                    "since": int(p["clock"]), "known": known, "url": url, "item": not known and level >= self.push_severity}
             rows.append(row)
             if not row["item"]:

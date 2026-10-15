@@ -1,12 +1,23 @@
 """The Watch page: Zabbix and the dashboards you keep open, read in one place."""
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from flask import Blueprint, render_template
+from flask import Blueprint, abort, jsonify, render_template
 
 import config
 import quart
 
 bp = Blueprint("watch", __name__)
+# contrib/vscode-sentinel: opens a VS Code terminal running Claude Code on the problem
+CLAUDE_URI = "vscode://sentinel.sentinel-claude/zabbix?event={eventid}"
+CLAUDE_PROMPT = """A Zabbix alert is open. Open a ticket for it and start investigating, read-only: change nothing on any host until I say so.
+
+Problem: {name}
+Host: {host}
+Severity: {severity}
+Since: {since} ({age} ago)
+Zabbix: {url}"""
 
 
 def duration(seconds: float) -> str:
@@ -21,16 +32,31 @@ def _read(now: float, at: float) -> str:
     return "read just now" if now - at < 60 else f"read {duration(now - at)} ago"
 
 
+def _watchers() -> dict:
+    return config.load().get("watchers", {})
+
+
 def _enabled() -> bool:
-    w = config.load().get("watchers", {})
+    w = _watchers()
     return bool(w.get("zabbix", {}).get("enabled") or w.get("grafana", {}).get("enabled"))
+
+
+def _claude() -> bool:
+    return bool(_watchers().get("zabbix", {}).get("claude"))
+
+
+def claude_uri(eventid: str | None) -> str:
+    """The inbox detail of a Zabbix item: its external id is the event id."""
+    return CLAUDE_URI.format(eventid=eventid) if eventid and _claude() else ""
 
 
 def context() -> dict:
     snap, now = quart.snapshot(), time.time()
     zabbix = grafana = None
     if z := snap["zabbix"]:
-        rows = [{**r, "age": duration(now - r["since"])} for r in z["problems"]]
+        on = _claude()
+        rows = [{**r, "age": duration(now - r["since"]),
+                 "claude": CLAUDE_URI.format(eventid=r["eventid"]) if on and r.get("eventid") else ""} for r in z["problems"]]
         newest = max((r["since"] for r in z["problems"]), default=None)
         hidden = [f"{n} {label}" for n, label in ((z["acked"], "acknowledged"), (z["dependent"], "hidden behind the problem they depend on"),
                                                    (z["disabled"], "on disabled hosts or items")) if n]
@@ -60,8 +86,8 @@ def context() -> dict:
 @bp.app_context_processor
 def nav() -> dict:
     if not _enabled():
-        return {"watch_enabled": False}
-    return {"watch_enabled": True, "nav_watch": context()["to_look"]}
+        return {"watch_enabled": False, "claude_uri": claude_uri}
+    return {"watch_enabled": True, "nav_watch": context()["to_look"], "claude_uri": claude_uri}
 
 
 @bp.get("/watch")
@@ -72,3 +98,19 @@ def watch_page():
 @bp.get("/partials/watch")
 def partial_watch():
     return render_template("partials/watch.html", **context())
+
+
+@bp.get("/api/zabbix/<eventid>/claude")
+def api_zabbix_claude(eventid: str):
+    """What the VS Code extension types into Claude Code: only a problem still open, built here —
+    the link it was opened from carries nothing but the event id."""
+    cfg = _watchers().get("zabbix", {})
+    z = quart.snapshot()["zabbix"]
+    row = next((r for r in (z["problems"] if z and cfg.get("claude") else []) if r.get("eventid") == eventid), None)
+    if not row:
+        abort(404)
+    since = datetime.fromtimestamp(row["since"], ZoneInfo(config.TZ)).strftime("%d/%m %H:%M")
+    prompt = (cfg.get("claude_prompt") or CLAUDE_PROMPT).strip().format(
+        name=row["name"], host=row["host"], severity=row["severity"], since=since,
+        age=duration(time.time() - row["since"]), url=row["url"] or z["web_url"])
+    return jsonify({"title": f"Zabbix · {row['host']}", "prompt": prompt})

@@ -25,7 +25,7 @@ app/
 │   ├── zabbix.py           # open problems as the front shows them (skipDependent, monitored); ≥ push_severity → items (lane watch)
 │   └── grafana.py          # one source per dashboard (grafana:<uid>, token pinned to `url`): confirmed stop / status change → items (lane watch)
 ├── quart.py          # Watch: stop / state / drift over the last 30 min vs the hours before + the snapshot the page reads
-├── watch_views.py    # Watch page (blueprint); client certs for an mTLS proxy mounted on /certs (SENTINEL_CERTS)
+├── watch_views.py    # Watch page (blueprint); client certs for an mTLS proxy mounted on /certs (SENTINEL_CERTS); Claude button (vscode:// link + GET /api/zabbix/<event>/claude)
 ├── checks.py         # check runs / statuses read one way: rollup, outcome (cancelled = neutral), CI family
 ├── evidence.py       # material for the automatic agents (PR, diff, job logs, workflow history) + previous run outcome
 ├── deps.py           # Renovate/Dependabot parsing (title, kind, update table), grouping by name (kind)@to, prechecks
@@ -40,6 +40,7 @@ app/
 contrib/claude-bridge/   bridge.py (host, launchd) — modes, prompts, toolsets
 contrib/claude-code-mod/ the Claude Code mod (status line, toasts, /sentinel pane) — reads /api/summary
 contrib/claude-code-context/ a second mod, independent of the app: context size, cold-cache guard, /handoff into the Shortcut story then a fresh session
+contrib/vscode-sentinel/ VS Code extension behind the Claude button: vscode://sentinel.sentinel-claude/zabbix?event=<id> → a terminal running `claude "$SENTINEL_PROMPT"`; install.sh packs the .vsix by hand
 tests/                   unittest, run inside the image (see Tests)
 ```
 
@@ -105,4 +106,5 @@ A second instance on a copy of the database (UI work without touching the live o
 - Never open `data/sentinel.db` from the host while the container runs (WAL across the bind mount → `disk I/O error` in the app): `docker compose exec` or the API
 - Jinja: a dict key named like a dict method (`items`, `keys`) resolves to the method — use another key (sections use `rows`)
 - Bridge plist edits: `launchctl bootout` then `bootstrap` (`kickstart -k` keeps the old EnvironmentVariables). The bridge is a separate process: an upgrade of the app needs a bridge restart too, `check_bridge()` flags an old one
+- The Claude button's link carries the Zabbix event id and nothing else: the prompt is built by Sentinel for a problem still open (`watch_views.api_zabbix_claude`), the extension passes it to the shell through the environment (`SENTINEL_PROMPT`), never interpolated — keep both, any web page can open a `vscode://` link
 - Rendered markdown (Claude verdicts, GitHub comments) goes through `md.render` → nh3 allowlist: never mark untrusted HTML `|safe` any other way
