@@ -60,10 +60,17 @@
 {% if tab == 'finds' %}
     {% if fresh %}
     <section class="card">
-        <header class="card-head"><h2>This week</h2><span class="count">{{ fresh | length }} · scored {{ threshold }}/10 or more</span></header>
+        <header class="card-head"><h2>{{ 'New since the last digest' if next_digest else 'New' }}</h2><span class="count">{{ fresh | length }} · scored {{ threshold }}/10 or more</span></header>
         {% for v in fresh %}{{ find(v) }}{% endfor %}
     </section>
-    {% elif not earlier %}
+    {% endif %}
+    {% if digested %}
+    <section class="card">
+        <header class="card-head"><h2>In the last digest</h2><span class="count">{{ digested | length }} not read yet</span></header>
+        {% for v in digested %}{{ find(v) }}{% endfor %}
+    </section>
+    {% endif %}
+    {% if not fresh and not digested and not earlier %}
     <section class="card calm">
         {% if assessed %}<p class="muted">Nothing worth your time since the last digest. The links the filter left out are under Filtered out.</p>
         {% else %}<p class="muted">First read in progress: the sources are read every few hours, Claude picks the few worth a closer look and scores them. Finds show up here; one push a week.</p>{% endif %}
@@ -71,7 +78,7 @@
     {% endif %}
     {% if earlier %}
     <section class="card">
-        <details id="lookout-earlier">
+        <details id="lookout-earlier" {% if not fresh and not digested %}open{% endif %}>
             <summary class="card-head"><h2>Earlier</h2><span class="count">{{ earlier | length }} not read yet</span></summary>
             {% for v in earlier %}{{ find(v) }}{% endfor %}
         </details>

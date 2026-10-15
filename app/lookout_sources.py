@@ -11,6 +11,7 @@ import ipaddress
 import logging
 import re
 import socket
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,7 @@ log = logging.getLogger("sentinel.lookout")
 UA = "sentinel-lookout/1.0 (self-hosted tech watch)"
 TIMEOUT = 15
 MAX_PAGE = 1_500_000
+READ_SECONDS = 30           # a whole page read, not per chunk: a server dripping bytes must not hold the Lookout
 TRENDING = "https://mshibanami.github.io/GitHubTrendingRSS/{since}/{lang}.xml"
 
 
@@ -369,7 +371,8 @@ def public(host: str) -> bool:
 
 def page_text(url: str, chars: int = 3000) -> str:
     """The readable text of a public web page, "" when it cannot be read: http(s) only, every redirect hop
-    checked again, HTML only, 1.5 MB at most."""
+    checked again, HTML only, 1.5 MB and READ_SECONDS at most."""
+    deadline = time.monotonic() + READ_SECONDS
     for _ in range(5):
         p = urlparse(url)
         if p.scheme not in ("http", "https") or not p.hostname or not public(p.hostname):
@@ -388,7 +391,7 @@ def page_text(url: str, chars: int = 3000) -> str:
             raw = b""
             for chunk in r.iter_content(65536):
                 raw += chunk
-                if len(raw) > MAX_PAGE:
+                if len(raw) > MAX_PAGE or time.monotonic() > deadline:
                     break
             return html_text(raw.decode(r.encoding if "charset" in kind else "utf-8", errors="replace"), chars)
     return ""

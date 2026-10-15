@@ -34,8 +34,10 @@ SUBJECT = "lookout"
 FEEDBACK = ("useful", "noise", "known", "try")
 CATEGORIES = ("tool", "release", "practice", "incident", "security", "ai", "news")
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
-_KEPT = re.compile(r"^\s*(?:[-*]\s*)?#(\d+)\b[\s—–:-]*(.*)$")
-_SCORED = re.compile(r"^\s*(?:[-*]\s*)?#?(\d+)\s*\|\s*(\d{1,2})\s*(?:/\s*10)?\s*\|\s*(try|watch|skip)\s*\|\s*([\w-]+)\s*\|\s*(.+?)\s*$", re.I)
+# a line may come as a list item, numbered, or in bold: `- **#12** — …`, `1. #12 | 8/10 | …`
+_ITEM = r"^\s*(?:[-*]|\d+[.)])?\s*\**"
+_KEPT = re.compile(_ITEM + r"#(\d+)\b\**[\s—–:-]*(.*)$")
+_SCORED = re.compile(_ITEM + r"#?(\d+)\**\s*\|\s*(\d{1,2})\s*(?:/\s*10)?\s*\|\s*(try|watch|skip)\s*\|\s*([\w-]+)\s*\|\s*(.+?)\s*$", re.I)
 
 
 def enabled() -> bool:
@@ -56,7 +58,8 @@ def collect():
 
 
 def store(candidates: list) -> int:
-    """New things in, a known one gets the new mention. Returns how many were new."""
+    """New things in, a known one gets the new mention. A link the scout dropped goes back to it when a source it
+    was not seen on mentions it: a tool gaining traction shows up on a second source. Returns how many were new."""
     now, new = db.now(), 0
     with db.connect() as conn:
         for c in candidates:
@@ -64,11 +67,13 @@ def store(candidates: list) -> int:
                 continue
             mention = {k: v for k, v in (("discussion", c.discussion if sources.web_link(c.discussion) else ""),
                                          ("points", c.points), ("comments", c.comments)) if v}
-            row = conn.execute("SELECT id, sources FROM lookout WHERE key = ?", (c.key,)).fetchone()
+            row = conn.execute("SELECT id, sources, stage FROM lookout WHERE key = ?", (c.key,)).fetchone()
             if row:
                 seen = json.loads(row["sources"] or "{}")
+                stage = "new" if row["stage"] == "dropped" and c.source not in seen else row["stage"]
                 seen[c.source] = mention
-                conn.execute("UPDATE lookout SET sources = ?, last_seen = ? WHERE id = ?", (json.dumps(seen), now, row["id"]))
+                conn.execute("UPDATE lookout SET sources = ?, last_seen = ?, stage = ? WHERE id = ?",
+                             (json.dumps(seen), now, stage, row["id"]))
                 continue
             conn.execute(
                 """INSERT INTO lookout (key, kind, title, url, summary, body, sources, published, first_seen, last_seen, stage)
@@ -286,7 +291,7 @@ def set_feedback(find_id: int, value: str) -> bool:
 
 def last_slot(spec: str, now: datetime | None = None) -> datetime | None:
     """The latest `mon 09:00` (local time) at or before now; None when the digest is off."""
-    m = re.fullmatch(r"(mon|tue|wed|thu|fri|sat|sun)\w*\s+(\d{1,2}):(\d{2})", (spec or "").strip().lower())
+    m = re.fullmatch(r"(mon|tue|wed|thu|fri|sat|sun)\w*\s+([01]?\d|2[0-3]):([0-5]\d)", (spec or "").strip().lower())
     if not m:
         return None
     local = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(config.TZ))

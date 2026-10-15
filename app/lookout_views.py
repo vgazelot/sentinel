@@ -31,24 +31,30 @@ def _view(row) -> dict:
 def context(tab: str) -> dict:
     cfg = config.lookout()
     slot = lookout.last_slot(cfg["digest"])
+    # the sections follow the digest: what it announced on Monday is what the page opens on
     since = lookout.iso(slot) if slot else ""
+    before = lookout.iso(slot - timedelta(days=7)) if slot else ""
     unread = [_view(r) for r in lookout.finds("feedback IS NULL")]
     with db.connect() as conn:
         counts = dict(conn.execute("SELECT stage, COUNT(*) FROM lookout GROUP BY stage").fetchall())
         week = db.ago(7 * 1440)
         filtered = conn.execute(
             "SELECT * FROM lookout WHERE feedback IS NULL AND first_seen >= ? AND (stage = 'dropped' OR "
-            "(stage = 'assessed' AND (score IS NULL OR score < ? OR verdict = 'skip'))) ORDER BY first_seen DESC LIMIT 200",
+            "(stage = 'assessed' AND (score IS NULL OR score < ? OR verdict = 'skip')))",
             (week, int(cfg["threshold"]))).fetchall()
+        # your own list: a threshold raised later does not empty it
+        to_try = [_view(r) for r in conn.execute(
+            "SELECT * FROM lookout WHERE feedback = 'try' ORDER BY feedback_at DESC").fetchall()]
     states = lookout.source_states()
-    to_try = [_view(r) for r in lookout.finds("feedback = 'try'")]
     return {
         "tab": tab,
         "fresh": [v for v in unread if (v["assessed_at"] or "") >= since],
-        "earlier": [v for v in unread if (v["assessed_at"] or "") < since],
+        "digested": [v for v in unread if before <= (v["assessed_at"] or "") < since],
+        "earlier": [v for v in unread if (v["assessed_at"] or "") < before],
         "to_try": to_try,
         # the likeliest misses first: read closely but scored under the threshold, then the most upvoted
-        "filtered": sorted((_view(r) for r in filtered), key=lambda v: (v["stage"] != "assessed", -(v["score"] or 0), -v["points"])),
+        "filtered": sorted((_view(r) for r in filtered),
+                           key=lambda v: (v["stage"] != "assessed", -(v["score"] or 0), -v["points"]))[:200],
         "unread": len(unread),
         "waiting": counts.get("new", 0) + counts.get("scouting", 0),
         "reading": counts.get("kept", 0) + counts.get("assessing", 0),
