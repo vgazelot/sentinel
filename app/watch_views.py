@@ -11,7 +11,7 @@ import quart
 bp = Blueprint("watch", __name__)
 # contrib/vscode-sentinel: opens a VS Code terminal running Claude Code on the problem
 CLAUDE_URI = "vscode://sentinel.sentinel-claude/zabbix?event={eventid}"
-CLAUDE_PROMPT = """A Zabbix alert is open. Open a ticket for it and start investigating, read-only: change nothing on any host until I say so.
+CLAUDE_PROMPT = """A Zabbix alert is open. Open a ticket for it — or reuse the open one already about this host or problem — and start investigating, read-only: change nothing on any host until I say so.
 
 Problem: {name}
 Host: {host}

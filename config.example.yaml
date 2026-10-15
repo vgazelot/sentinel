@@ -53,7 +53,7 @@ watchers:
     quiet: []                        # regexes on the problem name
     claude: false                    # a Claude button per problem: a VS Code terminal running Claude Code on it (contrib/vscode-sentinel)
     # claude_prompt: |               # what Claude is told — {name} {host} {severity} {since} {age} (a duration) {url}
-    #   Open a ticket for this Zabbix alert and investigate, read-only until I say so.
+    #   Open a ticket for this Zabbix alert (or reuse the open one) and investigate, read-only until I say so.
     #   {name} on {host} ({severity}) since {since}: {url}
 
   # Grafana: the dashboards you keep open, read back every few minutes (Graphite panels), each one
