@@ -39,6 +39,7 @@ app/
 └── templates/partials/  inbox_list · list_macros · detail_{review,item,group,dep,gone} · detail_macros · agent_macro · cycle · watchers · watch
 contrib/claude-bridge/   bridge.py (host, launchd) — modes, prompts, toolsets
 contrib/claude-code-mod/ the Claude Code mod (status line, toasts, /sentinel pane) — reads /api/summary
+contrib/claude-code-context/ a second mod, independent of the app: context size, cold-cache guard, /handoff into the Shortcut story then a fresh session
 tests/                   unittest, run inside the image (see Tests)
 ```
 

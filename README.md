@@ -158,6 +158,10 @@ Bridge environment: `BRIDGE_TOKEN`, `BRIDGE_LANG` (answer language, default Engl
 
 `contrib/claude-code-mod/` is a [Claude Code](https://claude.com/claude-code) mod that reads `GET /api/summary`: the status line shows what needs you (`● 3 for you · 2 bumps · landing 1 failed`), new notifications appear as toasts, and `/sentinel` opens the inbox in a pane — open, done, later, and a devil's advocate review run right in your session. It only reads Sentinel's API: one source of truth, no second poller.
 
+## Claude Code context advisor (optional)
+
+`contrib/claude-code-context/` is a [Claude Code](https://claude.com/claude-code) mod that keeps a session's context in view and its work in the ticket: the status line shows the context size, a cold prompt cache and the 5-hour quota; a message about to re-read a big context whose cache expired is held once with its price (Enter sends it anyway); past `CONTEXT_HANDOFF_TOKENS` (350k) it offers `/handoff`, which has the session write where it stands into the linked Shortcut story, then clears and starts a fresh session from that story. `/fresh` starts fresh from the story right away, `/ticket sc-12345` links one (detected otherwise from what you type, Shortcut tools and git commands), `/budget` shows the figures. Load it with `--plugin-dir contrib/claude-code-context` or `CLAUDE_CODE_PLUGIN_DIRS`.
+
 ## Cycle tab (optional)
 
 Hidden unless `SLITE_API_KEY` and `SHORTCUT_API_TOKEN` are in `.env` *and* `config.yaml` has a `cycle:` block. Objectives come from the Slite note, live progress from Shortcut, and the tab rolls over to the next cycle by itself: newest note under `parent_id`, dates read off its title, highest `<prefix>-<year>-C<n>` label, epics carrying that label whose name contains the big rock title. Each big rock gets a verdict — stalled, behind, on track — measured on the note's outputs, not on story progress (epics carry stories closed in earlier cycles). See the `cycle:` block of [config.example.yaml](config.example.yaml).

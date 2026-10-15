@@ -13,3 +13,4 @@ __pycache__/
 
 # written by Claude Code when it loads the mod
 contrib/claude-code-mod/.claude-plugin/types/
+contrib/claude-code-context/.claude-plugin/types/
