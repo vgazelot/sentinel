@@ -119,3 +119,29 @@ cycle:
   run:
     label: RUN
     match: RUN my-service         # the cycle epic whose name contains this
+
+# Optional: Lookout — a tech watch that keeps a handful of finds a week out of hundreds of links.
+# Needs Claude (CLAUDE_BRIDGE_URL): Claude reads the new titles against your profile, keeps the few worth
+# a closer look, reads those and scores them. One push a week; remove the block to hide the tab.
+lookout:
+  enabled: true
+  threshold: 7                    # a find shows from this score (0-10)
+  digest: "mon 09:00"             # one push a week, local time; "off" = none
+  # collect_minutes: 120          # how often the sources are read
+  # scout_hours: 12               # Claude reads the new titles at most this often
+  # keep_days: 60                 # rows without feedback are forgotten after this
+  profile: |                      # sent to Claude as is: who you are, what you want, what you never want
+    Senior DevOps / SRE engineer. Stack: Terraform, Ansible, Kubernetes, PostgreSQL, Kafka, Prometheus,
+    GitHub Actions. Cares about: new tools gaining real traction, AI applied to operations, observability,
+    postmortems, CI and supply-chain security. Not interested in: frontend, mobile, crypto, funding news.
+  sources:
+    hackernews: {min_points: 150, days: 3}
+    lobsters: {tags: [devops, linux, networking, security, distributed, databases, ai], min_score: 15}
+    reddit: {subreddits: [devops, sysadmin], period: week}
+    github_trending: {since: weekly, languages: [all, go, python, rust]}
+    feeds:
+      - {url: "https://sreweekly.com/feed/", name: SRE Weekly, expand: true}   # an issue = the links it shares
+      - https://www.cncf.io/feed/
+    releases:                     # the tools you run: new minor/major versions and security patches
+      days: 14
+      repos: [hashicorp/terraform, ansible/ansible, kubernetes/kubernetes, prometheus/prometheus]

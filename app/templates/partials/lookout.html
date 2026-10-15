@@ -1,0 +1,119 @@
+{% from "partials/agent_macro.html" import agent_block with context %}
+{# One find: what it is, where it was seen, why Claude kept it, your feedback, Dig in. #}
+{% macro find(v) -%}
+<div class="row lk" id="find-{{ v.id }}">
+    <span class="dot {{ 'hot' if v.verdict == 'try' else 'neutral' }}"></span>
+    <div class="row-main">
+        <a class="row-title" href="{{ v.url }}" target="_blank" rel="noopener noreferrer">{{ v.title }}</a>
+        <div class="row-meta">
+            <span class="tag {{ 'ok' if v.score >= 9 }}">{{ v.score }}/10 · {{ v.verdict }}</span>
+            {% if v.category %}<span class="tag">{{ v.category }}</span>{% endif %}
+            {% for m in v.mentions if m.label %}{% if m.discussion %}<a href="{{ m.discussion }}" target="_blank" rel="noopener noreferrer">{{ m.label }}{% if m.points %} {{ m.points }}{% endif %}</a>{% else %}<span>{{ m.label }}</span>{% endif %}{% endfor %}
+            {% if v.facts.stars %}<span>★ {{ '%.1fk' % (v.facts.stars / 1000) if v.facts.stars >= 1000 else v.facts.stars }}</span>{% endif %}
+            {% if v.facts.created %}<span>since {{ v.facts.created[:7] }}</span>{% endif %}
+            {% if v.facts.license %}<span>{{ v.facts.license }}</span>{% endif %}
+            {% if v.facts.archived %}<span class="tag warn">archived</span>{% endif %}
+            <span>seen {{ v.first_seen | age }} ago</span>
+        </div>
+        {% if v.why %}<p class="row-note lk-why">{{ v.why }}</p>{% endif %}
+        <div class="lk-actions">
+            {% for value, label, title in (('useful', 'Useful', 'Glad I read it: more like this'), ('noise', 'Noise', 'Not for me: less like this'),
+                                          ('known', 'Known', 'Relevant, but I knew it'), ('try', 'To try', 'Keep it in To try')) %}
+            <button type="button" class="btn small ghost{{ ' on' if v.feedback == value }}" title="{{ title }}"
+                    hx-post="/api/lookout/{{ v.id }}/feedback" hx-target="#lookout"
+                    hx-vals='{"value": "{{ '' if v.feedback == value else value }}", "tab": "{{ tab }}"}'>{{ label }}</button>
+            {% endfor %}
+            {{ agent_block('lookout:' ~ v.id, ['dig'], runs.get('lookout:' ~ v.id, {})) }}
+        </div>
+    </div>
+</div>
+{%- endmacro %}
+
+<span id="lookout-count" hidden>{{ unread }}</span>
+{% set work = runs.get('lookout', {}) %}
+
+<div class="page-head">
+    <div>
+        <h1>Lookout</h1>
+        <p>
+            {% if unread %}{{ unread }} find{{ 's' if unread > 1 }} to read{% else %}Nothing new to read{% endif %}
+            {% if waiting %} · {{ waiting }} link{{ 's' if waiting > 1 }} waiting for the scout{% endif %}
+            {% if reading %} · {{ reading }} kept, being read{% endif %}
+            {% if next_digest %} · next digest {{ next_digest.strftime('%a %d/%m %H:%M') }}{% endif %}
+        </p>
+    </div>
+    <nav class="seg">
+        <a href="/lookout?tab=finds" class="{{ 'on' if tab == 'finds' }}">Finds{% if unread %} <b>{{ unread }}</b>{% endif %}</a>
+        <a href="/lookout?tab=try" class="{{ 'on' if tab == 'try' }}">To try{% if to_try %} <b>{{ to_try | length }}</b>{% endif %}</a>
+        <a href="/lookout?tab=filtered" class="{{ 'on' if tab == 'filtered' }}">Filtered out</a>
+    </nav>
+</div>
+
+{% for mode in ('scout', 'assess') %}{% set run = work.get(mode) %}
+{% if run and run.status in ('queued', 'running') %}
+<p class="agent-status"><span class="spinner"></span> {{ agent_modes[mode].verdict }} — {% if run.status == 'queued' %}queued{% else %}{{ run.started_at | elapsed }}{% endif %} <span class="muted">({{ agent_modes[mode].eta }})</span></p>
+{% elif run and run.status == 'error' %}
+<p class="inline-error">{{ agent_modes[mode].verdict }} failed {{ run.finished_at | age }} ago — {{ run.error }}</p>
+{% endif %}
+{% endfor %}
+
+{% if tab == 'finds' %}
+    {% if fresh %}
+    <section class="card">
+        <header class="card-head"><h2>This week</h2><span class="count">{{ fresh | length }} · scored {{ threshold }}/10 or more</span></header>
+        {% for v in fresh %}{{ find(v) }}{% endfor %}
+    </section>
+    {% elif not earlier %}
+    <section class="card calm">
+        {% if assessed %}<p class="muted">Nothing worth your time since the last digest. The links the filter left out are under Filtered out.</p>
+        {% else %}<p class="muted">First read in progress: the sources are read every few hours, Claude picks the few worth a closer look and scores them. Finds show up here; one push a week.</p>{% endif %}
+    </section>
+    {% endif %}
+    {% if earlier %}
+    <section class="card">
+        <details id="lookout-earlier">
+            <summary class="card-head"><h2>Earlier</h2><span class="count">{{ earlier | length }} not read yet</span></summary>
+            {% for v in earlier %}{{ find(v) }}{% endfor %}
+        </details>
+    </section>
+    {% endif %}
+{% elif tab == 'try' %}
+    <section class="card">
+        <header class="card-head"><h2>To try</h2><span class="count">{{ to_try | length }}</span></header>
+        {% for v in to_try %}{{ find(v) }}{% else %}<p class="pad muted">Nothing yet: mark a find To try to keep it here.</p>{% endfor %}
+    </section>
+{% else %}
+    <section class="card">
+        <header class="card-head"><h2>Filtered out</h2><span class="count">last 7 days · {{ filtered | length }}</span></header>
+        <div class="pad">
+        <p class="muted">What scored under {{ threshold }} first, then what the scout left out, most upvoted first. Tell it when it was wrong: it reads your feedback on its next pass.</p>
+        <ul class="compact-list">
+            {% for v in filtered %}
+            <li class="compact other lk-filtered">
+                <span class="dot neutral small"></span>
+                <div><a class="compact-title" href="{{ v.url }}" target="_blank" rel="noopener noreferrer">{{ v.title }}</a>
+                    <div class="compact-meta">{{ v.mentions | map(attribute='label') | select | join(' · ') or 'release' }}{% if v.points %} {{ v.points }}{% endif %} · {% if v.stage == 'dropped' %}left out by the scout{% elif v.score is none %}not scored{% else %}{{ v.score }}/10 — {{ v.why }}{% endif %}</div></div>
+                <button type="button" class="btn small ghost" title="It was worth my time: the filter learns from it"
+                        hx-post="/api/lookout/{{ v.id }}/feedback" hx-target="#lookout" hx-vals='{"value": "useful", "tab": "filtered"}'>Should have kept</button>
+            </li>
+            {% else %}
+            <li class="compact other">Nothing filtered out in the last 7 days.</li>
+            {% endfor %}
+        </ul>
+        </div>
+    </section>
+{% endif %}
+
+{% if sources %}
+<details class="dep-prs" id="lookout-sources">
+    <summary>{{ sources | length }} sources{% if failing %} · {{ failing | length }} failing{% endif %}</summary>
+    <ul class="compact-list">
+        {% for s in sources %}
+        <li class="compact{{ '' if s.error else ' other' }}">
+            <span class="dot {{ 'bad' if s.error else 'ok' }} small"></span><span>{{ s.name }}</span>
+            <span class="compact-meta">{% if s.error %}failing for {{ s.since | age }}: {{ s.error }}{% else %}read {{ s.at | age }} ago · {{ s.new }} new{% endif %}</span>
+        </li>
+        {% endfor %}
+    </ul>
+</details>
+{% endif %}

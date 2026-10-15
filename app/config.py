@@ -40,6 +40,20 @@ AGENT_DEFAULTS = {
 }
 
 
+LOOKOUT_DEFAULTS = {
+    "enabled": False,
+    "collect_minutes": 120,     # how often the sources are read
+    "scout_hours": 12,          # Claude reads the new titles at most this often (sooner once `batch` wait)
+    "batch": 250,               # titles per scout
+    "assess_batch": 12,         # finds read closely per assessment
+    "threshold": 7,             # a find shows from this score (0-10)
+    "digest": "mon 09:00",      # one push a week, local time; "off" = none
+    "keep_days": 60,            # rows without feedback are forgotten after this
+    "profile": "",              # who reads: sent to Claude as is, the rest of the filter learns from feedback
+    "sources": {},
+}
+
+
 def load() -> dict:
     with open(CONFIG_PATH) as f:
         return yaml.safe_load(f) or {}
@@ -51,6 +65,10 @@ def triage() -> dict:
 
 def agents() -> dict:
     return {**AGENT_DEFAULTS, **(load().get("agents") or {})}
+
+
+def lookout() -> dict:
+    return {**LOOKOUT_DEFAULTS, **(load().get("lookout") or {})}
 
 
 def github() -> dict:

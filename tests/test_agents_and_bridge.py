@@ -53,8 +53,8 @@ class AgentsTest(SentinelTest):
         import agents
         import db
 
-        for info, expected in (({"api": 2, "token": True}, "older version"), ({"api": 3, "token": False}, "BRIDGE_TOKEN"),
-                               ({"api": 3, "token": True}, "")):
+        for info, expected in (({"api": 3, "token": True}, "older version"), ({"api": 4, "token": False}, "BRIDGE_TOKEN"),
+                               ({"api": 4, "token": True}, "")):
             with mock.patch("requests.get", return_value=mock.Mock(json=lambda info=info: info, raise_for_status=lambda: None)), \
                     mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
                 agents.check_bridge()

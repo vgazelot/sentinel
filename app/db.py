@@ -62,6 +62,32 @@ CREATE TABLE IF NOT EXISTS watcher_state (
     value TEXT,
     PRIMARY KEY (watcher, key)
 );
+-- Lookout (lookout.py): one row per thing seen, whatever the source; stage new → scouting → kept/dropped →
+-- assessing → assessed. sources = {source: {discussion, points, comments}}, facts = what the repository says.
+CREATE TABLE IF NOT EXISTS lookout (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    sources TEXT NOT NULL DEFAULT '{}',
+    facts TEXT NOT NULL DEFAULT '{}',
+    published TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT 'new',
+    note TEXT,
+    score INTEGER,
+    verdict TEXT,
+    category TEXT,
+    why TEXT,
+    assessed_at TEXT,
+    feedback TEXT,
+    feedback_at TEXT
+);
+CREATE INDEX IF NOT EXISTS lookout_stage ON lookout (stage);
 """
 # a pending item counts as "needs you" when it is urgent, or when its grace period ran out
 ATTENTION = "state = 'pending' AND (urgency = 'now' OR (urgency = 'later' AND notified_at IS NOT NULL))"

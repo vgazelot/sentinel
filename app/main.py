@@ -20,10 +20,12 @@ import engine
 import followup
 import github_pr
 import insight
+import lookout
 import my_prs
 import notify
 from watchers import build_watchers
 from console import bp as console_bp
+from lookout_views import bp as lookout_bp
 from watch_views import bp as watch_bp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -32,6 +34,7 @@ log = logging.getLogger("sentinel")
 app = Flask(__name__)
 app.register_blueprint(watch_bp)
 app.register_blueprint(console_bp)
+app.register_blueprint(lookout_bp)
 db.init()
 db.fail_stale_runs()
 
@@ -66,6 +69,9 @@ if agents.enabled():
     if config.agents()["precheck"]:
         _every(deps.precheck, 300, "precheck", delay=45)
     _every(insight.refresh, 300, "insight", delay=50)
+    if lookout.enabled():
+        _every(lookout.collect, config.lookout()["collect_minutes"] * 60, "lookout-sources", delay=35)
+        _every(lookout.advance, 120, lookout.NAME, delay=70)
 if os.environ.get("SENTINEL_SCHEDULER", "1") == "1":  # 0 = tests: routes only, no background polling
     scheduler.start()
     log.info("scheduler started, watchers: %s", list(WATCHERS))
@@ -678,6 +684,8 @@ def _agent_target(subject: str, mode: str) -> tuple[str, dict] | None:
     """What a run on this subject needs, rebuilt from Sentinel's own data — the page only names it."""
     if mode in insight.MODES:
         return insight.target(subject, mode)
+    if subject.startswith("lookout:"):
+        return lookout.target(subject, mode)
     if subject.startswith("deps:"):
         group = next((g for g in deps.pending_groups() if f"deps:{g['key']}" == subject), None)
         return (group["prs"][0]["url"], deps.context(group)) if group and mode == "precheck" else None

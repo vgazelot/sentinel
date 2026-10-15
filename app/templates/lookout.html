@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Sentinel — Lookout{% endblock %}
+{% block content %}
+<main class="pane page">
+    <div class="page-in" id="lookout" hx-get="/partials/lookout?tab={{ tab }}" hx-trigger="every 120s" hx-swap="innerHTML">
+        {% include "partials/lookout.html" %}
+    </div>
+</main>
+{% endblock %}

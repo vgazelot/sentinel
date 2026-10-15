@@ -24,6 +24,7 @@ A review inbox that pushes every request is mostly noise: on a team, most review
 - **Watch** (optional). The Zabbix problems still open and the Grafana dashboards you keep open, read back every few minutes: a counter that stops, a status that changes, a curve leaving its usual band over the last 30 minutes. A stop or a status change pushes; everything else waits on the Watch page.
 - **Health.** A light in the sidebar; sources failing for half an hour (expired token, network down) give one push, however many of them fail.
 - **Cycle objectives** (optional). Your big rocks from a [Slite](https://slite.com) note joined with their [Shortcut](https://shortcut.com) epics, and a push when one goes quiet for too long.
+- **Lookout** (optional, with Claude). A tech watch that keeps a handful of finds a week out of hundreds of links — Hacker News, Lobsters, Reddit, GitHub trending, newsletters and blogs, the releases of the tools you run. Claude reads the titles and keeps the few worth a closer look, reads those (README, page, release notes) and scores them for you, with why each one matters; one push a week. Your feedback — useful, noise, known, to try — goes into the next pass, and **Dig in** reads one find in depth: how mature, what it would change for you, how to try it in 15 minutes.
 
 Everything runs locally in one Docker container with a SQLite file — no account, no cloud, no telemetry. Notifications are native Web Push through your browser; an optional [Claude Code](https://claude.com/claude-code) mod puts the same inbox in your terminal's status line.
 
@@ -64,6 +65,7 @@ Open **http://localhost:8300**, then **Settings → Subscribe this browser** (us
 | Zabbix problem at `push_severity` or above; a dashboard counter that stops or a status that changes (two reads in a row) | Monitoring | right away |
 | Sentinel cannot reach a source | the sidebar light | once, after `health_minutes`, however many sources |
 | A big rock stalls (Cycle) | Cycle tab | once |
+| Lookout finds scored at or above `threshold` | Lookout tab | one push a week (`digest`, Monday 9:00 by default), never one per find |
 
 Every item can be marked **Done** (out of the inbox until it changes) or sent to **Later** (back tomorrow at 9:00). An item that leaves its source (PR merged, incident resolved) resolves itself. The first pass of a new source records what is already there without pushing it.
 
@@ -120,7 +122,7 @@ Environment variables (`.env`):
 
 ## Claude (optional)
 
-Claude Code runs on the **host** — that is where your skills, repositories and `gh` login live — so `contrib/claude-bridge/` is a stdlib-only HTTP server the container calls on `127.0.0.1:8301`. It runs `claude -p` in one of six modes; the bridge owns prompts, models and tools, the app only sends PR URLs and a little context.
+Claude Code runs on the **host** — that is where your skills, repositories and `gh` login live — so `contrib/claude-bridge/` is a stdlib-only HTTP server the container calls on `127.0.0.1:8301`. It runs `claude -p` in one of nine modes; the bridge owns prompts, models and tools, the app only sends PR URLs (or a Lookout find's link) and a little context.
 
 | Mode | When | What |
 |---|---|---|
@@ -130,11 +132,14 @@ Claude Code runs on the **host** — that is where your skills, repositories and
 | `whyred` | automatic, your PRs red on the same CI job (once per set of heads) | the failed job logs → `fix-in-pr` / `flaky` / `elsewhere` / `unclear`, the key log line and what to do |
 | `asks` | automatic, your PRs with changes requested or open threads | the reviewers' comments as a `file:line` to-do (`sonnet`) |
 | `followup` | automatic, a fresh post-merge failure of a PR you approved | the failed run's logs, the history of the same workflow → `caused-by-this-pr` / `unrelated` / `unclear` and what to do |
+| `scout` | automatic, Lookout, at most every `scout_hours` | the new titles at once → the few worth a closer look, with a reason (`sonnet`) |
+| `assess` | automatic, Lookout, as soon as finds are kept | a few kept finds with their README, page or release notes → score, `try` / `watch` / `skip`, why it matters to you |
+| `dig` | on demand, on a Lookout find | one find in depth → `adopt` / `trial` / `assess` / `hold`, maturity, fit with your stack, how to try it |
 
 A follow-up investigation answers with a push. A failure Claude traced to something else stops asking for you — unless a fact Claude could not argue with says otherwise: the failing job passed right before the merge, its log could not be read, or it failed after the investigation (which then runs again). Automatic runs are capped per day (`agents.max_runs_per_day`) and run at most `agents.concurrency` at a time.
 
 **What Claude can touch.**
-- **Every automatic mode (`precheck`, `followup`, `brief`, `whyred`, `asks`) gets no tool at all.** They read third-party text (a diff, release notes, CI logs), so Sentinel fetches the material itself — the PR and its diff, the failed job logs, the recent runs of the failing workflow — and Claude only reads it, fenced as untrusted data. A text written to steer the model can bend a verdict; it cannot read a file or reach a host.
+- **Every automatic mode (`precheck`, `followup`, `brief`, `whyred`, `asks`, `scout`, `assess`) and `dig` get no tool at all.** They read third-party text (a diff, release notes, CI logs, web pages), so Sentinel fetches the material itself — the PR and its diff, the failed job logs, the recent runs of the failing workflow, a README or an article — and Claude only reads it, fenced as untrusted data. A text written to steer the model can bend a verdict; it cannot read a file or reach a host. The Lookout's `profile` — your own words, from `config.yaml` — is the only text sent outside the fence.
 - **`deep`** explores the repositories with named read-only commands (`gh pr view/diff/checks`, `gh run view`, `git log/show`, `git fetch origin`, `grep`…): no `gh api` (with `-f` it is a POST, and `-X` can follow any prefix, so no rule tells a read from a merge), no WebFetch, and its Read tool refuses `.env`, `.mcp.json`, keys and `~/.ssh`, `~/.aws`, `~/.config`. It is offered only on PRs written by people, never on a bot's. What remains possible to a PR crafted against it: read a file through a shell and leak it in a `gh … -R <host>` lookup — a review you start yourself, on a colleague's PR.
 - Every run loads your *user* settings only (`--setting-sources user`): the allow rules of the project the bridge starts in would otherwise add to the bridge's lists (an allowed `tee` there wrote a file in a run meant to be read-only). No MCP servers.
 - The bridge answers local hosts only (no DNS rebinding) and runs nothing without `BRIDGE_TOKEN` — set on it, and the same value as `CLAUDE_BRIDGE_TOKEN` in Sentinel's `.env` — so only Sentinel can make it run Claude, not a page your browser opens.
@@ -152,7 +157,7 @@ echo CLAUDE_BRIDGE_TOKEN=<the same token> >> .env && docker compose up -d
 
 The bridge is a separate process: after pulling a new version, restart it too (`launchctl bootout` then `bootstrap` the plist) — Settings and a health item tell you when Sentinel talks to an older bridge.
 
-Bridge environment: `BRIDGE_TOKEN`, `BRIDGE_LANG` (answer language, default English), `BRIDGE_PROMPT` / `BRIDGE_PROMPT_<MODE>` (replace a mode's prompt — placeholders `{url}`, `{urls}`, `{context}`, `{lang}`; point them at your own skills, e.g. `/my-review {url}`), `BRIDGE_MODEL` / `BRIDGE_MODEL_<MODE>`, `BRIDGE_CWD` (where Claude starts: its `CLAUDE.md` and skills apply). After editing the plist, `launchctl bootout` then `bootstrap` it — `kickstart -k` keeps the old environment.
+Bridge environment: `BRIDGE_TOKEN`, `BRIDGE_LANG` (answer language, default English), `BRIDGE_PROMPT` / `BRIDGE_PROMPT_<MODE>` (replace a mode's prompt — placeholders `{url}`, `{urls}`, `{context}`, `{lang}`, `{profile}`; point them at your own skills, e.g. `/my-review {url}`), `BRIDGE_MODEL` / `BRIDGE_MODEL_<MODE>`, `BRIDGE_CWD` (where Claude starts: its `CLAUDE.md` and skills apply). After editing the plist, `launchctl bootout` then `bootstrap` it — `kickstart -k` keeps the old environment.
 
 ## Claude console (optional)
 
@@ -180,6 +185,19 @@ Hidden unless `SLITE_API_KEY` and `SHORTCUT_API_TOKEN` are in `.env` *and* `conf
 Hidden unless `config.yaml` has a `zabbix:` or `grafana:` block under `watchers` — see [config.example.yaml](config.example.yaml). Dashboards are given as the links you open them with: the link's variables are used, the dashboard's saved values fill the rest; each one is its own source, and the token only goes to the Grafana named in `url`. Tokens go in `.env` (`ZABBIX_TOKEN`, `GRAFANA_TOKEN`, read-only is enough); a client certificate for an mTLS proxy goes in the folder `SENTINEL_CERTS` points to, mounted on `/certs`.
 
 **Claude on a Zabbix problem.** With `claude: true` in the `zabbix:` block and the Claude bridge set up, every problem on the Watch page (and a Zabbix alert's detail in the inbox) gets a **Claude** button: it opens a console — see [Claude console](#claude-console-optional).
+
+## Lookout (optional)
+
+Hidden unless `config.yaml` has a `lookout:` block with `enabled: true` and Claude is set up (the bridge does the reading). Every `collect_minutes` the sources are read into one row per thing — the same repository on Hacker News, in a newsletter and on GitHub trending is one row with three mentions. Then two passes of Claude:
+
+1. **Scout** — every new title at once, with where it was seen and its points, against your `profile`: Claude keeps the few you would regret missing (usually one in ten or fewer). At most every `scout_hours`.
+2. **Assess** — the kept ones, a few at a time, with their material: the README, age, activity, contributors and license of a repository; the text of an article; the notes of a release. Each gets a score out of 10, `try` / `watch` / `skip`, a category and why it matters to you. What scores `threshold` or more shows on the page.
+
+Releases of the tools you list skip the scout: a new minor or major version, or a patch that fixes a vulnerability. Your feedback (**Useful**, **Noise**, **Known**, **To try**) is sent with both passes, and **Filtered out** shows what the filter left out last week so you can tell it **Should have kept**. One push a week (`digest`) names the finds of the week; nothing else pushes. Sources that fail are listed at the bottom of the page — never a health item: a feed down for a day costs a few links. Rows without feedback are forgotten after `keep_days`.
+
+Sources (see the `lookout:` block of [config.example.yaml](config.example.yaml)): `hackernews` (Algolia search, stories past `min_points`), `lobsters` (tags), `reddit` (top of the week, as RSS), `github_trending` (through [a public RSS mirror](https://github.com/mshibanami/GitHubTrendingRSS) of the trending page — GitHub has no API for it), `feeds` (any RSS/Atom; `expand: true` reads a newsletter issue as the links it shares), `releases` (GitHub repositories). Pages are read from public addresses only, every redirect checked again, and only http(s) links are kept.
+
+A pass is an automatic run: it counts in `agents.max_runs_per_day`. A first start reads a few days of backlog — two scouts and a few assessments — then it settles at a scout or two a day and an assessment per batch of kept finds.
 
 ## Fallback notifier (macOS, optional)
 

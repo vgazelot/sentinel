@@ -7,6 +7,9 @@ your gh auth live on the host, not in the container.
   brief     automatic — a review asked of you: what it changes, trivial / routine / careful
   whyred    automatic — your PRs red on the same CI job: why, from the logs, and what to do
   asks      automatic — the reviewers' comments on your PR, as a to-do
+  scout     automatic — Lookout: the new titles of the tech watch, the few worth a closer look
+  assess    automatic — Lookout: a few kept finds read closely, scored for you
+  dig       on demand — Lookout: one find in depth, maturity, fit with your stack, how to try it
 
 Runs are queued in agent_runs and started by `tick()` (scheduler job), at most `concurrency`
 at a time; automatic ones are capped per day. The bridge owns prompts, models and tools per
@@ -65,18 +68,40 @@ MODES = {
         "eta": "1–2 min",
         "verdict": "Reviewers ask",
     },
+    "scout": {
+        "button": "Scout",
+        "title": "Claude reads the new titles of the Lookout and keeps the few worth a closer look.",
+        "eta": "1–3 min",
+        "verdict": "Lookout scout",
+    },
+    "assess": {
+        "button": "Assess",
+        "title": "Claude reads each kept find — README, page, release notes — and scores it for you.",
+        "eta": "2–5 min",
+        "verdict": "Lookout assessment",
+    },
+    "dig": {
+        "button": "Dig in",
+        "title": "Claude reads the project in depth: what it is, how mature, what it would change for you, how to try it.",
+        "eta": "1–3 min",
+        "verdict": "Dig in",
+    },
 }
 ON_DEMAND = ("deep",)
-AUTOMATIC = ("precheck", "followup", "brief", "whyred", "asks")
+AUTOMATIC = ("precheck", "followup", "brief", "whyred", "asks", "scout", "assess")
+# mode → callable(run, output), called before the run reads done (lookout.py: rows still claimed while written);
+# raising fails the run
+ON_FINISH: dict[str, Callable] = {}
 # the first line the bridge prompts ask for — only that line counts: a verdict quoted further down
 # (a log, a release note) must not stand for Claude's own
 VERDICT = re.compile(r"verdict\s*:\s*\**\s*([\w-]+)", re.I)
 MAX_ATTEMPTS = 3
-BRIDGE_API = 3  # what /healthz must report: material for every automatic run (brief/whyred/asks since 3), token required
+BRIDGE_API = 4  # what /healthz must report: material for every automatic run (brief/whyred/asks since 3), token required, Lookout modes (4)
 TONE = {"safe": "ok", "clean": "ok", "unrelated": "ok", "check": "warn", "unclear": "warn",
         "tidy-up": "warn", "risky": "bad", "caused-by-this-pr": "bad",
         "trivial": "ok", "routine": "neutral", "careful": "warn",
-        "fix-in-pr": "bad", "flaky": "warn", "elsewhere": "ok", "todo": "neutral"}
+        "fix-in-pr": "bad", "flaky": "warn", "elsewhere": "ok", "todo": "neutral",
+        "scouted": "neutral", "assessed": "neutral", "adopt": "ok", "trial": "ok", "assess": "neutral", "hold": "warn"}
 
 
 def enabled() -> bool:
@@ -147,11 +172,14 @@ def _execute(run):
         context = json.loads(run["context"] or "{}")
         r = requests.post(f"{config.CLAUDE_BRIDGE_URL}/run", timeout=TIMEOUT, headers=_auth(),
                           json={"mode": run["mode"], "url": run["url"], "urls": context.pop("urls", []),
-                                "context": context})
+                                # the reader's own words (Lookout), outside the fence the rest of the context goes in
+                                "profile": context.pop("profile", ""), "context": context})
         data = r.json() if r.content else {}
         if r.status_code >= 400:
             raise RuntimeError(data.get("error") or f"bridge HTTP {r.status_code}")
         output = (data.get("output") or "").strip() or "(empty answer)"
+        if hook := ON_FINISH.get(run["mode"]):
+            hook(run, output)
         db.finish_run(run["id"], output=output)
         log.info("claude %s for %s done in %ss", run["mode"], run["subject"], data.get("duration"))
         if run["mode"] == "followup":

@@ -16,6 +16,7 @@ function updateBadges() {
     const attention = syncBadge('nav-attention', 'attention-count');
     syncBadge('nav-cycle', 'cycle-count');
     syncBadge('nav-watch', 'watch-count');
+    syncBadge('nav-lookout', 'lookout-count');
     if (attention === null) return;
     document.title = (attention > 0 ? `(${attention}) ` : '') + 'Sentinel';
     const badge = document.getElementById('nav-attention');
@@ -137,9 +138,9 @@ document.addEventListener('htmx:afterSwap', (e) => {
 });
 
 // --- Polling without jumps -------------------------------------------------------------------
-// #list, #cycle, #watch and #watchers are re-fetched every 20 s - 5 min: skip the swap when the HTML is the
+// #list, #cycle, #watch, #lookout and #watchers are re-fetched every 20 s - 5 min: skip the swap when the HTML is the
 // same, otherwise keep the list scroll, the open <details id> and the selection.
-const POLLED = new Set(['list', 'cycle', 'watch', 'watchers']);
+const POLLED = new Set(['list', 'cycle', 'watch', 'lookout', 'watchers']);
 const lastHtml = {};
 let kept = null;
 
