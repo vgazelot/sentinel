@@ -188,6 +188,8 @@ def _tone(row, p: dict, attention: bool) -> str:
         return {"merge": "ok", "threads": "warn", "no-reviewer": "warn", "nudge": "neutral"}.get(p.get("action"), "bad")
     if lane == "incident":
         return {"critical": "bad", "major": "bad", "minor": "warn"}.get(row["severity"], "neutral")
+    if lane == "watch":
+        return "bad" if row["severity"] in ("stop", "high", "disaster") else "warn"
     if lane == "cycle":
         return "warn"
     return "hot" if attention else "neutral"
@@ -237,6 +239,7 @@ def _units(attention: list[dict]) -> int:
 
 SECTIONS = [
     ("health", "Sentinel needs a hand", ("health",)),
+    ("watch", "Monitoring", ("watch",)),
     ("reviews", "Reviews for you", ("you", "team")),
     ("mine", "Your pull requests", ("mine",)),
     ("followup", "After you approved", ("followup",)),

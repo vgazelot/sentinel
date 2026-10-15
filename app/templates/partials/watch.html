@@ -5,6 +5,8 @@
 </svg>
 {%- endmacro %}
 
+<span id="watch-count" hidden>{{ to_look }}</span>
+
 <div class="page-head">
     <div>
         <h1>Watch</h1>
@@ -22,7 +24,8 @@
 
 {% if zabbix %}
 <section class="card">
-    <h2>Zabbix <span class="muted">· {{ zabbix.look | length }} open{% if zabbix.quiet_for %} · nothing new for {{ zabbix.quiet_for }}{% endif %}</span></h2>
+    <header class="card-head"><h2>Zabbix</h2><span class="count">{{ zabbix.look | length }} open{% if zabbix.quiet_for %} · nothing new for {{ zabbix.quiet_for }}{% endif %}</span></header>
+    <div class="pad">
     {% if zabbix.look %}
     <ul class="compact-list">
         {% for r in zabbix.look %}
@@ -38,7 +41,7 @@
     {% endif %}
     {% if zabbix.known %}
     <details class="dep-prs" id="watch-known">
-        <summary>{{ zabbix.known | length }} known, listed without pushing</summary>
+        <summary>{{ zabbix.known | length }} known noise</summary>
         <ul class="compact-list">
             {% for r in zabbix.known %}
             <li class="compact other">
@@ -51,12 +54,14 @@
     </details>
     {% endif %}
     {% if zabbix.hidden %}<p class="muted">{{ zabbix.hidden }}</p>{% endif %}
+    </div>
 </section>
 {% endif %}
 
 {% if grafana %}
 <section class="card">
-    <h2>Dashboards <span class="muted">· {{ grafana.cards | length }} dashboards, {{ grafana.series }} curves, last 30 min against the {{ grafana.hours }} h before</span></h2>
+    <header class="card-head"><h2>Dashboards</h2><span class="count">{{ grafana.cards | length }} dashboards · {{ grafana.series }} curves · last 30 min against the {{ grafana.hours }} h before</span></header>
+    <div class="pad">
     {% for c in grafana.cards %}
     <div class="watch-dash">
         <div class="watch-dash-head">
@@ -83,5 +88,6 @@
         {% endif %}
     </div>
     {% endfor %}
+    </div>
 </section>
 {% endif %}

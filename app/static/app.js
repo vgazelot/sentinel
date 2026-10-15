@@ -14,6 +14,7 @@ function updateBadges() {
     syncBadge('nav-my-prs', 'my-prs-count');
     syncBadge('nav-followup', 'followup-count');
     syncBadge('nav-cycle', 'cycle-count');
+    syncBadge('nav-watch', 'watch-count');
     if (attention === null) return;
     document.title = (attention > 0 ? `(${attention}) ` : '') + 'Sentinel';
 }
@@ -21,13 +22,13 @@ document.addEventListener('htmx:afterSwap', updateBadges);
 document.addEventListener('DOMContentLoaded', updateBadges);
 
 // --- Polling without jumps -------------------------------------------------------
-// The pages (#now, #my-prs, #follow-up, #watchers, #cycle) are re-fetched every 20-60s. Things that made
+// The pages (#now, #my-prs, #follow-up, #watchers, #cycle, #watch) are re-fetched every 20-60s. Things that made
 // the page jump: htmx moves hx-preserve'd panels out and back in (which resets their inner scroll boxes),
 // a focused textarea inside the panel gets re-focused with a scroll-into-view, and every <details> the
 // user opened came back closed.
 // 1) skip the swap entirely when the server sent exactly the same HTML as last time;
 // 2) otherwise save window scroll, focus/caret, inner scroll positions and open <details>, restore after settle.
-const POLLED = new Set(['now', 'my-prs', 'follow-up', 'watchers', 'cycle']);
+const POLLED = new Set(['now', 'my-prs', 'follow-up', 'watchers', 'cycle', 'watch']);
 const lastHtml = {};
 let scrollState = null;
 

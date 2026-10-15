@@ -1,8 +1,9 @@
 """The Grafana dashboards you keep open, read back by Sentinel (Graphite panels).
 
-Each curve's last 30 min is compared with the hours before it (`quart.verdicts`). A counter that
-stops, or a whole-number gauge that changes, is pushed once seen on two reads in a row; anything
-else that changed is listed without pushing. A dashboard that cannot be read keeps what was known.
+Each curve's last 30 min is compared with the hours before it (`quart.verdicts`); every change is
+listed on the Watch page. A counter that stops, or a whole-number gauge that changes, is also an
+inbox item (lane `watch`, pushed) once seen on two reads in a row. A dashboard that cannot be read
+keeps the items it had.
 """
 import logging
 import os
@@ -57,7 +58,7 @@ class GrafanaWatcher(Watcher):
                 key = f"{uid}:{a['panel_id']}:{a['series']}:{a['kind']}"
                 seen.add(key)
                 a["confirmed"] = key in self._seen
-                if a["confirmed"]:
+                if a["confirmed"] and ((a["kind"] == "stop" and a["volume"]) or (a["kind"] == "state" and a["discrete"])):
                     kept.setdefault(a["panel_id"], []).append(self._item(key, card, a))
             self._kept[uid] = kept
             items.extend(i for panel_items in kept.values() for i in panel_items)
@@ -104,14 +105,15 @@ class GrafanaWatcher(Watcher):
         return card
 
     def _item(self, key: str, card: dict, a: dict) -> WatchedItem:
-        urgent = (a["kind"] == "stop" and a["volume"]) or (a["kind"] == "state" and a["discrete"])
+        name = f"{a['series']} — {a['text']}"
         return WatchedItem(
             external_id=key,
-            title=f"{card['title']} · {a['panel']} · {a['series']}: {a['text']}"[:300],
+            title=name[:300],
             url=card["link"],
             fingerprint=a["kind"],
             severity=a["kind"],
-            payload={"source": "grafana", "name": f"{a['series']}: {a['text']}", "dashboard": card["title"], "panel": a["panel"]},
-            lane="incident",
-            urgency="now" if urgent else "quiet",
+            payload={"source": "grafana", "name": name, "dashboard": card["title"], "panel": a["panel"],
+                     "why": f"{card['title']} · {a['panel']}"},
+            lane="watch",
+            urgency="now",
         )

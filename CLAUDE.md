@@ -21,7 +21,11 @@ app/
 ├── engine.py         # CORE: diff fetch vs state, notification policy, ack/snooze, grace, health
 ├── watchers/         # 1 watcher = fetch() → list[WatchedItem] (lane + urgency), nothing else
 │   ├── github_reviews.py   # GraphQL: lanes you / team / deps, team+APPROVED dropped, bump bodies cached
-│   └── statuspage.py       # generic Atlassian Statuspage; maintenance + `notify: quiet` → quiet
+│   ├── statuspage.py       # generic Atlassian Statuspage; maintenance + `notify: quiet` → quiet
+│   ├── zabbix.py           # open problems as the front shows them (skipDependent, monitored); ≥ push_severity → items (lane watch)
+│   └── grafana.py          # dashboards read back (Graphite panels): confirmed stop / status change → items (lane watch)
+├── quart.py          # Watch: stop / state / drift over the last 30 min vs the hours before + the snapshot the page reads
+├── watch_views.py    # Watch page (blueprint); client certs for an mTLS proxy mounted on /certs (SENTINEL_CERTS)
 ├── checks.py         # check runs / statuses read one way: rollup, outcome (cancelled = neutral), CI family
 ├── evidence.py       # material for the automatic agents (PR, diff, job logs, workflow history) + previous run outcome
 ├── deps.py           # Renovate/Dependabot parsing (title, kind, update table), grouping by name (kind)@to, prechecks
@@ -31,7 +35,7 @@ app/
 ├── github_pr.py      # PR panel data (numbered diff, checks, threads) + submit_review + reply
 ├── cycle.py · slite.py · shortcut.py   # Cycle tab; stalled big rocks → engine items (lane cycle)
 ├── md.py             # markdown → HTML + `path:line` → .fileref links
-└── templates/partials/  now · rows (macros) · agent_macro · pr_details · my_prs · followup · cycle · watchers
+└── templates/partials/  now · rows (macros) · agent_macro · pr_details · my_prs · followup · cycle · watchers · watch
 contrib/claude-bridge/   bridge.py (host, launchd) — modes, prompts, toolsets
 contrib/claude-code-mod/ the Claude Code mod (status line, toasts, /sentinel pane) — reads /api/summary
 tests/                   unittest, run inside the image (see Tests)
@@ -39,7 +43,7 @@ tests/                   unittest, run inside the image (see Tests)
 
 ## Triage model (engine.py)
 
-Every `WatchedItem` has a **lane** (where it shows: `you`, `team`, `deps`, `mine`, `followup`, `incident`, `cycle`, `health`) and an **urgency**:
+Every `WatchedItem` has a **lane** (where it shows: `you`, `team`, `deps`, `mine`, `followup`, `incident`, `watch`, `cycle`, `health`) and an **urgency**:
 - `now` → pushed when it appears, again when its fingerprint changes after an ack
 - `later` → pushed only if still pending after `triage.team_grace_minutes` (`promote_due()`, every minute) — team review requests; resolved meanwhile = never pushed
 - `quiet` → never pushed (bumps, drafts, maintenance, reminders)

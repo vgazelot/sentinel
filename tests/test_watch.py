@@ -92,7 +92,7 @@ class ZabbixTest(SentinelTest):
             return ZabbixWatcher({"url": "https://zabbix.example.com/api_jsonrpc.php", "web_url": "https://zabbix.example.com",
                                   "quiet": ["bandwidth usage"]})
 
-    def test_problems_become_incidents(self):
+    def test_problems_at_push_severity_become_items(self):
         import quart
 
         def problem(eventid, objectid, name, severity, acknowledged="0"):
@@ -102,19 +102,20 @@ class ZabbixTest(SentinelTest):
         post = rpc({
             "problem.get": [problem("1", "t1", "Consumer delay above 1h", 4), problem("2", "t2", "Interface bandwidth usage too high", 3),
                             problem("3", "t3", "Disk space is low", 3, acknowledged="1"), problem("4", "t4", "Consumer delay above 5m", 2),
-                            problem("5", "t5", "Supervisor is not running", 3, acknowledged="1")],
+                            problem("5", "t5", "Supervisor is not running", 3, acknowledged="1"), problem("6", "t6", "Swap usage high", 3)],
         })
         # t5's host is disabled; t4 depends on t1: Zabbix (and skipDependent) leave it out
-        post.triggers = [[{"triggerid": t} for t in ("t1", "t2", "t3", "t4")],
-                         [{"triggerid": t, "hosts": [{"host": f"{t}.example.net"}]} for t in ("t1", "t2", "t3")]]
+        post.triggers = [[{"triggerid": t} for t in ("t1", "t2", "t3", "t4", "t6")],
+                         [{"triggerid": t, "hosts": [{"host": f"{t}.example.net"}]} for t in ("t1", "t2", "t3", "t6")]]
         with mock.patch("requests.post", side_effect=post):
             items = self.watcher().fetch()
 
-        # known noise stays on the Watch page, out of the inbox
-        self.assertEqual([(i.external_id, i.urgency, i.lane) for i in items], [("1", "now", "incident")])
+        # below push_severity, and known noise, only on the Watch page
+        self.assertEqual([(i.external_id, i.urgency, i.lane) for i in items], [("1", "now", "watch")])
         self.assertEqual(items[0].url, "https://zabbix.example.com/tr_events.php?triggerid=t1&eventid=1")
+        self.assertEqual(items[0].payload["why"], "high · t1.example.net")
         self.assertEqual([(r["name"], r["known"]) for r in quart.snapshot()["zabbix"]["problems"]],
-                         [("Consumer delay above 1h", False), ("Interface bandwidth usage too high", True)])
+                         [("Consumer delay above 1h", False), ("Swap usage high", False), ("Interface bandwidth usage too high", True)])
         self.assertEqual(post.bodies[0]["auth"], "tok")
         self.assertTrue(post.bodies[2]["params"]["skipDependent"])
         snap = quart.snapshot()["zabbix"]
@@ -141,6 +142,9 @@ DASHBOARD = {"dashboard": {"title": "Pipeline", "templating": {"list": [{"name":
     {"id": 2, "title": "Logs", "type": "logs", "datasource": {"type": "loki", "uid": "l1"}, "targets": [{"expr": "{app=\"x\"}"}]},
 ]}}
 QUIET = {"dashboard": {"title": "Other", "panels": []}}
+GAUGE = {"dashboard": {"title": "Queues", "panels": [
+    {"id": 7, "title": "Queue size", "type": "timeseries", "datasource": {"type": "graphite", "uid": "g1"},
+     "targets": [{"target": "app.queue.size"}]}]}}
 
 
 class GrafanaTest(SentinelTest):
@@ -165,6 +169,10 @@ class GrafanaTest(SentinelTest):
             resp.json = lambda: DASHBOARD
         elif url.endswith("/api/dashboards/uid/other"):
             resp.json = lambda: QUIET
+        elif url.endswith("/api/dashboards/uid/gauge"):
+            resp.json = lambda: GAUGE
+        elif ("target", "app.queue.size") in params:
+            resp.json = lambda: [series("size", [10.0, 12.0] * 55 + [60.0] * 9)]
         elif ("target", "stats_counts.app.accepted.all") in params:
             if self.panel_down:
                 raise requests.HTTPError("500 Server Error")
@@ -187,8 +195,17 @@ class GrafanaTest(SentinelTest):
         self.assertIn(("target", "aliasByNode(stats_counts.app.pulled.*, 3)"), self.renders[0], "the link's value wins over the saved one")
 
         [item] = self.fetch()
-        self.assertEqual((item.urgency, item.lane, item.fingerprint), ("now", "incident", "stop"))
-        self.assertEqual(item.payload["dashboard"], "Pipeline")
+        self.assertEqual((item.urgency, item.lane, item.fingerprint), ("now", "watch", "stop"))
+        self.assertEqual((item.title, item.payload["why"]), ("total — stopped for 30 min (≈ 50 before)", "Pipeline · Pulled"))
+
+    def test_a_drift_is_listed_never_an_item(self):
+        import quart
+
+        self.w.dashboards = ["https://grafana.example.com/d/gauge/queues"]
+        self.fetch()
+        self.assertEqual(self.fetch(), [])
+        [a] = quart.snapshot()["grafana"]["dashboards"][0]["anomalies"]
+        self.assertEqual((a["kind"], a["confirmed"]), ("drift", True))
 
     def test_an_unreadable_dashboard_keeps_what_was_known(self):
         import quart
@@ -252,7 +269,7 @@ class WatchPageTest(SentinelTest):
         ]})
         client = main.app.test_client()
         page = client.get("/watch").get_data(as_text=True)
-        for text in ("Consumer delay above 1h", "1 known, listed without pushing", "1 acknowledged · 2 hidden behind the problem they depend on",
+        for text in ("Consumer delay above 1h", "1 known noise", "1 acknowledged · 2 hidden behind the problem they depend on",
                      "Zabbix read just now",
                      "Pipeline", "stopped for 30 min", "nothing changed", 'href="/watch"', "2 to look at"):
             self.assertIn(text, page)

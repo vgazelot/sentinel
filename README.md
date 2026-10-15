@@ -20,6 +20,7 @@ A review inbox that pushes every request is mostly noise: on a team, most review
 - **Your pull requests, by what they wait for.** Conflicts, changes requested, red CI (grouped by failing job: ten PRs red on the same CI job are one problem), approved and green, open threads, nobody asked to review, no movement for days. A PR that starts waiting on you pushes once.
 - **Follow-up after you approve.** Every PR you approved (bots by default) is followed until it has *landed*: merged, and every check that ran on the merge commit green — `terraform apply`, deploy, release. A dismissed approval, a PR stuck for days, a post-merge failure or a revert become items. A failing job that already failed in the previous run of its workflow is told apart (*not this PR's doing*), and with Claude enabled a fresh failure is investigated — *caused by this PR*, *unrelated*, or *unclear* — with the root cause from the logs and what to do; one Claude traced elsewhere stops asking for you.
 - **Status pages.** Any [Atlassian Statuspage](https://www.atlassian.com/software/statuspage) (Scaleway, OVHcloud, GitHub, Cloudflare…) with component and keyword filters. Planned maintenance is listed, never pushed; a noisy page can be set to `notify: quiet`.
+- **Watch** (optional). The Zabbix problems still open and the Grafana dashboards you keep open, read back every few minutes: a counter that stops, a status that changes, a curve leaving its usual band over the last 30 minutes. A stop or a status change pushes; everything else waits on the Watch page.
 - **Health.** A source failing for half an hour (expired token, API change) becomes an item instead of a silent gap.
 - **Cycle objectives** (optional). Your big rocks from a [Slite](https://slite.com) note joined with their [Shortcut](https://shortcut.com) epics, and a push when one goes quiet for too long.
 
@@ -59,6 +60,7 @@ Open **http://localhost:8300**, then **Settings → Subscribe this browser** (us
 | Your PR starts waiting on you | Your pull requests | once per transition (conflicts, changes requested, red CI, approved and green, open threads) |
 | A PR you approved: approval dismissed, stuck, broken after merge, reverted | After you approved | once |
 | Provider incident on your components | Incidents | right away (`notify: quiet` and maintenance: never) |
+| Zabbix problem at `push_severity` or above; a dashboard counter that stops or a status that changes (two reads in a row) | Monitoring | right away |
 | A source failing | Sentinel needs a hand | after `health_minutes` |
 
 Every item can be marked **done** (silent until it changes), **hidden for good**, or **snoozed** (1 h, 4 h, tomorrow 9:00) — one by one or a whole group at once. An item that leaves its source (PR merged, incident resolved) resolves itself. The first pass of a new source records what is already there without pushing it.
@@ -155,6 +157,10 @@ Bridge environment: `BRIDGE_TOKEN`, `BRIDGE_LANG` (answer language, default Engl
 ## Cycle tab (optional)
 
 Hidden unless `SLITE_API_KEY` and `SHORTCUT_API_TOKEN` are in `.env` *and* `config.yaml` has a `cycle:` block. Objectives come from the Slite note, live progress from Shortcut, and the tab rolls over to the next cycle by itself: newest note under `parent_id`, dates read off its title, highest `<prefix>-<year>-C<n>` label, epics carrying that label whose name contains the big rock title. Each big rock gets a verdict — stalled, behind, on track — measured on the note's outputs, not on story progress (epics carry stories closed in earlier cycles). See the `cycle:` block of [config.example.yaml](config.example.yaml).
+
+## Watch (optional)
+
+Hidden unless `config.yaml` has a `zabbix:` or `grafana:` block under `watchers` — see [config.example.yaml](config.example.yaml). Dashboards are given as the links you open them with: the link's variables are used, the dashboard's saved values fill the rest. Tokens go in `.env` (`ZABBIX_TOKEN`, `GRAFANA_TOKEN`, read-only is enough); a client certificate for an mTLS proxy goes in the folder `SENTINEL_CERTS` points to, mounted on `/certs`.
 
 ## Fallback notifier (macOS, optional)
 

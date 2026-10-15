@@ -1,9 +1,9 @@
-"""Zabbix problems still open, as incidents.
+"""Zabbix problems still open.
 
 Dependent problems are hidden the way the Zabbix front hides them (`skipDependent`), and so are the
-ones on disabled hosts or items; acknowledged ones are only counted: somebody holds them. A problem
-at `push_severity` or above is pushed. One whose name matches `quiet` is known noise: listed on the
-Watch page, never an inbox item.
+ones on disabled hosts or items; acknowledged ones are only counted: somebody holds them. Every open
+problem is listed on the Watch page; one at `push_severity` or above is also an inbox item (lane
+`watch`, pushed). One whose name matches `quiet` is known noise: listed apart, never an item.
 """
 import logging
 import os
@@ -79,17 +79,18 @@ class ZabbixWatcher(Watcher):
             row = {"host": hosts[p["objectid"]], "name": p["name"], "severity": SEVERITIES[level], "level": level,
                    "since": int(p["clock"]), "known": known, "url": url}
             rows.append(row)
-            if known:
-                continue  # known noise stays on the Watch page, out of the inbox
+            if known or level < self.push_severity:
+                continue
             items.append(WatchedItem(
                 external_id=p["eventid"],
                 title=f"{row['host']} · {p['name']}",
                 url=url,
                 fingerprint=str(level),
                 severity=row["severity"],
-                payload={"source": "zabbix", "name": p["name"], "host": row["host"], "since": row["since"]},
-                lane="incident",
-                urgency="now" if level >= self.push_severity else "quiet",
+                payload={"source": "zabbix", "name": p["name"], "host": row["host"], "since": row["since"],
+                         "why": f"{row['severity']} · {row['host']}"},
+                lane="watch",
+                urgency="now",
             ))
         rows.sort(key=lambda r: (r["known"], -r["level"], -r["since"]))
         quart.publish("zabbix", {"read_at": time.time(), "problems": rows, "web_url": self.web_url, **counts})
