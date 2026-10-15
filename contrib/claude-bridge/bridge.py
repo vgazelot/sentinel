@@ -11,9 +11,11 @@ the container reaches it through host.docker.internal.
 
 Modes — prompt, model and tools are owned here, the app only sends URLs and context:
   deep      on demand: devil's advocate review, read-only tools (no gh api, no WebFetch), never on a bot's PR
-  quick     on demand: form pass (typos, naming, leftovers) on the diff Sentinel sends, no tool
   precheck  automatic: a dependency bump read before approval (release notes, removed pins), no tool
   followup  automatic: a PR approved then merged broke a post-merge check — cause and next step, no tool
+  brief     automatic: a review asked of you — what it changes, trivial / routine / careful, no tool
+  whyred    automatic: your PRs red on the same CI job — the cause from the logs, what to do, no tool
+  asks      automatic: the reviewers' comments on your PR as a to-do, no tool
 
 Every run loads the user settings only (`--setting-sources user`): the allow rules of
 BRIDGE_CWD's project would otherwise widen the lists below. The material modes read
@@ -54,14 +56,6 @@ DEFAULT_PROMPTS = {
             "Read-only: no edits, no GitHub comments. Answer in {lang} with a one-sentence verdict, then "
             "numbered findings (most structural first, each with file:line evidence), then a firm "
             "recommendation. PR: {url}",
-    "quick": "Quick pass on this pull request, from its description and diff below: form, not design. Report "
-             "only what you actually see: typos and wording in code, comments, docs and the PR description; "
-             "naming or style inconsistent with the surrounding code; leftover debug, TODO or dead code; "
-             "copy-paste slips; mismatch between the PR title/description and the change. Do not dig into "
-             "architecture, performance or blast radius. Answer in {lang}. No preamble, no narration, never "
-             "list what is fine. First line: `Verdict: clean` or `Verdict: tidy-up` (keep these English tokens). "
-             "Then one bullet per real finding, `file:line — issue`, ten words max each. If the diff below was cut, "
-             "end with one line naming what you did not see. PR: {url}\n{context}",
     "precheck": "A bot opened dependency-update pull requests (the same bump, one per repository) and a human "
                 "is about to approve them. Check them before that happens, from the material below alone.\n{urls}\n"
                 "{context}\nLook for: breaking or behaviour changes in the release notes that matter for how these "
@@ -79,6 +73,24 @@ DEFAULT_PROMPTS = {
                 "`Verdict: unrelated` or `Verdict: unclear` (keep these English tokens). Then: the root cause seen "
                 "in the logs (quote the key error line); the current state (still failing, or passing in a later "
                 "run — with its link from the history); what to do (revert, fix, re-run, ignore) and who should.",
+    "brief": "A review of the pull request below is asked of me. From its description and diff alone, tell me how much "
+             "attention it needs.\nPR: {url}\n{context}\nAnswer in {lang}, no preamble. First line exactly "
+             "`Verdict: trivial`, `Verdict: routine` or `Verdict: careful` (keep these English tokens): trivial = "
+             "mechanical or tiny, safe after a glance; routine = a normal change to read; careful = it touches something "
+             "risky (data, security, production config, deletion, wide blast radius). Then two short lines at most: what "
+             "it changes, and — unless trivial — the one place to look at first (file:line).",
+    "whyred": "My pull requests below fail CI on the same check. From the material below alone — the PRs and the failed "
+              "job logs — find out why.\n{urls}\n{context}\nAnswer in {lang}, six lines max, no preamble. First line "
+              "exactly `Verdict: fix-in-pr`, `Verdict: flaky`, `Verdict: elsewhere` or `Verdict: unclear` (keep these "
+              "English tokens): fix-in-pr = the change itself breaks it; flaky = transient (timeout, runner, network), a "
+              "re-run should pass; elsewhere = broken outside these PRs (base branch, shared infrastructure, credentials); "
+              "unclear = the logs do not tell. Then: the root cause (quote the key log line); what to do (the fix with "
+              "file:line, a re-run, or who to ask). With several PRs, say whether the cause is the same for all.",
+    "asks": "Reviewers left the comments below on my pull request. Turn them into what I have to do.\nPR: {url}\n"
+            "{context}\nAnswer in {lang}, no preamble. First line exactly `Verdict: todo` (keep this English token). "
+            "Then one bullet per thing to do, most important first, `file:line — what to change`, ten words max, eight "
+            "bullets at most; merge duplicates; skip resolved and outdated threads; mark a question that needs an answer "
+            "rather than a change with `(answer)`; name who asked when it helps.",
 }
 PROMPTS = {
     mode: os.environ.get("BRIDGE_PROMPT" if mode == "deep" else f"BRIDGE_PROMPT_{mode.upper()}", default)
@@ -87,9 +99,11 @@ PROMPTS = {
 # empty = the CLI default model
 MODELS = {
     "deep": os.environ.get("BRIDGE_MODEL", ""),
-    "quick": os.environ.get("BRIDGE_MODEL_QUICK", "sonnet"),
     "precheck": os.environ.get("BRIDGE_MODEL_PRECHECK", "sonnet"),
     "followup": os.environ.get("BRIDGE_MODEL_FOLLOWUP", ""),
+    "brief": os.environ.get("BRIDGE_MODEL_BRIEF", "sonnet"),
+    "whyred": os.environ.get("BRIDGE_MODEL_WHYRED", ""),
+    "asks": os.environ.get("BRIDGE_MODEL_ASKS", "sonnet"),
 }
 
 # the devil's advocate explores the repositories: named read-only subcommands only. No `gh api` (`-f`
@@ -109,10 +123,10 @@ DEEP_DENIED = ["Bash(gh api:*)", "Bash(curl:*)", "Bash(wget:*)", "WebFetch",
                "Read(**/.env)", "Read(**/.env.*)", "Read(**/.mcp.json)", "Read(**/*.p12)", "Read(**/*.pem)",
                "Read(**/*.key)", "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/**)"]
 # material modes: no tool at all ("" = none), what they need comes fenced in the prompt
-MATERIAL_MODES = ("quick", "precheck", "followup")
+MATERIAL_MODES = ("precheck", "followup", "brief", "whyred", "asks")
 TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
             **{mode: ("", [], []) for mode in MATERIAL_MODES}}
-API = 2  # what /healthz reports: Sentinel refuses an older bridge
+API = 3  # what /healthz reports: Sentinel refuses an older bridge
 
 
 def _context_text(context: dict) -> str:

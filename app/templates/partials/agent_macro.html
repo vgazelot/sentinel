@@ -10,7 +10,7 @@
         <span class="agent-status"><span class="spinner"></span> {{ ui.verdict }} — {% if run.status == 'queued' %}queued{% else %}{{ run.started_at | elapsed }}{% endif %} <span class="muted">({{ ui.eta }})</span></span>
         {% else %}
             {% if run and run.status == 'done' %}{% set v = run.output | verdict %}
-            <details class="agent-verdict" id="verdict-{{ (subject ~ '-' ~ mode) | domid }}">
+            <details class="agent-verdict" id="verdict-{{ (subject ~ '-' ~ mode) | domid }}" open>
                 <summary><span class="pill {{ v[1] or 'neutral' }}">Claude · {{ v[0] or ui.verdict | lower }}</span>
                     <span class="agent-headline">{{ run.output | headline }}</span>
                     <span class="muted">{{ run.finished_at | age }} ago</span></summary>

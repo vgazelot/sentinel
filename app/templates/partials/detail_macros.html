@@ -1,0 +1,28 @@
+{# Detail pane pieces: the top line, the title, the property column, the triage actions. #}
+{% macro top(ref, what, url) -%}
+<div class="d-top">
+    {% if ref %}<span class="mono">{{ ref }}</span>{% endif %}<span>{{ what }}</span>
+    {% if url %}<a class="d-open" href="{{ url }}" target="_blank" rel="noopener" data-open>Open <kbd>⏎</kbd></a>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro heading(title) -%}
+{% set s = title | subject %}
+{% if s.kind or s.ticket %}<div class="d-kicker">{{ s.kind }}{% if s.kind and s.ticket %} · {% endif %}{{ s.ticket }}</div>{% endif %}
+<h2 class="d-title">{{ s.text }}</h2>
+{%- endmacro %}
+
+{% macro prop(label) -%}
+<div class="prop"><span class="prop-k">{{ label }}</span><span class="prop-v">{{ caller() }}</span></div>
+{%- endmacro %}
+
+{% macro triage(v=None, ids='') -%}
+{% if v and v.state == 'snoozed' %}
+<button type="button" class="btn" hx-post="/api/items/{{ v.id }}/unsnooze" title="Back in Priority now">Wake up</button>
+{% elif v and v.state == 'acked' %}
+<button type="button" class="btn" hx-post="/api/items/{{ v.id }}/unack" title="Back in Priority now">Bring back</button>
+{% else %}
+<button type="button" class="btn" data-key="e" hx-post="/api/items/bulk" hx-vals='{"ids": "{{ ids or v.id }}", "action": "ack"}' title="Out of the inbox until it changes">Done <kbd>E</kbd></button>
+<button type="button" class="btn" data-key="l" hx-post="/api/items/bulk" hx-vals='{"ids": "{{ ids or v.id }}", "action": "snooze"}' title="Back tomorrow at 9:00">Later <kbd>L</kbd></button>
+{% endif %}
+{%- endmacro %}

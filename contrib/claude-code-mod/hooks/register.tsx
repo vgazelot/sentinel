@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface as $T, Register } from 'claude-code'
 
 import type { Summary, SummaryItem } from '../types'
-import { DEEP_PROMPT, DEFAULT_URL, QUICK_PROMPT, isReview, prompt, statusLine, toasts } from './core'
+import { DEEP_PROMPT, DEFAULT_URL, isReview, prompt, statusLine, toasts } from './core'
 
 // A window on Sentinel's own API: Sentinel polls GitHub and the status pages, owns the state and
 // the notification policy; every session only reads GET /api/summary and posts the actions back.
@@ -11,7 +11,7 @@ const POLL_MS = 20_000
 const summaryAtom = atom({ plugin: 'sentinel', key: 'summary' } as const, null)
 const errorAtom = atom({ plugin: 'sentinel', key: 'error' } as const, '')
 
-const ctx = { url: DEFAULT_URL, seq: -1, quick: QUICK_PROMPT, deep: DEEP_PROMPT }
+const ctx = { url: DEFAULT_URL, seq: -1, deep: DEEP_PROMPT }
 
 async function poll($: $T) {
   const since = ctx.seq < 0 ? '' : `?since=${ctx.seq}`
@@ -46,7 +46,6 @@ export const register: Register = on => {
     if (!e.isInteractive) return started
 
     ctx.url = ((await $.env.get('SENTINEL_URL')) || DEFAULT_URL).replace(/\/$/, '')
-    ctx.quick = (await $.env.get('SENTINEL_QUICK_PROMPT')) || QUICK_PROMPT
     ctx.deep = (await $.env.get('SENTINEL_REVIEW_PROMPT')) || DEEP_PROMPT
     ctx.seq = -1
     await $.command.register({ name: 'sentinel', description: 'Sentinel: what waits on you (args: refresh)' })
@@ -94,15 +93,10 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={1}>
           <Button key={`open:${it.id}`} label="Open" onPress={() => open(it.url)} />
           <Button key={`done:${it.id}`} label="Done" onPress={() => act($, it, 'ack')} />
-          <Button key={`1h:${it.id}`} label="1h" onPress={() => act($, it, 'snooze', 'duration=1h')} />
-          <Button key={`tmr:${it.id}`} label="Tomorrow" onPress={() => act($, it, 'snooze', 'duration=tomorrow')} />
+          <Button key={`later:${it.id}`} label="Later" onPress={() => act($, it, 'snooze', 'duration=tomorrow')} />
           {isReview(it.lane) ? (
-            <>
-              <Button key={`quick:${it.id}`} label="Quick pass"
-                onPress={() => $.prompt.submit({ asUser: true, text: prompt(ctx.quick, it.url) }).then(() => undefined)} />
-              <Button key={`deep:${it.id}`} label="Devil's advocate"
-                onPress={() => $.prompt.submit({ asUser: true, text: prompt(ctx.deep, it.url) }).then(() => undefined)} />
-            </>
+            <Button key={`deep:${it.id}`} label="Devil's advocate"
+              onPress={() => $.prompt.submit({ asUser: true, text: prompt(ctx.deep, it.url) }).then(() => undefined)} />
           ) : null}
         </Box>
       </Box>

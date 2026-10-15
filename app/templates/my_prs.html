@@ -1,7 +1,0 @@
-{% extends "base.html" %}
-{% block title %}Sentinel — My PRs{% endblock %}
-{% block content %}
-<div id="my-prs" hx-get="/partials/my-prs" hx-trigger="every 60s" hx-swap="innerHTML">
-    {% include "partials/my_prs.html" %}
-</div>
-{% endblock %}

@@ -12,7 +12,7 @@ watchers:
   # /api/v2/summary.json (Scaleway, OVHcloud, GitHub, Cloudflare, ...).
   # Filtering: components = an affected component must match (substring);
   # keywords = additional AND restriction, matched at word start (gra → GRA1, not degraded).
-  # Planned maintenance is listed, never pushed; `notify: quiet` does the same for a whole page.
+  # Incidents and maintenance are listed under Later, never pushed: context, not a decision of yours.
   statuspage:
     enabled: true
     interval_seconds: 300
@@ -24,13 +24,12 @@ watchers:
         keywords: []
         include_maintenances: true
       # OVH bare-metal incidents are per rack: keep the datacenters that host your servers
-      # (keywords match the [RBX8] tag of the title) and list them without pushing
+      # (keywords match the [RBX8] tag of the title)
       - name: ovh-baremetal
         url: https://bare-metal-servers.status-ovhcloud.com/api/v2/summary.json
         components: [GRA, RBX, SBG]
         keywords: [rbx8, gra3]
         include_maintenances: false
-        notify: quiet
       - name: ovh-network
         url: https://network.status-ovhcloud.com/api/v2/summary.json
         components: []

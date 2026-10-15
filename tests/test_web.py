@@ -14,7 +14,7 @@ class WebTest(SentinelTest):
         from watchers import WatchedItem
 
         self.client = main.app.test_client()
-        self.seed("github_reviews", "my_prs", "followup", "statuspage:sp")
+        self.seed("github_reviews", "my_prs", "followup", "statuspage:sp", "zabbix")
 
         def pr_item(ext, lane, urgency, **payload):
             return WatchedItem(external_id=ext, title=f"x#{ext} — t", url=f"https://github.com/acme/x/pull/{ext}",
@@ -31,6 +31,10 @@ class WebTest(SentinelTest):
         engine.process("statuspage:sp", [WatchedItem(external_id="i1", title="[sp] down", url="https://s", fingerprint="1",
                                                      severity="major", lane="incident",
                                                      payload={"source": "sp", "name": "down", "status": "investigating"})])
+        engine.process("zabbix", [WatchedItem(external_id="z1", title="kafka-1 · Consumer delay above 1h", url="https://zabbix.example.com/tr_events.php",
+                                              fingerprint="4", severity="high", lane="watch", urgency="now",
+                                              payload={"source": "zabbix", "name": "Consumer delay above 1h", "host": "kafka-1",
+                                                       "why": "high · kafka-1"})])
         failed = {"name": "apply", "state": "failure", "url": "https://github.com/acme/x/actions/runs/1", "before": "success"}
         engine.process("followup", [WatchedItem(external_id="acme/x#7:failed", title="x#7 — broke", url="https://github.com/acme/x/pull/7",
                                                 fingerprint="f", lane="followup",
@@ -47,22 +51,66 @@ class WebTest(SentinelTest):
         db.finish_run(db.get_run("acme/x#7", "followup")["id"], output="Verdict: caused-by-this-pr\n- **the bump** broke the apply")
 
     def test_pages_render(self):
-        with mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
-            for path in ("/", "/partials/now", "/my-prs", "/partials/my-prs", "/follow-up", "/partials/follow-up",
-                         "/settings", "/partials/watchers", "/partials/agent?subject=acme/x%237&modes=followup,deep"):
+        import db
+
+        ids = {r["external_id"]: r["id"] for r in db.items()}
+        pr = {"repo": "acme/x", "number": 6, "author": "alice", "additions": 1, "deletions": 0, "changed_files": 1,
+              "head_sha": "abc", "body": "b", "mergeable_state": "clean", "draft": False,
+              "checks": {"ok": 1, "failed": 1, "pending": 0, "failing": [{"name": "plan prod", "url": "https://ci/1"}]},
+              "reviews": [{"user": "carol", "state": "changes_requested", "html": "<p>rename the module</p>"}],
+              "files": [{"filename": "a.tf", "status": "modified", "additions": 1, "deletions": 0,
+                         "lines": [{"cls": "add", "text": "+x", "old": None, "new": 1, "side": "RIGHT", "line": 1}]}],
+              "files_truncated": False}
+        mine = ",".join(str(r["id"]) for r in db.items("watcher = 'my_prs' AND urgency = 'now'"))
+        with mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"), mock.patch("github_pr.details", return_value=pr):
+            for path in ("/", "/?tab=later", "/?tab=done", "/partials/inbox", "/partials/inbox?tab=later",
+                         "/partials/inbox?tab=done", "/settings", "/partials/watchers",
+                         f"/partials/item/{ids['1']}", f"/partials/item/{ids['acme/x#7:failed']}", f"/partials/item/{ids['i1']}", f"/partials/item/{ids['z1']}",
+                         f"/partials/item/{ids['6']}", f"/partials/group?ids={mine}", "/partials/dep?key=go%40v1.2",
+                         "/partials/item/999999",
+                         "/partials/agent?subject=acme/x%237&modes=followup,deep"):
                 resp = self.client.get(path)
                 self.assertEqual(resp.status_code, 200, path)
-            now = self.client.get("/partials/now").get_data(as_text=True)
-        self.assertIn("Reviews for you", now)
-        self.assertIn("CI failing — Molecule", now, "two PRs red on the same job = one row")
-        self.assertIn("Claude · caused-by-this-pr", now)
-        self.assertIn("the bump broke the apply", now, "first finding, markdown stripped")
-        self.assertIn("go", now)
+            inbox = self.client.get("/partials/inbox").get_data(as_text=True)
+            later = self.client.get("/partials/inbox?tab=later").get_data(as_text=True)
+            failed = self.client.get(f"/partials/item/{ids['acme/x#7:failed']}").get_data(as_text=True)
+            review = self.client.get(f"/partials/item/{ids['1']}").get_data(as_text=True)
+            yours = self.client.get(f"/partials/item/{ids['6']}").get_data(as_text=True)
+            red = self.client.get(f"/partials/group?ids={mine}").get_data(as_text=True)
+            alert = self.client.get(f"/partials/item/{ids['z1']}").get_data(as_text=True)
+        self.assertEqual(self.client.get("/my-prs").headers["Location"], "/")
+        self.assertEqual(self.client.get("/follow-up").headers["Location"], "/?tab=later")
+        self.assertIn("For you", inbox)
+        self.assertIn("CI failing — Molecule · 2 PRs", inbox, "two PRs red on the same job = one row")
+        self.assertIn("go → v1.2", later)
+        self.assertIn("Status pages", later, "incidents wait in Later")
+        self.assertIn("Monitoring", inbox, "a monitoring alert waits on you")
+        self.assertIn("Open in Zabbix", alert)
+        self.assertIn("kafka-1", alert)
+        self.assertIn("Claude · caused-by-this-pr", failed)
+        self.assertIn("the bump broke the apply", failed, "first finding, markdown stripped")
+        self.assertIn("Approve", review)
+        self.assertNotIn("Quick pass", review)
+        self.assertIn("plan prod", yours, "your PR shows its failing checks")
+        self.assertIn("carol asked for changes", yours)
+        self.assertIn("Why is it red?", red, "one diagnosis for the PRs red on the same job")
+        self.assertIn("Summarize", review)
+        self.assertIn("Title 6", inbox, "the sentence of the title, capitalised")
+
+    def test_titles_lose_their_prefix(self):
+        import main
+
+        self.assertEqual(main.subject("chore(ci): [sc-12345] expire stale tags"),
+                         {"kind": "chore(ci)", "ticket": "sc-12345", "text": "Expire stale tags"})
+        self.assertEqual(main.subject("Object Storage — elevated: errors")["text"], "Object Storage — elevated: errors")
 
     def test_summary_counts_decisions(self):
         data = self.client.get("/api/summary?since=0").get_json()
-        # direct review + incident + follow-up failure + one group for the two red PRs
-        self.assertEqual(data["attention"], 4)
+        # the rows of Priority: Zabbix alert + direct review + follow-up failure + one row for the two red
+        # PRs + the nudge reminder; the incident waits in Later, the team request in its grace period
+        self.assertEqual(data["attention"], 5)
+        self.assertEqual(data["counts"]["watch"], 1)
+        self.assertEqual(data["items"][-1]["lane"], "watch", "alerts after the reviews and PRs")
         self.assertEqual(data["counts"]["deps"], 1)
         self.assertEqual(data["counts"]["grace"], 1)
 
@@ -70,12 +118,12 @@ class WebTest(SentinelTest):
         import db
 
         db.finish_run(db.get_run("acme/x#7", "followup")["id"], output="Verdict: unrelated\n- already broken since May")
-        self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 4,
+        self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 5,
                          "the check passed right before the merge: a verdict alone does not clear it")
         with db.connect() as conn:
             conn.execute("UPDATE items SET payload = json_set(payload, '$.checks[0].before', 'absent') WHERE watcher = 'followup'")
-        self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 3)
-        self.assertIn("not this PR", self.client.get("/partials/now").get_data(as_text=True))
+        self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 4)
+        self.assertIn("not this PR", self.client.get("/partials/inbox?tab=later").get_data(as_text=True))
 
     def test_bulk_hide(self):
         import db
@@ -83,7 +131,9 @@ class WebTest(SentinelTest):
         ids = ",".join(str(r["id"]) for r in db.items("watcher = 'my_prs' AND urgency = 'now'"))
         resp = self.client.post("/api/items/bulk", data={"ids": ids, "action": "ack"})
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 3)
+        self.assertEqual(self.client.get("/api/summary").get_json()["attention"], 4)
+        self.assertEqual(self.client.post("/api/items/bulk", data={"ids": ids, "action": "forever"}).status_code, 400,
+                         "two triage actions: done and later")
 
     def test_bump_approval_skips_what_is_not_green(self):
         import db
@@ -96,7 +146,7 @@ class WebTest(SentinelTest):
                                     headers={"HX-Request": "true"})
         self.assertEqual(resp.status_code, 200)
         submit.assert_not_called()
-        self.assertIn("Left for you", resp.get_data(as_text=True))
+        self.assertIn("Left for you", resp.headers["HX-Trigger-After-Settle"])
 
     def test_bump_approval_only_on_the_pr_shown_and_unmoved(self):
         import db
@@ -114,7 +164,7 @@ class WebTest(SentinelTest):
             self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": f"{item['id']}:zzz"})
             submit.assert_not_called()  # the page showed another commit than the one the poll has now
             self.client.post("/api/deps/approve", data={"key": "go@v1.2", "ids": f"{item['id']}:aaa"})
-            submit.assert_called_once_with("acme/x", 3, "APPROVE", "", [], commit_id="aaa")
+            submit.assert_called_once_with("acme/x", 3, "APPROVE", "", commit_id="aaa")
 
     def test_approve_from_the_panel_acks_on_the_post_review_state(self):
         import db
@@ -124,8 +174,9 @@ class WebTest(SentinelTest):
             resp = self.client.post(f"/api/items/{item['id']}/approve", data={"body": "lgtm", "head_sha": "abc"},
                                     headers={"HX-Request": "true"})
         self.assertEqual(resp.status_code, 200)
-        submit.assert_called_once_with("acme/x", 1, "APPROVE", "lgtm", [], commit_id="abc")
-        self.assertIn("reviewSubmitted", resp.headers.get("HX-Trigger", ""))
+        submit.assert_called_once_with("acme/x", 1, "APPROVE", "lgtm", commit_id="abc")
+        self.assertIn("acted", resp.headers.get("HX-Trigger-After-Settle", ""))
+        self.assertEqual(resp.headers["HX-Retarget"], "#list", "the list comes back, the page moves to the next row")
         row = db.items("external_id = '1'")[0]
         self.assertEqual((row["state"], row["acked_fingerprint"]), ("acked", "after"))
 
@@ -133,5 +184,5 @@ class WebTest(SentinelTest):
         import db
 
         db.set_watcher_state("my_prs", "data", json.dumps([{"repo": "acme/x", "number": 1, "title": "old format"}]))
-        for path in ("/", "/my-prs", "/follow-up", "/settings"):
+        for path in ("/", "/?tab=later", "/settings"):
             self.assertEqual(self.client.get(path).status_code, 200, path)

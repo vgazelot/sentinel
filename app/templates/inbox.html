@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="pane list" id="list" hx-get="/partials/inbox?tab={{ tab }}" hx-trigger="every 20s" hx-swap="innerHTML">
+    {% include "partials/inbox_list.html" %}
+</section>
+<section class="pane detail" id="detail">
+    <div class="d-empty"><p>Select an item</p><p class="muted"><kbd>↑</kbd> <kbd>↓</kbd> to move · <kbd>E</kbd> done · <kbd>L</kbd> later · <kbd>⏎</kbd> open</p></div>
+</section>
+{% endblock %}

@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Sentinel — Settings{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Settings</h1><p class="muted">What Sentinel watches, how it decides to interrupt you, and what Claude did lately. Edit <code>config.yaml</code> to change any of it.</p></div></div>
+<main class="pane page"><div class="page-in">
+<div class="page-head"><div><h1>Settings</h1><p class="muted">What Sentinel watches, when it interrupts you, and what Claude did lately. Edit <code>config.yaml</code> to change any of it.</p></div></div>
 
 <section class="card">
     <header class="card-head"><h2>Sources</h2></header>
@@ -15,11 +16,12 @@
     <dl class="facts">
         <div><dt>Review asked of you by name</dt><dd>push right away</dd></div>
         <div><dt>Review asked of a team you are in</dt><dd>push only if nobody took it within {{ triage.team_grace_minutes }} min; gone once someone approved</dd></div>
-        <div><dt>Dependency bump (Renovate, Dependabot)</dt><dd>never pushed, grouped by bump on Now</dd></div>
-        <div><dt>Your own PRs</dt><dd>push when one starts waiting on you: conflicts, changes requested, red CI, approved and green, open threads</dd></div>
+        <div><dt>Dependency bump (Renovate, Dependabot)</dt><dd>never pushed, grouped by bump in Later</dd></div>
+        <div><dt>Your own PRs</dt><dd>push when one starts waiting on you: conflicts, changes requested, red CI, open threads — approved and green is in the inbox, never pushed</dd></div>
         <div><dt>PRs you approved</dt><dd>push if the approval is dismissed, if it is still open after the stale delay, if a post-merge check fails or if it is reverted</dd></div>
-        <div><dt>Status pages</dt><dd>push for incidents on your components; planned maintenance and <code>notify: quiet</code> pages are listed only</dd></div>
-        <div><dt>A source failing</dt><dd>push after {{ triage.health_minutes }} min of errors</dd></div>
+        <div><dt>Status pages</dt><dd>never pushed, incidents on your components are listed in Later</dd></div>
+        <div><dt>Sentinel cannot reach a source</dt><dd>one push after {{ triage.health_minutes }} min of errors, however many sources; the light in the sidebar says it meanwhile</dd></div>
+        <div><dt>A big rock stalls</dt><dd>push once, shown in the Cycle tab</dd></div>
         <div><dt>Bursts</dt><dd>more than 3 at once become a single push</dd></div>
     </dl>
 </section>
@@ -30,7 +32,9 @@
     <dl class="facts">
         <div><dt>Dependency bumps</dt><dd>{{ 'checked automatically before you approve' if agent_cfg.precheck else 'on demand only' }}</dd></div>
         <div><dt>Post-merge failures</dt><dd>{{ 'investigated automatically' if agent_cfg.followup else 'on demand only' }}</dd></div>
-        <div><dt>Reviews</dt><dd>quick pass and devil's advocate on demand, from the review panel</dd></div>
+        <div><dt>Review requests</dt><dd>{{ 'summarized automatically: trivial, routine or careful' if agent_cfg.brief else 'summary on demand only' }}; devil's advocate on demand (not on a bot's PR)</dd></div>
+        <div><dt>Your red PRs</dt><dd>{{ 'diagnosed automatically from the failed job logs, once per CI job' if agent_cfg.whyred else 'on demand only' }}</dd></div>
+        <div><dt>Reviewers' comments on your PRs</dt><dd>{{ 'turned into a to-do automatically' if agent_cfg.asks else 'on demand only' }}</dd></div>
         <div><dt>Parallel runs</dt><dd>{{ agent_cfg.concurrency }}</dd></div>
     </dl>
     {% if recent_runs %}
@@ -66,4 +70,5 @@
     </div>
     <div id="push-status" class="muted"></div>
 </section>
+</div></main>
 {% endblock %}

@@ -1,0 +1,22 @@
+{% from "partials/agent_macro.html" import agent_block with context %}
+{% from "partials/detail_macros.html" import top, prop, triage %}
+{% set ids = g.rows | map(attribute='id') | join(',') %}
+{{ top('', 'your pull requests', g.rows[0].url) }}
+<div class="d-body d-grid">
+    <div class="d-main">
+    <h2 class="d-title">{{ g.label }}</h2>
+    <p class="d-why">{{ g.rows | length }} PRs, one cause</p>
+    {% if claude_enabled and g.action == 'ci' %}{{ agent_block(why, ['whyred'], runs.get(why) or {}) }}{% endif %}
+    <div class="d-list">
+        {% for v in g.rows %}
+        <a class="d-pr" href="{{ v.url }}" target="_blank" rel="noopener"><span class="t">{{ (v.headline | subject).text }}<small>{{ v.p.why }}</small></span><span class="mono">{{ v.ref }}</span><span class="muted">{{ v.p.updated_at | age }}</span></a>
+        {% endfor %}
+    </div>
+    <div class="bar"><span class="spacer"></span>{{ triage(ids=ids) }}</div>
+    </div>
+    <aside class="d-side">
+        {% call prop('Pull requests') %}{{ g.rows | length }}{% endcall %}
+        {% call prop('Oldest') %}{{ g.rows | map(attribute='p') | map(attribute='updated_at') | min | age }}{% endcall %}
+        {% call prop('Counts as') %}one decision{% endcall %}
+    </aside>
+</div>

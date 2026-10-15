@@ -1,0 +1,48 @@
+{% from "partials/agent_macro.html" import agent_block with context %}
+{% from "partials/detail_macros.html" import top, heading, prop, triage %}
+{% set p = v.p %}
+{% set what = {'followup': {'failed': 'broke after merge', 'reverted': 'reverted after merge', 'dismissed': 'your approval was dismissed', 'stuck': 'approved, still not merged'}.get(p.kind, 'after your approval'),
+               'incident': 'status page', 'watch': 'alert', 'health': 'Sentinel', 'cycle': 'cycle'}.get(v.lane, 'your pull request') %}
+{{ top(v.ref, what, v.url) }}
+<div class="d-body d-grid">
+    <div class="d-main">
+    {{ heading(v.headline) }}
+    <p class="d-why">{% if v.cleared %}Claude traced this failure to something else — not this PR.{% else %}{{ p.why or p.status or '' }}{% endif %}</p>
+    {% if v.lane == 'followup' and p.kind == 'failed' %}
+    <ul class="d-checks">
+        {% for c in p.checks %}<li><svg class="ic bad"><use href="#i-x"/></svg><a href="{{ c.url }}" target="_blank" rel="noopener">{{ c.name }}</a>{% if c.before == 'success' %}<span class="muted">passed on the commit before</span>{% endif %}</li>{% endfor %}
+    </ul>
+    {% elif v.lane == 'followup' and p.kind == 'reverted' %}
+    <p class="d-why">Reverted by <a href="{{ p.revert.url }}" target="_blank" rel="noopener">#{{ p.revert.number }} {{ p.revert.title }}</a></p>
+    {% elif v.lane == 'incident' %}
+    {% if p.body %}<p class="d-note">{{ p.body }}</p>{% endif %}
+    {% if p.components %}<p class="muted">{{ p.components | join(' · ') }}{% if p.started_at %} · since {{ p.started_at | replace('T', ' ') | truncate(16, True, '') }}{% endif %}</p>{% endif %}
+    {% elif v.lane == 'health' and p.error %}
+    <p class="d-note mono">{{ p.error }}</p>
+    {% endif %}
+    <div class="bar">
+        {% if v.lane == 'incident' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Status page</a>
+        {% elif v.lane == 'watch' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open in {{ p.source | capitalize }}</a>
+        {% elif v.lane == 'followup' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open the PR</a>{% endif %}
+        <span class="spacer"></span>
+        {{ triage(v) }}
+    </div>
+    {% if claude_enabled and v.lane == 'followup' and p.kind == 'failed' %}{{ agent_block(v.subject, ['followup'], runs.get(v.subject) or {}) }}{% endif %}
+    </div>
+    <aside class="d-side">
+        {% if v.lane == 'incident' %}
+        {% call prop('Source') %}{{ p.source }}{% endcall %}
+        {% call prop('Status') %}{{ 'maintenance' if p.planned else p.status }}{% endcall %}
+        {% if v.severity %}{% call prop('Impact') %}{{ v.severity }}{% endcall %}{% endif %}
+        {% elif v.lane == 'watch' %}
+        {% if p.host %}{% call prop('Host') %}<span class="mono">{{ p.host }}</span>{% endcall %}{% endif %}
+        {% if p.dashboard %}{% call prop('Dashboard') %}{{ p.dashboard }}{% endcall %}{% call prop('Panel') %}{{ p.panel }}{% endcall %}{% endif %}
+        {% call prop('Severity') %}{{ v.severity }}{% endcall %}
+        {% else %}
+        {% if p.repo %}{% call prop('Repository') %}<span class="mono">{{ v.ref }}</span>{% endcall %}{% endif %}
+        {% if p.checks %}{% call prop('Failing') %}<span class="st bad">{{ p.checks | length }} check{{ 's' if p.checks | length > 1 }}</span>{% endcall %}{% endif %}
+        {% endif %}
+        {% call prop('In Sentinel') %}{{ v.first_seen | age }}{% endcall %}
+        {% if v.state == 'snoozed' %}{% call prop('Back') %}{{ v.snooze_until | localdt }}{% endcall %}{% endif %}
+    </aside>
+</div>

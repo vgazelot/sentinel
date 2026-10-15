@@ -1,8 +1,6 @@
 import type { Summary, SummaryNotification } from '../types'
 
 export const DEFAULT_URL = 'http://localhost:8300'
-export const QUICK_PROMPT =
-  'Quick pass on {url}: typos, naming, leftovers, PR text vs change — form, not design. Read-only, post nothing on GitHub. Short, in the language of this conversation.'
 export const DEEP_PROMPT =
   "Review {url} as a devil's advocate: durability, duplication, modeling, blast radius. Read-only, post nothing on GitHub."
 const MAX_TOASTS = 3

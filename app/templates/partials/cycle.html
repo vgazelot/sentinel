@@ -30,7 +30,7 @@
         <p class="muted">{% if label %}{{ label }} · {% endif %}{% if note %}note edited {{ note.last_edited | localdt }} · {% endif %}{% if last_run %}fetched {{ last_run | localdt }}{% else %}not fetched yet{% endif %}</p>
     </div>
     <div class="page-tools">
-        <button class="btn" hx-post="/api/cycle/refresh" hx-target="#cycle" hx-swap="innerHTML" hx-disabled-elt="this">Refresh</button>
+        <button class="btn small" hx-post="/api/cycle/refresh" hx-target="#cycle" hx-swap="innerHTML" hx-disabled-elt="this">Refresh</button>
     </div>
 </div>
 
@@ -43,7 +43,7 @@
 {% endif %}
 
 <section class="card">
-    <header class="card-head"><h2>Big rocks</h2><span class="count">{{ big_rocks | length }}</span><span class="card-sub">worst first — measured on delivered outputs, not on stories</span></header>
+    <header class="card-head"><h2>Big rocks</h2><span class="count">{{ big_rocks | length }}</span></header>
     <div class="rows">
     {% for rock in big_rocks %}
         <article class="row">
@@ -75,7 +75,8 @@
 
 {% if run %}
 <section class="card soft">
-    <header class="card-head"><h2>{{ run.label }}</h2><span class="card-sub">where the cycle actually goes · {{ run.stories_done }}/{{ run.stories_total }} stories · {{ run.mine_open }} open to you · last move {{ run.last_activity | age }} ago</span></header>
-    <div class="pad">{% for e in run.epics %}{{ stories(e) }}{% endfor %}</div>
+    <header class="card-head"><h2>{{ run.label }}</h2></header>
+    <div class="pad">
+        <div class="row-meta"><span>{{ run.stories_done }}/{{ run.stories_total }} stories</span><span>{{ run.mine_open }} open to you</span><span>last move {{ run.last_activity | age }} ago</span></div>{% for e in run.epics %}{{ stories(e) }}{% endfor %}</div>
 </section>
 {% endif %}

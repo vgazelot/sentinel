@@ -91,4 +91,4 @@ class MyPrsTest(SentinelTest):
                for i, (action, kw) in enumerate([("merge", {}), ("ci", {"ci": "failure"}), ("waiting", {}),
                                                  ("draft", {}), ("nudge", {})])]
         got = {i.payload["action"]: i.urgency for i in items(prs)}
-        self.assertEqual(got, {"merge": "now", "ci": "now", "nudge": "quiet"})
+        self.assertEqual(got, {"merge": "quiet", "ci": "now", "nudge": "quiet"}, "merging is yours, never pushed")

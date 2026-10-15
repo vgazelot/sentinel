@@ -1,5 +1,6 @@
-"""GitHub PR details (diff with line numbers, checks, review threads) + reviews, on demand from the dashboard."""
+"""GitHub PR details (diff with line numbers, checks, reviews) + submitting a review, on demand from the dashboard."""
 import re
+import time
 
 import requests
 
@@ -8,6 +9,8 @@ import md
 
 API = "https://api.github.com"
 MAX_FILES = 50
+CACHE_SECONDS = 60  # going back to a PR in the list is instant; a review sent drops its entry
+_cache: dict[tuple[str, int], tuple[float, dict]] = {}
 MAX_LINES_PER_FILE = 600
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -43,29 +46,24 @@ def _post(path: str, payload: dict):
 
 
 def details(repo: str, number: int) -> dict:
+    hit = _cache.get((repo, number))
+    if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+        return hit[1]
+    result = _details(repo, number)
+    now = time.monotonic()
+    for key in [k for k, (at, _) in _cache.items() if now - at >= CACHE_SECONDS]:
+        _cache.pop(key, None)
+    _cache[(repo, number)] = (now, result)
+    return result
+
+
+def _details(repo: str, number: int) -> dict:
     pr = _get(f"/repos/{repo}/pulls/{number}")
     files = _get(f"/repos/{repo}/pulls/{number}/files", per_page=MAX_FILES + 1)
     checks = _checks_summary(repo, pr["head"]["sha"])
-    threads = _threads(repo, number)
 
-    shown = []
-    for f in files[:MAX_FILES]:
-        lines = _patch_lines(f.get("patch"))
-        file_threads = threads.pop(f["filename"], {})
-        if lines:
-            for ln in lines:
-                key = (ln["side"], ln["line"])
-                if ln["line"] is not None and key in file_threads:
-                    ln["threads"] = file_threads.pop(key)
-        shown.append({
-            "filename": f["filename"],
-            "status": f["status"],
-            "additions": f["additions"],
-            "deletions": f["deletions"],
-            "lines": lines,
-            # outdated (line null) or beyond the shown diff
-            "other_threads": [t for ts in file_threads.values() for t in ts],
-        })
+    shown = [{"filename": f["filename"], "status": f["status"], "additions": f["additions"],
+              "deletions": f["deletions"], "lines": _patch_lines(f.get("patch"))} for f in files[:MAX_FILES]]
     return {
         "repo": repo,
         "number": number,
@@ -86,8 +84,9 @@ def details(repo: str, number: int) -> dict:
 
 
 def _checks_summary(repo: str, sha: str) -> dict:
-    """Merges check-runs (Actions) and combined status (Jenkins & friends)."""
-    ok = failed = pending = 0
+    """Merges check-runs (Actions) and combined status (Jenkins & friends); the failing ones by name."""
+    ok = pending = 0
+    failing = []
     runs = _get(f"/repos/{repo}/commits/{sha}/check-runs", per_page=100).get("check_runs", [])
     for run in runs:
         if run["status"] != "completed":
@@ -95,7 +94,7 @@ def _checks_summary(repo: str, sha: str) -> dict:
         elif run["conclusion"] in ("success", "neutral", "skipped"):
             ok += 1
         else:
-            failed += 1
+            failing.append({"name": run["name"], "url": run.get("html_url") or ""})
     status = _get(f"/repos/{repo}/commits/{sha}/status")
     for st in status.get("statuses", []):
         if st["state"] == "pending":
@@ -103,52 +102,24 @@ def _checks_summary(repo: str, sha: str) -> dict:
         elif st["state"] == "success":
             ok += 1
         else:
-            failed += 1
-    return {"ok": ok, "failed": failed, "pending": pending}
+            failing.append({"name": st["context"], "url": st.get("target_url") or ""})
+    return {"ok": ok, "failed": len(failing), "pending": pending, "failing": failing}
 
 
 def _reviews_summary(repo: str, number: int) -> list[dict]:
-    """Latest non-comment review per reviewer: who approved, who asked for changes."""
+    """Latest non-comment review per reviewer: who approved, who asked for changes and what they wrote
+    (untrusted markdown: through md.render like everything shown from GitHub)."""
     latest: dict[str, dict] = {}
     for rv in _get(f"/repos/{repo}/pulls/{number}/reviews", per_page=100):
         if rv["state"] in ("APPROVED", "CHANGES_REQUESTED"):
-            latest[rv["user"]["login"]] = {"user": rv["user"]["login"], "state": rv["state"].lower()}
+            body = (rv.get("body") or "").strip()
+            latest[rv["user"]["login"]] = {"user": rv["user"]["login"], "state": rv["state"].lower(),
+                                           "html": md.link_file_refs(md.render(body[:4000])) if body else ""}
     return list(latest.values())
 
 
-def _threads(repo: str, number: int) -> dict:
-    """Review comments grouped into threads, keyed path → (side, line) → [thread]."""
-    comments = _get(f"/repos/{repo}/pulls/{number}/comments", per_page=100)
-    roots: dict[int, dict] = {}
-    for c in comments:
-        entry = {
-            "id": c["id"],
-            "user": c["user"]["login"],
-            "created_at": c["created_at"],
-            "html": md.render(c.get("body") or ""),
-            "url": c.get("html_url"),
-        }
-        parent = c.get("in_reply_to_id")
-        if parent and parent in roots:
-            roots[parent]["comments"].append(entry)
-            continue
-        roots[c["id"]] = {
-            "id": c["id"],
-            "path": c["path"],
-            "side": c.get("side") or "RIGHT",
-            "line": c.get("line"),
-            "start_line": c.get("start_line"),
-            "outdated": c.get("line") is None,
-            "comments": [entry],
-        }
-    out: dict = {}
-    for t in roots.values():
-        out.setdefault(t["path"], {}).setdefault((t["side"], t["line"]), []).append(t)
-    return out
-
-
 def _patch_lines(patch: str | None) -> list[dict] | None:
-    """Diff lines with old/new numbers; `side`+`line` = what the review API expects for a comment."""
+    """Diff lines with old/new numbers; `side`+`line` locate a line (Claude's `file:line` links jump to it)."""
     if not patch:
         return None
     lines, old, new = [], 0, 0
@@ -178,9 +149,8 @@ def _patch_lines(patch: str | None) -> list[dict] | None:
     return lines
 
 
-def submit_review(repo: str, number: int, event: str, body: str = "", comments: list[dict] | None = None,
-                  commit_id: str | None = None):
-    """event: APPROVE | COMMENT | REQUEST_CHANGES. comments: [{path, line, side, start_line?, start_side?, body}]."""
+def submit_review(repo: str, number: int, event: str, body: str = "", commit_id: str | None = None):
+    """event: APPROVE | COMMENT | REQUEST_CHANGES."""
     payload: dict = {"event": event}
     if body:
         payload["body"] = body
@@ -188,12 +158,8 @@ def submit_review(repo: str, number: int, event: str, body: str = "", comments: 
         # the review lands on the commit that was looked at (and whose CI was green), not on
         # whatever a bot pushed in between
         payload["commit_id"] = commit_id
-    if comments:
-        payload["comments"] = [
-            {k: c[k] for k in ("path", "line", "side", "start_line", "start_side", "body") if c.get(k) is not None}
-            for c in comments
-        ]
     _post(f"/repos/{repo}/pulls/{number}/reviews", payload)
+    _cache.pop((repo, number), None)
 
 
 def head_sha(repo: str, number: int) -> str:
@@ -205,6 +171,3 @@ def updated_at(repo: str, number: int) -> str:
     """PR updated_at, read back after a review to ack on a state that includes it."""
     return _get(f"/repos/{repo}/pulls/{number}")["updated_at"]
 
-
-def reply(repo: str, number: int, comment_id: int, body: str):
-    _post(f"/repos/{repo}/pulls/{number}/comments/{comment_id}/replies", {"body": body})

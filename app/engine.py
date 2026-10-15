@@ -174,21 +174,22 @@ def retire(current: set[str]):
 
 
 def check_health():
-    """A polling job failing for a while is an item of its own: silent failures are the worst kind."""
-    minutes = config.triage().get("health_minutes", 30)
-    cutoff = db.ago(minutes)
+    """Sources failing for a while are one item, however many: they fail together (network, machine
+    asleep) — 40 pushes in two days said nothing one push does not. Silent failures stay the worst kind."""
+    cutoff = db.ago(config.triage().get("health_minutes", 30))
+    failing = {name: st for name, st in db.watcher_states().items()
+               if name != "health" and st.get("error_since") and st["error_since"] <= cutoff}
     items = []
-    for name, st in db.watcher_states().items():
-        since = st.get("error_since") or ""
-        if name == "health" or not since or since > cutoff:
-            continue
+    if failing:
+        names = sorted(failing)
         items.append(WatchedItem(
-            external_id=name,
-            title=f"Sentinel cannot reach {name}",
+            external_id="sources",
+            title="Sentinel cannot reach " + ", ".join(names[:3]) + (f" +{len(names) - 3}" if len(names) > 3 else ""),
             url=config.BASE_URL.rstrip("/") + "/settings",
-            fingerprint=since,
+            fingerprint="down",  # one more source joining the outage is the same outage
             severity="major",
-            payload={"error": (st.get("last_error") or "")[:300], "since": since},
+            payload={"sources": names, "since": min(st["error_since"] for st in failing.values()),
+                     "error": (failing[names[0]].get("last_error") or "")[:300]},
             lane="health",
             urgency="now",
         ))
@@ -212,13 +213,6 @@ def _row_body(row, why: str) -> str:
 
 def _body(it: WatchedItem) -> str:
     p = it.payload
-    if it.lane == "incident":
-        parts = [f"{it.severity or ''} — {p.get('status', '')}".strip(" —")]
-        if p.get("components"):
-            parts.append(", ".join(p["components"][:4]))
-        if p.get("body"):
-            parts.append(p["body"])
-        return " | ".join(parts)[:400]
     if p.get("why"):
         return p["why"][:400]
     if p.get("author"):

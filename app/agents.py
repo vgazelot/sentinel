@@ -2,9 +2,11 @@
 your gh auth live on the host, not in the container.
 
   deep      on demand — devil's advocate review of a PR
-  quick     on demand — form pass (typos, naming, leftovers)
   precheck  automatic — reads a dependency bump (all its PRs at once) before you approve it
   followup  automatic — a PR you approved failed after merge: did it cause it, what to do
+  brief     automatic — a review asked of you: what it changes, trivial / routine / careful
+  whyred    automatic — your PRs red on the same CI job: why, from the logs, and what to do
+  asks      automatic — the reviewers' comments on your PR, as a to-do
 
 Runs are queued in agent_runs and started by `tick()` (scheduler job), at most `concurrency`
 at a time; automatic ones are capped per day. The bridge owns prompts, models and tools per
@@ -33,12 +35,6 @@ MODES = {
         "eta": "5–10 min",
         "verdict": "Devil's advocate",
     },
-    "quick": {
-        "button": "Quick pass",
-        "title": "Form only: typos, naming, leftovers, PR text vs change. Read-only, nothing is posted on GitHub.",
-        "eta": "1–3 min",
-        "verdict": "Quick pass",
-    },
     "precheck": {
         "button": "Check this bump",
         "title": "Claude reads the release notes and the diff of every PR of this bump before you approve.",
@@ -51,16 +47,36 @@ MODES = {
         "eta": "2–6 min",
         "verdict": "Post-merge investigation",
     },
+    "brief": {
+        "button": "Summarize",
+        "title": "Claude reads the PR: what it changes and how carefully it needs reading. Nothing is posted.",
+        "eta": "1–2 min",
+        "verdict": "Summary",
+    },
+    "whyred": {
+        "button": "Why is it red?",
+        "title": "Claude reads the failed job logs: the cause and what to do.",
+        "eta": "1–3 min",
+        "verdict": "CI diagnosis",
+    },
+    "asks": {
+        "button": "What do they ask?",
+        "title": "Claude turns the reviewers' comments into a short to-do.",
+        "eta": "1–2 min",
+        "verdict": "Reviewers ask",
+    },
 }
-ON_DEMAND = ("deep", "quick")
-AUTOMATIC = ("precheck", "followup")
+ON_DEMAND = ("deep",)
+AUTOMATIC = ("precheck", "followup", "brief", "whyred", "asks")
 # the first line the bridge prompts ask for — only that line counts: a verdict quoted further down
 # (a log, a release note) must not stand for Claude's own
 VERDICT = re.compile(r"verdict\s*:\s*\**\s*([\w-]+)", re.I)
 MAX_ATTEMPTS = 3
-BRIDGE_API = 2  # what /healthz must report: material for every automatic and quick run, token required
+BRIDGE_API = 3  # what /healthz must report: material for every automatic run (brief/whyred/asks since 3), token required
 TONE = {"safe": "ok", "clean": "ok", "unrelated": "ok", "check": "warn", "unclear": "warn",
-        "tidy-up": "warn", "risky": "bad", "caused-by-this-pr": "bad"}
+        "tidy-up": "warn", "risky": "bad", "caused-by-this-pr": "bad",
+        "trivial": "ok", "routine": "neutral", "careful": "warn",
+        "fix-in-pr": "bad", "flaky": "warn", "elsewhere": "ok", "todo": "neutral"}
 
 
 def enabled() -> bool:
@@ -189,11 +205,13 @@ def check_bridge():
 
 
 _EMPHASIS = re.compile(r"\*\*|__|`")
+_LINK = re.compile(r"\[([^\]]+)\]\([^)\s]+\)")
+_MARKS = re.compile(r"^(?:[-*>]\s*|#{1,6}\s+)+")  # bullets, quotes, headings — not the # of `#3401`
 
 
 def first_finding(output: str | None) -> str:
     """The first line after the verdict, as plain text: what a collapsed row can show."""
-    lines = [_EMPHASIS.sub("", l).strip(" -*#>") for l in (output or "").splitlines() if l.strip()]
+    lines = [_MARKS.sub("", _EMPHASIS.sub("", _LINK.sub(r"\1", l)).strip()).strip() for l in (output or "").splitlines() if l.strip()]
     rest = [l for l in lines if l and not VERDICT.match(l)]
     return (rest[0] if rest else (lines[0] if lines else ""))[:220]
 
@@ -205,5 +223,11 @@ def summary_line(output: str | None) -> str:
 
 
 def render(text: str) -> str:
-    """Claude points at `path:line`: make those refs jump to the diff line in the panel."""
-    return md.link_file_refs(md.render(text))
+    """Claude points at `path:line`: make those refs jump to the diff line in the panel. The verdict
+    line itself is the pill above: not repeated."""
+    lines = (text or "").splitlines()
+    first = next((i for i, l in enumerate(lines) if l.strip()), None)
+    if first is not None and VERDICT.match(lines[first].strip(" *#>`")) and verdict(text)[0]:
+        rest = VERDICT.sub("", lines[first].strip(" *#>`"), count=1).strip(" *—-:")
+        lines = lines[:first] + ([rest] if rest else []) + lines[first + 1:]
+    return md.link_file_refs(md.render("\n".join(lines)))

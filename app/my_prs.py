@@ -21,7 +21,7 @@ QUERY = """
 query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
     nodes { ... on PullRequest {
-      id number title url isDraft createdAt updatedAt reviewDecision mergeable additions deletions headRefName
+      id number title url isDraft createdAt updatedAt reviewDecision mergeable additions deletions headRefName headRefOid
       repository { nameWithOwner }
       labels(first: 6) { nodes { name } }
       reviewRequests(first: 10) { nodes { requestedReviewer {
@@ -41,7 +41,7 @@ query($q: String!) {
   }
 }
 """
-# what the PR is waiting for, most urgent first; the first five are on you and push once
+# what the PR is waiting for, most urgent first; the first five are on you, the first four push once
 ACTIONS = {
     "conflicts": "Conflicts to resolve",
     "changes": "Changes requested",
@@ -54,8 +54,8 @@ ACTIONS = {
     "waiting": "Waiting for a review",
     "draft": "Drafts",
 }
-PUSHED = ("conflicts", "changes", "ci", "merge", "threads")
-LISTED = ("no-reviewer", "nudge")  # shown on Now as a reminder, never pushed
+PUSHED = ("conflicts", "changes", "ci", "threads")
+LISTED = ("merge", "no-reviewer", "nudge")  # in the inbox, never pushed: merging is yours, not urgent
 SORT_KEYS = {
     "updated": lambda p: p["updated_at"],
     "created": lambda p: p["created_at"],
@@ -96,6 +96,7 @@ def _normalize(pr: dict, stale_days: int) -> dict:
         "title": pr["title"],
         "url": pr["url"],
         "branch": pr["headRefName"],
+        "head_sha": pr.get("headRefOid") or "",
         "draft": pr["isDraft"],
         "created_at": pr["createdAt"],
         "updated_at": pr["updatedAt"],
@@ -165,6 +166,8 @@ def items(prs: list[dict]) -> list[WatchedItem]:
             fingerprint=p["action"] + (":" + ",".join(p["ci_family"]) if p["action"] == "ci" else ""),
             payload={"repo": p["repo"], "number": p["number"], "title": p["title"], "action": p["action"],
                      "why": why, "ci": p["ci"], "branch": p["branch"], "families": p["ci_family"],
+                     "approved_by": p["approved_by"], "changes_by": p["changes_by"], "unresolved": p["unresolved"],
+                     "head_sha": p.get("head_sha", ""),
                      "updated_at": p["updated_at"]},
             lane="mine",
             urgency="now" if p["action"] in PUSHED else "quiet",
@@ -196,7 +199,7 @@ def sort(prs: list[dict], key: str, desc: bool) -> list[dict]:
 
 
 def groups(prs: list[dict]) -> list[dict]:
-    """Sections of the My PRs page, in ACTIONS order; red CI split by failing check family."""
+    """PRs by what they wait for, in ACTIONS order; red CI split by failing check family."""
     out = []
     for action, label in ACTIONS.items():
         members = sorted((p for p in prs if p["action"] == action), key=lambda p: p["updated_at"])

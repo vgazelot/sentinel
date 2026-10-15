@@ -1,5 +1,7 @@
-// (n) in the tab title and the nav badges, refreshed on every HTMX swap: the masthead is rendered
-// once at page load while the lists are re-fetched every 15s, so the counts must follow the swaps.
+// Sentinel inbox: a list on the left, the selected item on the right, the keyboard to go through it.
+
+// (n) in the tab title and the sidebar badges, refreshed on every swap: the sidebar is rendered once
+// at page load while the list is re-fetched every 20 s.
 function syncBadge(badgeId, sourceId) {
     const badge = document.getElementById(badgeId);
     const source = document.getElementById(sourceId);
@@ -9,186 +11,180 @@ function syncBadge(badgeId, sourceId) {
     badge.hidden = n === 0;
     return n;
 }
+let shown = null;
 function updateBadges() {
     const attention = syncBadge('nav-attention', 'attention-count');
-    syncBadge('nav-my-prs', 'my-prs-count');
-    syncBadge('nav-followup', 'followup-count');
     syncBadge('nav-cycle', 'cycle-count');
     syncBadge('nav-watch', 'watch-count');
     if (attention === null) return;
     document.title = (attention > 0 ? `(${attention}) ` : '') + 'Sentinel';
+    const badge = document.getElementById('nav-attention');
+    if (shown !== null && attention !== shown && badge) {
+        badge.classList.remove('pop'); void badge.offsetWidth; badge.classList.add('pop');
+    }
+    shown = attention;
 }
-document.addEventListener('htmx:afterSwap', updateBadges);
-document.addEventListener('DOMContentLoaded', updateBadges);
 
-// --- Polling without jumps -------------------------------------------------------
-// The pages (#now, #my-prs, #follow-up, #watchers, #cycle, #watch) are re-fetched every 20-60s. Things that made
-// the page jump: htmx moves hx-preserve'd panels out and back in (which resets their inner scroll boxes),
-// a focused textarea inside the panel gets re-focused with a scroll-into-view, and every <details> the
-// user opened came back closed.
-// 1) skip the swap entirely when the server sent exactly the same HTML as last time;
-// 2) otherwise save window scroll, focus/caret, inner scroll positions and open <details>, restore after settle.
-const POLLED = new Set(['now', 'my-prs', 'follow-up', 'watchers', 'cycle', 'watch']);
+// the sidebar light: refreshed by every list poll, its age ticking in between
+function ago(ts) {
+    const s = (Date.now() - Date.parse(ts)) / 1000;
+    if (!(s >= 0)) return '';
+    return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
+}
+function renderLight() {
+    const light = document.getElementById('light');
+    const src = document.getElementById('status-src');
+    if (!light) return;
+    if (src) Object.assign(light.dataset, { ok: src.dataset.ok, text: src.dataset.text, ts: src.dataset.ts });
+    const ok = light.dataset.ok === '1';
+    light.classList.toggle('ok', ok);
+    light.classList.toggle('down', !ok);
+    light.querySelector('span').textContent = ok
+        ? `Up to date${light.dataset.ts ? ' · ' + ago(light.dataset.ts) : ''}` : light.dataset.text;
+}
+setInterval(renderLight, 15000);
+
+// --- Selection -----------------------------------------------------------------------------
+const rows = () => [...document.querySelectorAll('#rows .it')];
+let selected = { key: null, index: 0 };
+
+function select(row, { load = true } = {}) {
+    if (!row) return;
+    rows().forEach((r) => r.classList.toggle('sel', r === row));
+    selected = { key: row.dataset.key, index: rows().indexOf(row) };
+    row.scrollIntoView({ block: 'nearest' });
+    if (!load || !row.dataset.detail) return;
+    const detail = document.getElementById('detail');
+    // the pane answers at once; GitHub fills it in a moment
+    detail.innerHTML = '<div class="d-loading"><i class="sk sk-kicker"></i><i class="sk sk-title"></i><i class="sk sk-line"></i><i class="sk sk-block"></i></div>';
+    htmx.ajax('GET', row.dataset.detail, { target: '#detail', swap: 'innerHTML' });
+}
+
+// moving fast through the list: only the answer for the row still selected lands in the pane
+document.addEventListener('htmx:beforeSwap', (e) => {
+    if (e.detail.target.id !== 'detail' || e.detail.requestConfig.verb !== 'get') return;
+    const row = rows().find((r) => r.dataset.key === selected.key);
+    if (row && row.dataset.detail !== e.detail.requestConfig.path) e.detail.shouldSwap = false;
+});
+
+// after a poll: the same row stays selected; after an action: the row now at its place (the next one)
+function reselect({ next = false } = {}) {
+    const all = rows();
+    if (!all.length) { if (next) clearDetail(); return; }
+    const same = all.find((r) => r.dataset.key === selected.key);
+    if (same && !next) { select(same, { load: false }); return; }
+    if (same || next) select(same || all[Math.min(selected.index, all.length - 1)]);
+}
+
+function clearDetail() {
+    const detail = document.getElementById('detail');
+    if (detail) detail.innerHTML = '<div class="d-empty"><p>All done</p></div>';
+}
+
+function move(step) {
+    const all = rows();
+    if (!all.length) return;
+    const at = all.findIndex((r) => r.dataset.key === selected.key);
+    select(all[Math.max(0, Math.min(all.length - 1, (at < 0 ? selected.index - (step > 0 ? 1 : 0) : at) + step))]);
+}
+
+function openSelected() {
+    const link = document.querySelector('#detail [data-open]');
+    const row = rows().find((r) => r.dataset.key === selected.key);
+    const url = (link && link.href) || (row && row.dataset.url);
+    if (url) window.open(url, '_blank', 'noopener');
+}
+
+document.addEventListener('click', (e) => {
+    const row = e.target.closest('#rows .it');
+    if (!row) return;
+    if (row.dataset.detail) select(row);
+    else if (row.dataset.url) window.open(row.dataset.url, '_blank', 'noopener');
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest('input, textarea, select')) {
+        if (e.key === 'Escape') e.target.blur();
+        return;
+    }
+    if (e.key === 'Enter' && e.target.closest('button, a, summary')) return;  // a focused control keeps its Enter
+    const press = (k) => { const b = document.querySelector(`#detail [data-key="${k}"]`); if (b) b.click(); };
+    const keys = { j: () => move(1), ArrowDown: () => move(1), k: () => move(-1), ArrowUp: () => move(-1),
+                   Enter: openSelected, e: () => press('e'), l: () => press('l') };
+    if (!keys[e.key] || !document.getElementById('rows')) return;
+    e.preventDefault();
+    keys[e.key]();
+});
+
+// --- After an action (Done, Later, a review sent): a short note, then the next row ----------
+let toastTimer = null;
+function toast(text, bad) {
+    const el = document.getElementById('toast');
+    if (!el || !text) return;
+    el.textContent = text;
+    el.className = bad ? 'bad' : '';
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 8000 : 3500);
+}
+document.addEventListener('acted', (e) => {
+    toast(e.detail.error || e.detail.notice || (rows().length ? '' : 'Inbox zero'), !!e.detail.error);
+    reselect({ next: true });
+});
+
+// a Done, a Later or a review sent from the pane: the row slides out while the request runs
+document.addEventListener('htmx:beforeRequest', (e) => {
+    const cfg = e.detail.requestConfig;
+    if (cfg.verb !== 'post' || !e.detail.elt.closest('#detail') || cfg.path.startsWith('/api/agent')) return;
+    const row = rows().find((r) => r.dataset.key === selected.key);
+    if (row) row.classList.add('leaving');
+});
+document.addEventListener('htmx:afterSwap', (e) => {
+    // an error comes back in the pane: the row stays
+    if (e.detail.target.id === 'detail') rows().forEach((r) => r.classList.remove('leaving'));
+});
+
+// --- Polling without jumps -------------------------------------------------------------------
+// #list, #cycle, #watch and #watchers are re-fetched every 20 s - 5 min: skip the swap when the HTML is the
+// same, otherwise keep the list scroll, the open <details id> and the selection.
+const POLLED = new Set(['list', 'cycle', 'watch', 'watchers']);
 const lastHtml = {};
-let scrollState = null;
+let kept = null;
 
 document.addEventListener('htmx:beforeSwap', (e) => {
     const id = e.detail.target.id;
     if (!POLLED.has(id) || e.detail.xhr.status !== 200) return;
-    const isPoll = !(e.detail.requestConfig.triggeringEvent && e.detail.requestConfig.triggeringEvent.type === 'click');
-    if (isPoll && lastHtml[id] === e.detail.serverResponse) { e.detail.shouldSwap = false; return; }
+    if (lastHtml[id] === e.detail.serverResponse) { e.detail.shouldSwap = false; return; }
     lastHtml[id] = e.detail.serverResponse;
-    const active = document.activeElement;
-    scrollState = {
-        x: window.scrollX, y: window.scrollY,
-        focus: e.detail.target.contains(active) ? active : null,
-        caret: active && active.selectionStart != null ? [active.selectionStart, active.selectionEnd] : null,
-        boxes: [...e.detail.target.querySelectorAll('.pr-diff, .md, pre')].map((b) => [b, b.scrollTop]).filter((x) => x[1]),
-        open: [...e.detail.target.querySelectorAll('details[open][id]:not(.menu)')].map((d) => d.id),
-    };
+    const box = e.detail.target.querySelector('.scroll');
+    kept = { id, top: box ? box.scrollTop : 0, keys: new Set(rows().map((r) => r.dataset.key)),
+             open: [...e.detail.target.querySelectorAll('details[open][id]')].map((d) => d.id) };
 });
 
 document.addEventListener('htmx:afterSettle', (e) => {
-    if (!POLLED.has(e.detail.target.id) || !scrollState) return;
-    const st = scrollState; scrollState = null;
+    updateBadges();
+    if (!kept || kept.id !== e.detail.target.id) return;
+    const st = kept; kept = null;
     for (const id of st.open) { const d = document.getElementById(id); if (d) d.open = true; }
-    for (const [b, top] of st.boxes) if (b.isConnected) b.scrollTop = top;
-    if (st.focus && st.focus.isConnected && document.activeElement !== st.focus) {
-        st.focus.focus({ preventScroll: true });
-        if (st.caret) { try { st.focus.setSelectionRange(st.caret[0], st.caret[1]); } catch (_) { /* not a text field */ } }
-    }
-    window.scrollTo(st.x, st.y);
-});
-
-// ⋯ menus (<details>): close when clicking anywhere else
-document.addEventListener('click', (e) => {
-    document.querySelectorAll('details.menu[open]').forEach((d) => { if (!d.contains(e.target)) d.removeAttribute('open'); });
-});
-
-// PR review panel: open/close toggle on the Review button
-function togglePrDetails(itemId) {
-    const panel = document.getElementById(`pr-details-${itemId}`);
-    if (!panel) return;
-    if (panel.innerHTML.trim()) {
-        const n = (pending[itemId] || []).length;
-        if (n && !confirm(`Discard ${n} queued line comment${n > 1 ? 's' : ''}?`)) return;
-        panel.innerHTML = ''; delete pending[itemId]; anchors.delete(itemId); return;
-    }
-    htmx.ajax('GET', `/api/items/${itemId}/pr`, { target: panel, swap: 'innerHTML' });
-}
-
-// --- Line comments, GitHub style: click a line number to comment it, shift-click for a range.
-// Queued in memory per item (the panel survives the 15s poll thanks to hx-preserve) and sent
-// as JSON with Approve / Comment / Request changes.
-const pending = {};      // itemId → [{path, side, line, start_line, start_side, body}]
-const anchors = new Map(); // itemId → {path, side, line, el} — first click of a shift-click range
-
-function pendingJson(itemId) { return JSON.stringify(pending[itemId] || []); }
-
-function updatePendingCount(itemId) {
-    const el = document.getElementById(`pending-count-${itemId}`);
-    if (!el) return;
-    const n = (pending[itemId] || []).length;
-    el.hidden = n === 0;
-    el.textContent = n ? `${n} line comment${n > 1 ? 's' : ''} queued` : '';
-}
-
-function lineInfo(dl) {
-    return { path: dl.closest('.pr-file').dataset.path, side: dl.dataset.side, line: parseInt(dl.dataset.line, 10), el: dl };
-}
-
-function clearRangeMarks(panel) {
-    panel.querySelectorAll('.dl.is-anchor, .dl.in-range').forEach((d) => d.classList.remove('is-anchor', 'in-range'));
-}
-
-function openInlineForm(itemId, target, start) {
-    const panel = target.el.closest('.pr-panel');
-    panel.querySelectorAll('.inline-form').forEach((f) => f.remove());
-    clearRangeMarks(panel);
-    if (start) {
-        // mark the range in the gutter
-        let mark = false;
-        for (const d of target.el.parentElement.querySelectorAll('.dl')) {
-            if (d === start.el || d === target.el) { mark = !mark; d.classList.add('in-range'); if (!mark) break; continue; }
-            if (mark) d.classList.add('in-range');
-        }
-    }
-    target.el.classList.add('is-anchor');
-    const form = document.createElement('div');
-    form.className = 'inline-form';
-    form.innerHTML = `<div class="range"></div><textarea class="field" rows="3" placeholder="Comment on this ${start ? 'range' : 'line'} — Ctrl+Enter to add"></textarea>
-        <div class="actions"><button type="button" class="btn small primary" data-act="add">Add to review</button><button type="button" class="btn small ghost" data-act="cancel">Cancel</button></div>`;
-    // the file name comes from the PR: text, never markup (a file can be named <img onerror=...>)
-    form.querySelector('.range').textContent = start ? `${target.path} · lines ${start.line}–${target.line}` : `${target.path} · line ${target.line}`;
-    target.el.insertAdjacentElement('afterend', form);
-    const ta = form.querySelector('textarea');
-    ta.focus();
-    const close = () => { form.remove(); clearRangeMarks(panel); anchors.delete(itemId); };
-    const add = () => {
-        const body = ta.value.trim();
-        if (!body) return;
-        const c = { path: target.path, side: target.side, line: target.line, body };
-        if (start && start.line !== target.line) { c.start_line = start.line; c.start_side = start.side; }
-        (pending[itemId] = pending[itemId] || []).push(c);
-        renderPending(itemId, target.el, c);
-        close();
-        updatePendingCount(itemId);
-    };
-    form.querySelector('[data-act="add"]').addEventListener('click', add);
-    form.querySelector('[data-act="cancel"]').addEventListener('click', close);
-    ta.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') add(); if (e.key === 'Escape') close(); });
-}
-
-function renderPending(itemId, lineEl, c) {
-    const box = document.createElement('div');
-    box.className = 'dl-threads';
-    const where = c.start_line ? `lines ${c.start_line}–${c.line}` : `line ${c.line}`;
-    box.innerHTML = `<div class="thread pending"><div class="comment"><div class="comment-head"><span class="comment-user">Pending</span> <span class="muted">${where} · sent with your review</span></div>
-        <div class="md comment-body"></div><div class="comment-actions"><button type="button" class="btn small ghost" data-act="remove">Remove</button></div></div></div>`;
-    box.querySelector('.comment-body').textContent = c.body;
-    box.querySelector('[data-act="remove"]').addEventListener('click', () => {
-        pending[itemId] = (pending[itemId] || []).filter((x) => x !== c);
-        box.remove();
-        updatePendingCount(itemId);
+    const box = e.detail.target.querySelector('.scroll');
+    if (box) box.scrollTop = st.top;
+    if (st.id !== 'list') return;
+    renderLight();
+    // what arrived since the last look lights up once
+    if (st.keys.size) rows().filter((r) => !st.keys.has(r.dataset.key)).forEach((r) => {
+        r.classList.add('fresh');
+        setTimeout(() => r.classList.remove('fresh'), 1900);
     });
-    // after the line and any existing threads on it
-    let after = lineEl;
-    while (after.nextElementSibling && after.nextElementSibling.classList.contains('dl-threads')) after = after.nextElementSibling;
-    after.insertAdjacentElement('afterend', box);
-}
-
-document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.dl-add');
-    if (!btn || btn.tagName !== 'BUTTON') return;
-    const dl = btn.closest('.dl');
-    const itemId = parseInt(dl.closest('.pr-panel').dataset.item, 10);
-    const info = lineInfo(dl);
-    const anchor = anchors.get(itemId);
-    if (e.shiftKey && anchor && anchor.path === info.path && anchor.side === info.side && anchor.line !== info.line) {
-        const [start, end] = anchor.line < info.line ? [anchor, info] : [info, anchor];
-        openInlineForm(itemId, end, start);
-        anchors.delete(itemId);
-        return;
-    }
-    anchors.set(itemId, info);
-    openInlineForm(itemId, info, null);
+    reselect();
 });
 
-// A submitted review answers with an HX-Trigger: drop the queue. An error re-renders the panel
-// without it, so the queue is put back on the fresh DOM (afterSwap) instead of being lost.
-document.addEventListener('reviewSubmitted', (e) => { delete pending[e.detail.id]; anchors.delete(e.detail.id); });
-
-document.addEventListener('htmx:afterSwap', (e) => {
-    const m = (e.detail.target.id || '').match(/^pr-details-(\d+)$/);
-    if (!m) return;
-    const itemId = parseInt(m[1], 10);
-    for (const c of pending[itemId] || []) {
-        const dl = [...e.detail.target.querySelectorAll('.pr-file')]
-            .filter((f) => f.dataset.path === c.path)
-            .flatMap((f) => [...f.querySelectorAll(`.dl[data-side="${c.side}"][data-line="${c.line}"]`)])[0];
-        if (dl) renderPending(itemId, dl, c);
-    }
-    updatePendingCount(itemId);
+document.addEventListener('DOMContentLoaded', () => {
+    updateBadges();
+    renderLight();
+    const all = rows();
+    const first = all.find((r) => r.dataset.detail);
+    if (first) select(first);
 });
 
 // --- `path:line` refs in Claude's review: jump to that line in the diff below ------
@@ -220,7 +216,7 @@ document.addEventListener('click', (e) => {
     const a = e.target.closest('a.fileref');
     if (!a) return;
     e.preventDefault();
-    const panel = a.closest('.pr-panel');
+    const panel = a.closest('#detail')?.querySelector('.d-body');
     if (!panel) return;
     const path = a.dataset.path;
     const from = parseInt(a.dataset.line, 10);

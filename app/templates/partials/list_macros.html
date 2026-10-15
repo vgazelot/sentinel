@@ -1,0 +1,31 @@
+{# One list row. A row with `detail` opens in the right pane, one without opens `url` on GitHub. #}
+{% set MINE_ICON = {'conflicts': 'i-warn', 'changes': 'i-chat', 'ci': 'i-x', 'merge': 'i-merge', 'threads': 'i-chat',
+                    'no-reviewer': 'i-people', 'nudge': 'i-clock'} %}
+
+{% macro row(key, title, tone='neutral', icon='i-dot', detail='', url='', age='', tag='') -%}
+<div class="it{{ '' if detail else ' link' }}" data-key="{{ key }}"{% if detail %} data-detail="{{ detail }}"{% endif %}{% if url %} data-url="{{ url }}"{% endif %}>
+    <svg class="ic {{ tone }}"><use href="#{{ icon }}"/></svg>
+    <span class="t">{{ title }}</span>
+    <span class="tm">{{ tag }}{% if not detail %}<svg class="out"><use href="#i-out"/></svg>{% endif %}{{ age }}</span>
+    <span class="m">{{ caller() if caller }}</span>
+</div>
+{%- endmacro %}
+
+{% macro icon_of(v) -%}
+{%- if v.lane == 'followup' -%}{{ 'i-x' if v.p.kind in ('failed', 'reverted') else 'i-warn' }}
+{%- elif v.lane == 'mine' -%}{{ MINE_ICON.get(v.p.action, 'i-pr') }}
+{%- else -%}{{ {'you': 'i-eye', 'team': 'i-eye', 'incident': 'i-cloud', 'watch': 'i-pulse', 'health': 'i-warn', 'cycle': 'i-target'}.get(v.lane, 'i-dot') }}
+{%- endif -%}
+{%- endmacro %}
+
+{# Claude's verdict on a row, one word: what to expect before opening it #}
+{% macro claude_tag(run) -%}
+{% if run and run.status == 'done' %}{% set t = run.output | verdict %}{% if t[0] %}<span class="tag {{ t[1] }}" title="{{ run.output | headline }}">{{ t[0] }}</span>{% endif %}
+{%- elif run and run.status in ('queued', 'running') %}<span class="tag reading">reading</span>{% endif %}
+{%- endmacro %}
+
+{% macro item(v, sub='', tag='') -%}
+{% call row('item-' ~ v.id, (v.headline | subject).text, v.tone, icon_of(v), '/partials/item/' ~ v.id, v.url, v.first_seen | age, tag) %}
+{% if v.ref %}<span class="mono">{{ v.ref }}</span> · {% endif %}{{ sub or (('Claude: not this PR' if v.cleared else '') or v.p.why or v.p.status or '') }}
+{% endcall %}
+{%- endmacro %}

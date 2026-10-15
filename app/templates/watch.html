@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Sentinel — Watch{% endblock %}
 {% block content %}
-<div id="watch" hx-get="/partials/watch" hx-trigger="every 60s" hx-swap="innerHTML">
-    {% include "partials/watch.html" %}
-</div>
+<main class="pane page">
+    <div class="page-in" id="watch" hx-get="/partials/watch" hx-trigger="every 60s" hx-swap="innerHTML">
+        {% include "partials/watch.html" %}
+    </div>
+</main>
 {% endblock %}

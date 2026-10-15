@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -16,9 +16,9 @@ import cycle
 import db
 import deps
 import engine
-import evidence
 import followup
 import github_pr
+import insight
 import my_prs
 import notify
 from watchers import build_watchers
@@ -62,6 +62,7 @@ if agents.enabled():
     _every(agents.check_bridge, 120, "claude-bridge", delay=30)
     if config.agents()["precheck"]:
         _every(deps.precheck, 300, "precheck", delay=45)
+    _every(insight.refresh, 300, "insight", delay=50)
 if os.environ.get("SENTINEL_SCHEDULER", "1") == "1":  # 0 = tests: routes only, no background polling
     scheduler.start()
     log.info("scheduler started, watchers: %s", list(WATCHERS))
@@ -141,6 +142,19 @@ def headline(output: str | None) -> str:
     return agents.first_finding(output)
 
 
+_CONVENTIONAL = re.compile(r"^(?:(?P<kind>[a-z][a-z-]*(?:\([^)]*\))?!?):\s*)?(?:\[(?P<ticket>sc-?\d+)\]\s*)?(?P<text>.+)$")
+
+
+@app.template_filter("subject")
+def subject(title: str | None) -> dict:
+    """`chore(ci): [sc-12345] expire stale tags` → kind, ticket and the sentence, capitalised: in a narrow
+    list the prefix ate the words that say what the PR does."""
+    title = (title or "").strip()
+    m = _CONVENTIONAL.match(title)
+    text = m.group("text") if m else title
+    return {"kind": (m and m.group("kind")) or "", "ticket": (m and m.group("ticket")) or "", "text": text[:1].upper() + text[1:]}
+
+
 @app.template_filter("minutes_left")
 def minutes_left(first_seen: str) -> int:
     grace = config.triage()["team_grace_minutes"]
@@ -151,15 +165,20 @@ def minutes_left(first_seen: str) -> int:
 def inject_nav():
     off_track = (sum(1 for r in cycle.load()["big_rocks"] if r["status"] in ("stalled", "behind"))
                  if cycle.enabled(CYCLE_CFG) else 0)
-    attention = [_view(r) for r in db.items(db.ATTENTION)]
-    _clear_by_claude(attention, db.runs_for([v["subject"] for v in attention if v["lane"] == "followup"]))
-    attention = [v for v in attention if v["attention"]]
-    return {"nav_attention": _units(attention),
-            "nav_my_prs": sum(1 for p in my_prs.load()["prs"] if p["action"] in my_prs.PUSHED),
-            "nav_followup": sum(1 for v in attention if v["lane"] == "followup"),
+    pending = [_view(r) for r in db.items("state = 'pending'")]
+    _clear_by_claude(pending, db.runs_for([v["subject"] for v in pending if v["lane"] == "followup"]))
+    return {"nav_attention": _units(pending),
             "nav_cycle": off_track, "cycle_enabled": cycle.enabled(CYCLE_CFG),
-            "followup_enabled": followup.enabled(FOLLOWUP_CFG), "claude_enabled": agents.enabled(),
-            "agent_modes": agents.MODES}
+            "claude_enabled": agents.enabled(), "agent_modes": agents.MODES, "status": _status()}
+
+
+def _status() -> dict:
+    """The sidebar light: Sentinel's own health, instead of an inbox row per failing source."""
+    down = db.items("lane = 'health' AND state != 'resolved'")
+    if down:
+        return {"ok": False, "text": down[0]["title"], "since": json.loads(down[0]["payload"] or "{}").get("since")}
+    runs = [st["last_run"] for st in db.watcher_states().values() if st.get("last_run")]
+    return {"ok": True, "text": "Up to date", "since": max(runs) if runs else None}
 
 
 # --- View models -------------------------------------------------------------------------
@@ -179,7 +198,7 @@ def _view(row) -> dict:
 
 
 def _tone(row, p: dict, attention: bool) -> str:
-    """Dot colour: hot = waiting on you, bad = something broke, warn = needs a look, ok = good news."""
+    """Status colour: hot = waiting on you, bad = something broke, warn = needs a look, ok = good news."""
     lane = row["lane"]
     if lane == "health":
         return "bad"
@@ -197,22 +216,27 @@ def _tone(row, p: dict, attention: bool) -> str:
 
 
 def _mine_groups(views: list[dict]) -> list[dict]:
-    """Your PRs on Now, one row per cause: ten PRs red on the same CI job are one problem, not ten."""
+    """Your PRs, one row per cause: ten PRs red on the same CI job are one problem, not ten."""
     groups: dict[str, dict] = {}
     for v in views:
         action = v["p"].get("action", "")
         family = (v["p"].get("families") or [""])[0] if action == "ci" else ""
         key = f"{action}:{family}"
         label = my_prs.ACTIONS.get(action, action) + (f" — {family}" if family else "")
-        g = groups.setdefault(key, {"key": key, "action": action, "label": label, "tone": v["tone"], "rows": []})
+        g = groups.setdefault(key, {"key": key, "action": action, "label": label, "tone": v["tone"], "rows": [],
+                                    "family": family})
         g["rows"].append(v)
-    order = list(my_prs.ACTIONS)
-    return sorted(groups.values(), key=lambda g: (order.index(g["action"]) if g["action"] in order else 99, -len(g["rows"])))
+    return sorted(groups.values(), key=lambda g: (MINE_ORDER.index(g["action"]) if g["action"] in MINE_ORDER else 99,
+                                                  -len(g["rows"])))
+
+
+# what unblocks the most first: a red CI shared by three PRs before one alone, merging last (it waits on nobody)
+MINE_ORDER = ("conflicts", "changes", "ci", "threads", "no-reviewer", "nudge", "merge")
 
 
 def _clear_by_claude(views: list[dict], runs: dict):
     """A post-merge failure Claude traced to something else stops asking for you: it answered the
-    question "did I break it?". It stays on Follow-up and on the radar, verdict attached."""
+    question "did I break it?". It moves to Later, verdict attached."""
     for v in views:
         run = (runs.get(v["subject"]) or {}).get("followup")
         if v["lane"] == "followup" and v["p"].get("kind") == "failed" and followup.cleared(v["p"].get("checks") or [], run):
@@ -221,7 +245,7 @@ def _clear_by_claude(views: list[dict], runs: dict):
 
 def _followup_view(prs: list[dict]) -> tuple[list[dict], dict]:
     """Follow-up PRs with `section` set — a failure already red before the merge or traced elsewhere
-    by Claude is "not yours" — and the counts every page shows, computed once here."""
+    by Claude is "not yours" — and the counts every view shows, computed once here."""
     runs = db.runs_for([f"{p['repo']}#{p['number']}" for p in prs if p["stage"] == "failed"])
     for p in prs:
         run = (runs.get(f"{p['repo']}#{p['number']}") or {}).get("followup")
@@ -233,77 +257,91 @@ def _followup_view(prs: list[dict]) -> tuple[list[dict], dict]:
     return prs, count
 
 
-def _units(attention: list[dict]) -> int:
-    """What the badges count: decisions — every item, except your own PRs which count per cause."""
-    return sum(1 for v in attention if v["lane"] != "mine") + len(_mine_groups([v for v in attention if v["lane"] == "mine"]))
+# the inbox: monitoring alerts on top, the health light in the sidebar, cycle in its tab, status pages wait in Later
+FOR_YOU = ("you", "team", "followup")
+INBOX = ("watch",) + FOR_YOU + ("mine",)
+TABS = ("priority", "later", "done")
 
 
-SECTIONS = [
-    ("health", "Sentinel needs a hand", ("health",)),
-    ("watch", "Monitoring", ("watch",)),
-    ("reviews", "Reviews for you", ("you", "team")),
-    ("mine", "Your pull requests", ("mine",)),
-    ("followup", "After you approved", ("followup",)),
-    ("incidents", "Incidents", ("incident",)),
-    ("cycle", "Cycle", ("cycle",)),
-]
+def _units(views: list[dict]) -> int:
+    """What the badges count: the rows of Priority — each item waiting on you, your PRs once per cause
+    (approved and green included: never pushed, still yours to merge)."""
+    return (sum(1 for v in views if v["attention"] and v["lane"] in INBOX and v["lane"] != "mine")
+            + len(_mine_groups([v for v in views if v["state"] == "pending" and v["lane"] == "mine"])))
 
 
-def _now_context(notice: str = "", error: str = "") -> dict:
+def _inbox(notice: str = "", error: str = "") -> dict:
     views = [_view(r) for r in db.items("state != 'resolved'")]
     groups = deps.pending_groups()
-    runs = db.runs_for([v["subject"] for v in views if v["subject"]] + [f"deps:{g['key']}" for g in groups])
+    runs = db.runs_for([v["subject"] for v in views if v["subject"]] + [f"deps:{g['key']}" for g in groups]
+                       + [f"why:{f}" for v in views for f in (v["p"].get("families") or [])[:1]]
+                       + [f"asks:{v['subject']}" for v in views if v["lane"] == "mine"])
     _clear_by_claude(views, runs)
     attention = [v for v in views if v["attention"]]
-    sections = [{"id": sid, "title": title,
-                 "rows": sorted((v for v in attention if v["lane"] in lanes), key=lambda v: v["first_seen"], reverse=True)}
-                for sid, title, lanes in SECTIONS]
     pending = [v for v in views if v["state"] == "pending"]
     fu = followup.load() if followup.enabled(FOLLOWUP_CFG) else {"prs": [], "stale_days": 3}
     fu_prs, landing = _followup_view(fu["prs"])
-    mine = next(s for s in sections if s["id"] == "mine")
-    mine["groups"] = _mine_groups(mine["rows"])
-    return {
-        "sections": sections,
-        "attention": _units(attention),
-        "dep_groups": groups,
-        "dep_count": sum(len(g["prs"]) for g in groups),
+
+    def newest(vs):
+        return sorted(vs, key=lambda v: v["first_seen"], reverse=True)
+
+    later = {
+        "snoozed": sorted((v for v in views if v["state"] == "snoozed"), key=lambda v: v["snooze_until"] or ""),
         "grace": sorted((v for v in pending if v["lane"] == "team" and not v["attention"]), key=lambda v: v["first_seen"]),
-        "radar": sorted((v for v in pending if (v["urgency"] == "quiet" and v["lane"] != "deps") or v.get("cleared")),
-                        key=lambda v: (v["lane"], v["first_seen"])),
-        "snoozed": [v for v in views if v["state"] == "snoozed"],
-        "acked": [v for v in views if v["state"] == "acked"][:40],
-        "runs": runs,
-        "landing": landing,
-        "broken": sum(1 for v in attention if v["lane"] == "followup" and v["p"].get("kind") in ("failed", "reverted")),
-        # what is moving and fine — a dismissed or stuck one is already an item above
+        "dep_groups": groups,
+        "incidents": newest(v for v in pending if v["lane"] == "incident"),
+        "radar": newest(v for v in pending if v.get("cleared") or (
+            v["urgency"] == "quiet" and v["lane"] not in ("deps", "mine", "incident"))),
+        "others": sorted((p for p in my_prs.load()["prs"] if p["action"] not in my_prs.PUSHED + my_prs.LISTED),
+                         key=lambda p: p["updated_at"], reverse=True),
+        # what is moving and fine — a dismissed or stuck one is already in the inbox
         "landing_live": [p for p in fu_prs if p["stage"] == "checking" or (
-            p["stage"] == "waiting" and not p["dismissed"] and p["waiting_days"] < fu.get("stale_days", 3))][:8],
+            p["stage"] == "waiting" and not p["dismissed"] and p["waiting_days"] < fu.get("stale_days", 3))],
+    }
+    acked = [v for v in views if v["state"] == "acked"][:40]
+    # broken after a merge first, then the reviews people have waited on longest
+    for_you = sorted((v for v in attention if v["lane"] in FOR_YOU),
+                     key=lambda v: (0 if v["p"].get("kind") in ("failed", "reverted") else 1 if v["lane"] == "you"
+                                    else 2 if v["lane"] == "team" else 3, v["first_seen"]))
+    mine = _mine_groups([v for v in pending if v["lane"] == "mine"])
+    return {
+        **later,
+        "watch": newest(v for v in attention if v["lane"] == "watch"),
+        "for_you": for_you,
+        "mine": mine,
+        "acked": acked,
+        "attention": _units(views),
+        "attention_rows": attention,
+        "mine_prs": sum(len(g["rows"]) for g in mine),
+        # what may need you later; your PRs waiting on others and what is landing are only for reading
+        "counts": {"later": sum(len(later[k]) for k in ("snoozed", "grace", "dep_groups", "incidents", "radar"))},
+        "dep_count": sum(len(g["prs"]) for g in groups),
+        "landing": landing,
+        "runs": runs,
         "notice": notice,
         "error": error,
     }
 
 
+def _tab() -> str:
+    """The inbox tab: from the query string, or — for an action posted from the detail pane — from the
+    page the action came from."""
+    tab = request.args.get("tab") or parse_qs(urlparse(request.headers.get("HX-Current-URL", "")).query).get("tab", [""])[0]
+    return tab if tab in TABS else "priority"
+
+
 # --- Pages -----------------------------------------------------------------------------
 @app.get("/")
-def now_page():
-    return render_template("now.html", active="now", **_now_context())
+def inbox_page():
+    return render_template("inbox.html", active="inbox", tab=_tab(), **_inbox())
 
 
 @app.get("/my-prs")
-def my_prs_page():
-    return render_template("my_prs.html", active="my_prs", **_my_prs_context())
-
-
 @app.get("/follow-up")
-def followup_page():
-    return render_template("followup.html", active="followup", **_followup_context())
-
-
 @app.get("/approved")
-def approved_page():
-    # the Approved tab became Follow-up; old pushes still link here
-    return redirect("/follow-up", code=301)
+def old_pages():
+    # My PRs and Follow-up became parts of the inbox; old pushes and bookmarks still land somewhere useful
+    return redirect("/" if request.path == "/my-prs" else "/?tab=later", code=301)
 
 
 @app.get("/cycle")
@@ -332,49 +370,10 @@ def service_worker():
     return send_from_directory("static", "sw.js", mimetype="application/javascript")
 
 
-# --- Partials (polled) --------------------------------------------------------------------
-@app.get("/partials/now")
-def partial_now():
-    return render_template("partials/now.html", **_now_context())
-
-
-def _my_prs_context() -> dict:
-    data = my_prs.load()
-    return {"groups": my_prs.groups(data["prs"]), "total": len(data["prs"]),
-            "yours": sum(1 for p in data["prs"] if p["action"] in my_prs.PUSHED),
-            "last_run": data["last_run"], "last_error": data["last_error"]}
-
-
-@app.get("/partials/my-prs")
-def partial_my_prs():
-    return render_template("partials/my_prs.html", **_my_prs_context())
-
-
-@app.post("/api/my-prs/refresh")
-def api_my_prs_refresh():
-    if GH["login"]:
-        my_prs.refresh(GH["login"], GH["orgs"])
-    return partial_my_prs()
-
-
-def _followup_context() -> dict:
-    data = followup.load()
-    prs, summary = _followup_view(data["prs"])
-    runs = db.runs_for([f"{p['repo']}#{p['number']}" for p in prs if p["stage"] == "failed"])
-    return {**data, "summary": summary, "runs": runs,
-            "stages": {s: [p for p in prs if p["section"] == s] for s in followup.STAGES + ["not yours"]}}
-
-
-@app.get("/partials/follow-up")
-def partial_followup():
-    return render_template("partials/followup.html", **_followup_context())
-
-
-@app.post("/api/follow-up/refresh")
-def api_followup_refresh():
-    if followup.enabled(FOLLOWUP_CFG):
-        followup.refresh(FOLLOWUP_CFG)
-    return partial_followup()
+# --- Partials --------------------------------------------------------------------------------
+@app.get("/partials/inbox")
+def partial_inbox():
+    return render_template("partials/inbox_list.html", tab=_tab(), **_inbox())
 
 
 @app.get("/partials/cycle")
@@ -406,7 +405,6 @@ def _watchers_context() -> dict:
 def _agents_context() -> dict:
     with db.connect() as conn:
         recent = conn.execute("SELECT * FROM agent_runs ORDER BY COALESCE(started_at, created_at) DESC LIMIT 12").fetchall()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
     return {"recent_runs": recent, "runs_today": agents.used_today()}
 
 
@@ -415,12 +413,103 @@ def partial_watchers():
     return render_template("partials/watchers.html", **_watchers_context())
 
 
+# --- Detail pane -------------------------------------------------------------------------------
+def _detail(template: str, **ctx):
+    resp = make_response(render_template(template, **ctx))
+    resp.headers["HX-Retarget"] = "#detail"
+    resp.headers["HX-Reswap"] = "innerHTML"
+    return resp
+
+
+def _gone():
+    return _detail("partials/detail_gone.html")
+
+
+@app.get("/partials/item/<int:item_id>")
+def partial_item(item_id: int):
+    with db.connect() as conn:
+        row = db.get_item(conn, item_id)
+    if not row:
+        return _gone()
+    if row["watcher"] == "github_reviews":
+        return _review(row)
+    v = _view(row)
+    if v["lane"] == "mine":
+        return _mine_detail(v)
+    runs = db.runs_for([v["subject"]])
+    _clear_by_claude([v], runs)
+    return _detail("partials/detail_item.html", v=v, runs=runs)
+
+
+@app.get("/partials/group")
+def partial_group():
+    ids = [int(x) for x in request.args.get("ids", "").split(",") if x.isdigit()]
+    rows = [_view(r) for r in db.items(f"id IN ({','.join('?' * len(ids))})", *ids)] if ids else []
+    if not rows:
+        return _gone()
+    if len(rows) == 1:
+        return _mine_detail(rows[0])
+    g = _mine_groups(rows)[0]
+    why = f"why:{g['family']}"
+    return _detail("partials/detail_group.html", g=g, why=why, runs=db.runs_for([why]))
+
+
+@app.get("/partials/dep")
+def partial_dep():
+    group = next((g for g in deps.pending_groups() if g["key"] == request.args.get("key")), None)
+    if not group:
+        return _gone()
+    subject = f"deps:{group['key']}"
+    return _detail("partials/detail_dep.html", g=group, subject=subject, runs=db.runs_for([subject]))
+
+
+def _pr_details(payload: dict, ctx: dict):
+    """The PR as GitHub has it now, or the error in its place: the pane still shows what Sentinel knows."""
+    if payload.get("repo"):
+        try:
+            ctx["pr"] = github_pr.details(payload["repo"], payload["number"])
+        except Exception as e:  # noqa: BLE001
+            ctx.setdefault("error", str(e))
+
+
+def _mine_detail(v: dict):
+    """One of your PRs: what it waits for, the failing checks, what reviewers asked — and Claude's reading."""
+    ctx: dict = {}
+    _pr_details(v["p"], ctx)
+    why = f"why:{(v['p'].get('families') or [''])[0]}"
+    asks = f"asks:{v['subject']}"
+    return _detail("partials/detail_mine.html", v=v, why=why, asks=asks, runs=db.runs_for([why, asks]), **ctx)
+
+
+def _review(row, **ctx):
+    """A review request: the PR from GitHub (diff, checks, reviews) and the three review actions."""
+    payload = json.loads(row["payload"] or "{}")
+    if not payload.get("repo"):
+        ctx.setdefault("error", "repo/number not in payload yet — wait for the next fetch")
+    elif "pr" not in ctx:
+        _pr_details(payload, ctx)
+    subject = f"{payload.get('repo')}#{payload.get('number')}"
+    # the devil's advocate explores with tools: not on a bot's PR, whose text (release notes) nobody vouches for
+    modes = ["brief"] if payload.get("author_bot") else ["brief", "deep"]
+    return _detail("partials/detail_review.html", v=_view(row), subject=subject, modes=modes,
+                   runs=db.runs_for([subject]).get(subject, {}), **ctx)
+
+
 # --- Item actions --------------------------------------------------------------------------
 def _done(notice: str = "", error: str = ""):
-    """HTMX gets the refreshed Now page, anything else (the Claude Code mod) a JSON ack."""
-    if request.headers.get("HX-Request"):
-        return render_template("partials/now.html", **_now_context(notice, error))
-    return jsonify({"ok": not error, "notice": notice, "error": error}), (400 if error else 200)
+    """HTMX gets the refreshed list (the page then selects the next row), anything else (the Claude
+    Code mod) a JSON ack."""
+    if not request.headers.get("HX-Request"):
+        return jsonify({"ok": not error, "notice": notice, "error": error}), (400 if error else 200)
+    resp = make_response(render_template("partials/inbox_list.html", tab=_tab(), **_inbox()))
+    resp.headers["HX-Retarget"] = "#list"
+    resp.headers["HX-Reswap"] = "innerHTML"
+    resp.headers["HX-Trigger-After-Settle"] = json.dumps({"acted": {"notice": notice, "error": error}})
+    return resp
+
+
+def _ack(row):
+    db.set_state(row["id"], "acked", ack_forever=0, acked_fingerprint=row["fingerprint"], snooze_until=None)
 
 
 @app.post("/api/items/<int:item_id>/ack")
@@ -429,18 +518,17 @@ def api_ack(item_id: int):
         row = db.get_item(conn, item_id)
     if not row:
         return "not found", 404
-    forever = request.form.get("mode") == "forever"
-    db.set_state(item_id, "acked", ack_forever=int(forever), acked_fingerprint=row["fingerprint"], snooze_until=None)
+    _ack(row)
     return _done()
 
 
 @app.post("/api/items/bulk")
 def api_bulk():
-    """Hide or snooze several items at once — a group row's ⋯ menu."""
+    """Done or Later on several items at once — a group row of your PRs."""
     ids = [int(x) for x in request.form.get("ids", "").split(",") if x.strip().isdigit()]
     action = request.form.get("action", "")
-    until = _snooze_until(request.form.get("duration", "1h")) if action == "snooze" else None
-    if action not in ("ack", "forever", "snooze") or (action == "snooze" and not until):
+    until = _snooze_until(request.form.get("duration", "tomorrow")) if action == "snooze" else None
+    if action not in ("ack", "snooze") or (action == "snooze" and not until):
         return "bad action", 400
     with db.connect() as conn:
         rows = [r for r in (db.get_item(conn, i) for i in ids) if r]
@@ -448,8 +536,7 @@ def api_bulk():
         if action == "snooze":
             db.set_state(row["id"], "snoozed", snooze_until=until, ack_forever=0)
         else:
-            db.set_state(row["id"], "acked", ack_forever=int(action == "forever"),
-                         acked_fingerprint=row["fingerprint"], snooze_until=None)
+            _ack(row)
     return _done()
 
 
@@ -461,7 +548,7 @@ def api_unack(item_id: int):
 
 @app.post("/api/items/<int:item_id>/snooze")
 def api_snooze(item_id: int):
-    until = _snooze_until(request.form.get("duration", "1h"))
+    until = _snooze_until(request.form.get("duration", "tomorrow"))
     if not until:
         return "bad duration", 400
     db.set_state(item_id, "snoozed", snooze_until=until, ack_forever=0)
@@ -488,56 +575,11 @@ def _snooze_until(duration: str) -> str | None:
     return target.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# --- PR review panel ------------------------------------------------------------------------
-def _pr_item(item_id: int):
-    """PR item + decoded payload, or (None, None)."""
-    with db.connect() as conn:
-        row = db.get_item(conn, item_id)
-    if not row or row["watcher"] != "github_reviews":
-        return None, None
-    return row, json.loads(row["payload"] or "{}")
-
-
-def _pr_panel(item_id: int, row, payload: dict, **ctx):
-    """Panel rendered in place (HX-Retarget): diff + actions, or the error alone if GitHub is unreachable."""
-    if "pr" not in ctx and payload.get("repo"):
-        try:
-            ctx["pr"] = github_pr.details(payload["repo"], payload["number"])
-        except Exception as e:
-            ctx.setdefault("error", str(e))
-    elif not payload.get("repo"):
-        ctx.setdefault("error", "repo/number not in payload yet — wait for the next fetch")
-    subject = f"{payload.get('repo')}#{payload.get('number')}"
-    # the devil's advocate explores with tools: not on a bot's PR, whose text (release notes) nobody vouches for
-    modes = ["quick"] if payload.get("author_bot") else ["quick", "deep"]
-    resp = make_response(render_template("partials/pr_details.html", item=row, subject=subject, modes=modes,
-                                         runs=db.runs_for([subject]).get(subject, {}), **ctx))
-    resp.headers["HX-Retarget"] = f"#pr-details-{item_id}"
-    return resp
-
-
-@app.get("/api/items/<int:item_id>/pr")
-def api_pr_details(item_id: int):
-    row, payload = _pr_item(item_id)
-    if not row:
-        return "not found", 404
-    return _pr_panel(item_id, row, payload)
-
-
-def _pending_comments() -> list[dict]:
-    """Line comments queued in the panel, sent as a JSON list in the `comments` form field."""
-    try:
-        comments = json.loads(request.form.get("comments") or "[]")
-    except ValueError:
-        return []
-    return [c for c in comments if isinstance(c, dict) and c.get("path") and c.get("line") and c.get("body")]
-
-
-def _approve(row, payload: dict, body: str = "", comments: list | None = None, event: str = "APPROVE",
-             head_sha: str | None = None):
+# --- Reviews --------------------------------------------------------------------------------
+def _approve(row, payload: dict, body: str = "", event: str = "APPROVE", head_sha: str | None = None):
     """One review on GitHub, then ack the item on the PR state that already includes it: out of the
     inbox now, back only if the PR moves (APPROVE/REQUEST_CHANGES also drop the request → resolved)."""
-    github_pr.submit_review(payload["repo"], payload["number"], event, body, comments or [], commit_id=head_sha)
+    github_pr.submit_review(payload["repo"], payload["number"], event, body, commit_id=head_sha)
     fingerprint = row["fingerprint"]
     if row["lane"] == "you":  # the only lane whose fingerprint follows updated_at
         try:
@@ -548,23 +590,21 @@ def _approve(row, payload: dict, body: str = "", comments: list | None = None, e
 
 
 def _submit_review(item_id: int, event: str):
-    row, payload = _pr_item(item_id)
-    if not row:
+    with db.connect() as conn:
+        row = db.get_item(conn, item_id)
+    if not row or row["watcher"] != "github_reviews":
         return "not found", 404
+    payload = json.loads(row["payload"] or "{}")
     body = (request.form.get("body") or "").strip()
-    comments = _pending_comments()
     label = {"APPROVE": "Approve", "COMMENT": "Comment", "REQUEST_CHANGES": "Request changes"}[event]
-    if event != "APPROVE" and not body and not comments:
-        return _pr_panel(item_id, row, payload, error=f"{label} failed — write a message or add a line comment first")
+    if event != "APPROVE" and not body:
+        return _review(row, error=f"{label} failed — write a message first")
     try:
-        _approve(row, payload, body, comments, event, head_sha=request.form.get("head_sha") or None)
-    except Exception as e:
-        return _pr_panel(item_id, row, payload, error=f"{label} failed — {e}")
-    log.info("PR review %s via dashboard: %s#%s (%d line comments)", event, payload["repo"], payload["number"], len(comments))
-    resp = make_response(_done(notice=f"{label} sent on {payload['repo'].split('/')[-1]}#{payload['number']}"))
-    # tells the page to drop the queued line comments (an error keeps them)
-    resp.headers["HX-Trigger"] = json.dumps({"reviewSubmitted": {"id": item_id}})
-    return resp
+        _approve(row, payload, body, event, head_sha=request.form.get("head_sha") or None)
+    except Exception as e:  # noqa: BLE001
+        return _review(row, error=f"{label} failed — {e}")
+    log.info("PR review %s via dashboard: %s#%s", event, payload["repo"], payload["number"])
+    return _done(notice=f"{label} sent on {payload['repo'].split('/')[-1]}#{payload['number']}")
 
 
 @app.post("/api/items/<int:item_id>/approve")
@@ -580,21 +620,6 @@ def api_comment(item_id: int):
 @app.post("/api/items/<int:item_id>/request-changes")
 def api_request_changes(item_id: int):
     return _submit_review(item_id, "REQUEST_CHANGES")
-
-
-@app.post("/api/items/<int:item_id>/reply")
-def api_reply(item_id: int):
-    row, payload = _pr_item(item_id)
-    if not row:
-        return "not found", 404
-    body = (request.form.get("body") or "").strip()
-    if not body:
-        return _pr_panel(item_id, row, payload, error="Reply failed — write something first")
-    try:
-        github_pr.reply(payload["repo"], payload["number"], int(request.form["comment_id"]), body)
-    except Exception as e:
-        return _pr_panel(item_id, row, payload, error=f"Reply failed — {e}")
-    return _pr_panel(item_id, row, payload, notice="Reply posted")
 
 
 # --- Dependency bumps -----------------------------------------------------------------------
@@ -639,6 +664,8 @@ def api_deps_approve():
 # --- Claude ------------------------------------------------------------------------------------
 def _agent_target(subject: str, mode: str) -> tuple[str, dict] | None:
     """What a run on this subject needs, rebuilt from Sentinel's own data — the page only names it."""
+    if mode in insight.MODES:
+        return insight.target(subject, mode)
     if subject.startswith("deps:"):
         group = next((g for g in deps.pending_groups() if f"deps:{g['key']}" == subject), None)
         return (group["prs"][0]["url"], deps.context(group)) if group and mode == "precheck" else None
@@ -649,9 +676,6 @@ def _agent_target(subject: str, mode: str) -> tuple[str, dict] | None:
     if mode == "followup":
         pr = next((p for p in followup.load()["prs"] if f"{p['repo']}#{p['number']}" == subject), None)
         return (url, followup.context(pr)) if pr and pr["stage"] == "failed" else None
-    if mode == "quick":  # the diff is all a form pass needs: material, no tool
-        return url, {"material": evidence.material(evidence.safely(
-            evidence.pr_brief, m.group(1), int(m.group(2)), body_chars=6000, diff_lines=800))}
     return (url, {}) if mode in agents.ON_DEMAND else None
 
 
@@ -692,9 +716,10 @@ def api_run_watcher(name: str):
 @app.get("/api/summary")
 def api_summary():
     """Everything the Claude Code mod shows: counts, what needs you, notifications after `since`."""
-    ctx = _now_context()
+    ctx = _inbox()
     since = request.args.get("since", type=int)
     runs = ctx["runs"]
+    attention = ctx["attention_rows"]
 
     def brief(v: dict) -> dict:
         run = next((r for r in runs.get(v["subject"], {}).values() if r["status"] == "done"), None)
@@ -702,15 +727,19 @@ def api_summary():
                 "why": v["p"].get("why", ""), "since": v["first_seen"], "subject": v["subject"],
                 "claude": agents.summary_line(run["output"]) if run else ""}
 
+    def lanes(*names):
+        return sum(1 for v in attention if v["lane"] in names)
+
     notes = db.notifications_after(since if since is not None else db.last_notification_id())
     return jsonify({
         "attention": ctx["attention"],
-        "counts": {s["id"]: len(s["rows"]) for s in ctx["sections"]}
-                  | {"deps": ctx["dep_count"], "grace": len(ctx["grace"]), "radar": len(ctx["radar"]),
-                     "broken": sum(1 for s in ctx["sections"] for v in s["rows"]
-                                   if v["lane"] == "followup" and v["p"].get("kind") in ("failed", "reverted"))},
+        "counts": {"health": lanes("health"), "reviews": lanes("you", "team"), "mine": lanes("mine"),
+                   "followup": lanes("followup"), "incidents": len(ctx["incidents"]), "watch": lanes("watch"), "cycle": lanes("cycle"),
+                   "deps": ctx["dep_count"], "grace": len(ctx["grace"]), "radar": len(ctx["radar"]),
+                   "broken": sum(1 for v in attention if v["lane"] == "followup" and v["p"].get("kind") in ("failed", "reverted"))},
         "landing": ctx["landing"],
-        "items": [brief(v) for s in ctx["sections"] for v in s["rows"]][:25],
+        # alerts after the reviews and PRs: a storm must not push them out of the 25
+        "items": [brief(v) for v in sorted((v for v in attention if v["lane"] in INBOX), key=lambda v: v["lane"] == "watch")][:25],
         "notifications": [{"id": n["id"], "title": n["title"], "body": n["body"], "url": n["url"],
                            "reason": n["reason"], "lane": n["lane"]} for n in notes],
         "seq": db.last_notification_id(),

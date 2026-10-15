@@ -1,0 +1,59 @@
+{# What GitHub says about a PR, shared by a review request and one of your PRs. #}
+{% from "partials/detail_macros.html" import prop %}
+
+{% macro props(pr, v) -%}
+<aside class="d-side">
+    {% call prop('Author') %}{{ pr.author }}{% endcall %}
+    {% call prop('Repository') %}<span class="mono">{{ pr.repo.split('/')[-1] }}#{{ pr.number }}</span>{% endcall %}
+    {% call prop('Changes') %}<span class="mono"><span class="add">+{{ pr.additions }}</span> <span class="del">−{{ pr.deletions }}</span></span> · {{ pr.changed_files }} file{{ 's' if pr.changed_files != 1 }}{% endcall %}
+    {% call prop('Checks') %}
+        {% if pr.checks.failed %}<span class="st bad">{{ pr.checks.failed }} failing</span>{% endif %}
+        {% if pr.checks.pending %}<span class="st warn">{{ pr.checks.pending }} running</span>{% endif %}
+        {% if pr.checks.ok %}<span class="st ok">{{ pr.checks.ok }} passed</span>{% endif %}
+        {% if not (pr.checks.ok or pr.checks.failed or pr.checks.pending) %}<span class="muted">none</span>{% endif %}
+    {% endcall %}
+    {% call prop('Reviews') %}
+        {% for rv in pr.reviews %}<span class="st {{ 'ok' if rv.state == 'approved' else 'bad' }}">{{ rv.user }}</span>{% else %}<span class="muted">none yet</span>{% endfor %}
+    {% endcall %}
+    {% if pr.mergeable_state == 'dirty' %}{% call prop('Merge') %}<span class="st bad">conflicts</span>{% endcall %}{% endif %}
+    {% if pr.draft %}{% call prop('State') %}draft{% endcall %}{% endif %}
+    {% call prop('In Sentinel') %}{{ v.first_seen | age }}{% endcall %}
+</aside>
+{%- endmacro %}
+
+{% macro failing(pr) -%}
+{% if pr.checks.failing %}
+<section class="d-sec">
+    <h3>Failing checks</h3>
+    <ul class="d-checks">{% for c in pr.checks.failing %}<li><svg class="ic bad"><use href="#i-x"/></svg>{% if c.url %}<a href="{{ c.url }}" target="_blank" rel="noopener">{{ c.name }}</a>{% else %}{{ c.name }}{% endif %}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+{%- endmacro %}
+
+{% macro asked(pr) -%}
+{% for rv in pr.reviews if rv.state == 'changes_requested' %}
+<section class="d-sec d-ask">
+    <h3><svg class="ic bad"><use href="#i-chat"/></svg>{{ rv.user }} asked for changes</h3>
+    {% if rv.html %}<div class="md">{{ rv.html | safe }}</div>{% else %}<p class="muted">No message — the comments are on the diff on GitHub.</p>{% endif %}
+</section>
+{% endfor %}
+{%- endmacro %}
+
+{% macro files(pr, v, folded) -%}
+{% if pr.body %}<details class="fold" id="pr-body-{{ v.id }}"><summary>Description</summary><pre class="d-pre">{{ pr.body }}</pre></details>{% endif %}
+{% if folded %}<details class="fold" id="pr-files-{{ v.id }}"><summary>Files changed · {{ pr.changed_files }}</summary>{% endif %}
+{% for f in pr.files %}
+<div class="pr-file" data-path="{{ f.filename }}">
+    <div class="pr-file-head"><span class="filename">{{ f.filename }}</span><span class="mono"><span class="add">+{{ f.additions }}</span> <span class="del">−{{ f.deletions }}</span></span></div>
+    {% if f.lines %}
+    <div class="pr-diff">
+        {%- for l in f.lines -%}
+        <div class="dl l-{{ l.cls }}"{% if l.line %} data-side="{{ l.side }}" data-line="{{ l.line }}"{% endif %}><span class="ln">{{ l.old or '' }}</span><span class="ln">{{ l.new or '' }}</span><span class="dl-text">{{ l.text }}</span></div>
+        {%- endfor -%}
+    </div>
+    {% else %}<div class="pr-nodiff">no diff available ({{ f.status }})</div>{% endif %}
+</div>
+{% endfor %}
+{% if pr.files_truncated %}<div class="pr-nodiff">… more files on <a href="{{ v.url }}/files" target="_blank" rel="noopener">GitHub</a></div>{% endif %}
+{% if folded %}</details>{% endif %}
+{%- endmacro %}

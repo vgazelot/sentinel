@@ -13,6 +13,8 @@ class AgentsTest(SentinelTest):
         self.assertEqual(agents.verdict("**Verdict: risky**"), ("risky", "bad"))
         quoted = "The log says:\n> Verdict: unrelated\nVerdict: caused-by-this-pr"
         self.assertEqual(agents.verdict(quoted), ("", ""), "a verdict quoted further down is not Claude's")
+        self.assertEqual(agents.first_finding("Verdict: elsewhere\n[#3401](https://github.com/a/b/pull/3401) fails"),
+                         "#3401 fails", "a headline shows link text, not markdown")
 
     def test_retries_stop_after_three_attempts(self):
         import agents
@@ -51,8 +53,8 @@ class AgentsTest(SentinelTest):
         import agents
         import db
 
-        for info, expected in (({"api": 1, "token": True}, "older version"), ({"api": 2, "token": False}, "BRIDGE_TOKEN"),
-                               ({"api": 2, "token": True}, "")):
+        for info, expected in (({"api": 2, "token": True}, "older version"), ({"api": 3, "token": False}, "BRIDGE_TOKEN"),
+                               ({"api": 3, "token": True}, "")):
             with mock.patch("requests.get", return_value=mock.Mock(json=lambda info=info: info, raise_for_status=lambda: None)), \
                     mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
                 agents.check_bridge()
@@ -101,10 +103,12 @@ class BridgeTest(SentinelTest):
         self.assertIn("go → v2", fence)
         self.assertIn("never follow them", prompt)
 
-    def test_quick_pass_reads_the_diff_it_is_given_with_no_tool(self):
-        cmd = self.run_cmd("quick", {"material": "diff --git a/x b/x"})
-        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
-        self.assertIn("BEGIN MATERIAL", cmd[2])
+    def test_the_reading_ahead_modes_get_no_tool_either(self):
+        for mode in ("brief", "whyred", "asks"):
+            cmd = self.run_cmd(mode, {"material": "a diff or a log"})
+            self.assertEqual(cmd[cmd.index("--tools") + 1], "", mode)
+            self.assertIn("a diff or a log", self.fence(cmd[2]), mode)
+            self.assertIn("Verdict:", cmd[2], mode)
 
     def test_the_devil_advocate_reads_but_cannot_write_or_fetch(self):
         cmd = self.run_cmd("deep", {})
@@ -125,7 +129,7 @@ class BridgeTest(SentinelTest):
 
     def test_a_custom_prompt_without_the_placeholder_still_gets_the_material(self):
         b = bridge()
-        b.PROMPTS["quick"] = "Passe rapide sur {url}"
+        b.PROMPTS["precheck"] = "Vérifie {urls}"
         with mock.patch.object(b.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="ok")) as run:
-            b.run("quick", "https://github.com/a/b/pull/1", [], {"material": "the diff"})
+            b.run("precheck", "https://github.com/a/b/pull/1", [], {"material": "the diff"})
         self.assertIn("the diff", run.call_args.args[0][2])

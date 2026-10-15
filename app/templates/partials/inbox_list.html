@@ -1,0 +1,89 @@
+{% import "partials/list_macros.html" as l with context %}
+<span id="attention-count" hidden>{{ attention }}</span>
+<span id="status-src" hidden data-ok="{{ 1 if status.ok else 0 }}" data-text="{{ status.text }}" data-ts="{{ status.since or '' }}"></span>
+<header class="list-head">
+    <h1>Inbox</h1>
+    <nav class="seg">
+        <a href="/?tab=priority" class="{{ 'on' if tab == 'priority' }}">Priority{% if attention %} <b>{{ attention }}</b>{% endif %}</a>
+        <a href="/?tab=later" class="{{ 'on' if tab == 'later' }}">Later{% if counts.later %} <b>{{ counts.later }}</b>{% endif %}</a>
+        <a href="/?tab=done" class="{{ 'on' if tab == 'done' }}">Done</a>
+    </nav>
+</header>
+<div class="scroll" id="rows">
+{% if tab == 'priority' %}
+    {% if watch %}
+    <div class="grp">Monitoring <span>{{ watch | length }}</span></div>
+    {% for v in watch %}{{ l.item(v) }}{% endfor %}
+    {% endif %}
+    {% if for_you %}
+    <div class="grp">For you <span>{{ for_you | length }}</span></div>
+    {% for v in for_you %}{{ l.item(v, tag=l.claude_tag((runs.get(v.subject) or {}).get('brief'))) }}{% endfor %}
+    {% endif %}
+    {% if mine %}
+    <div class="grp">Your pull requests <span>{{ mine | length }}{% if mine_prs > mine | length %} · {{ mine_prs }} PRs{% endif %}</span></div>
+    {% for g in mine %}{% set one = g.rows | length == 1 %}
+    {% call l.row('mine-' ~ g.key, (g.rows[0].headline | subject).text if one else g.label ~ ' · ' ~ g.rows | length ~ ' PRs', g.tone,
+                  l.MINE_ICON.get(g.action, 'i-pr'), '/partials/group?ids=' ~ (g.rows | map(attribute='id') | join(',')),
+                  g.rows[0].url, (g.rows | map(attribute='p') | map(attribute='updated_at') | max) | age,
+                  l.claude_tag((runs.get('why:' ~ g.family) or {}).get('whyred')) if g.action == 'ci' else '') %}
+    {% if one %}<span class="mono">{{ g.rows[0].ref }}</span> · {{ g.rows[0].p.why }}{% else %}<span class="mono">{{ g.rows | map(attribute='ref') | join(' · ') }}</span>{% endif %}
+    {% endcall %}
+    {% endfor %}
+    {% endif %}
+    {% if not watch and not for_you and not mine %}
+    <div class="zero">
+        <svg class="zero-mark" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><path d="M15 24.5l6 6 12-13"/></svg>
+        <p class="zero-title">Nothing waits on you</p>
+        <p>{% if grace %}next team request yours in {{ grace[0].first_seen | minutes_left }} min · {% endif %}{% if counts.later %}{{ counts.later }} in <a href="/?tab=later">Later</a> · {% endif %}{{ landing.landed }} landed after your approval</p>
+    </div>
+    {% endif %}
+
+{% elif tab == 'later' %}
+    {% if snoozed %}
+    <div class="grp">Snoozed <span>{{ snoozed | length }}</span></div>
+    {% for v in snoozed %}{{ l.item(v, 'back ' ~ (v.snooze_until | localdt)) }}{% endfor %}
+    {% endif %}
+    {% if grace %}
+    <div class="grp">Team requests <span>{{ grace | length }}</span></div>
+    {% for v in grace %}{{ l.item(v, 'a teammate may take it · yours in ' ~ (v.first_seen | minutes_left) ~ ' min', l.claude_tag((runs.get(v.subject) or {}).get('brief'))) }}{% endfor %}
+    {% endif %}
+    {% if dep_groups %}
+    <div class="grp">Dependency bumps <span>{{ dep_groups | length }}</span></div>
+    {% for g in dep_groups %}{% set red = g.prs | selectattr('ci', 'equalto', 'failure') | list %}
+    {% call l.row('dep-' ~ g.key, g.name ~ ' → ' ~ g.to, 'bad' if red else ('warn' if g.type == 'major' else 'neutral'), 'i-box',
+                  '/partials/dep?key=' ~ (g.key | urlencode)) %}
+    {{ g.prs | length }} repo{{ 's' if g.prs | length > 1 }}{% if g.type %} · {{ g.type }}{% endif %}{% if red %} · {{ red | length }} failing{% endif %}{% if g.approvable %} · {{ g.approvable | length }} ready{% endif %}
+    {% endcall %}
+    {% endfor %}
+    {% endif %}
+    {% if incidents %}
+    <div class="grp">Status pages <span>{{ incidents | length }}</span></div>
+    {% for v in incidents %}{{ l.item(v, ('maintenance' if v.p.planned else v.p.status) ~ (' · ' ~ v.p.components[:3] | join(', ') if v.p.components else '')) }}{% endfor %}
+    {% endif %}
+    {% if radar %}
+    <div class="grp">Reminders <span>{{ radar | length }}</span></div>
+    {% for v in radar %}{{ l.item(v) }}{% endfor %}
+    {% endif %}
+    {% if landing_live or landing.landed %}
+    <div class="grp">After your approval <span>{{ landing.landed }} landed{% if landing['not yours'] %} · {{ landing['not yours'] }} failed, not yours{% endif %}</span></div>
+    {% for p in landing_live %}
+    {% call l.row('fu-' ~ p.repo ~ '#' ~ p.number, (p.title | subject).text, 'warn' if p.stage == 'checking' else 'neutral', 'i-pr', '', p.url) %}
+    <span class="mono">{{ p.repo.split('/')[-1] }}#{{ p.number }}</span> · {% if p.stage == 'checking' %}merged {{ p.merged_at | age }} ago, checks running{% else %}{{ p.blocker }}{% if p.automerge %} · automerge{% endif %}{% endif %}
+    {% endcall %}
+    {% endfor %}
+    {% endif %}
+    {% if others %}
+    <div class="grp">Your PRs waiting on others <span>{{ others | length }}</span></div>
+    {% for p in others %}
+    {% call l.row('pr-' ~ p.repo ~ '#' ~ p.number, (p.title | subject).text, 'neutral', 'i-pr', '', p.url, p.updated_at | age) %}
+    <span class="mono">{{ p.repo.split('/')[-1] }}#{{ p.number }}</span> · {{ 'draft' if p.action == 'draft' else ('CI running' if p.action == 'running' else ('asked ' ~ p.reviewers | join(', ') if p.reviewers else 'waiting for a review')) }}
+    {% endcall %}
+    {% endfor %}
+    {% endif %}
+    {% if not (counts.later or others or landing_live or landing.landed) %}<div class="zero"><p class="zero-title">Nothing waiting</p></div>{% endif %}
+
+{% else %}
+    {% for v in acked %}{{ l.item(v) }}{% else %}<div class="zero"><p class="zero-title">Nothing done yet</p></div>{% endfor %}
+{% endif %}
+</div>
+<footer class="hints"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>E</kbd> done</span><span><kbd>L</kbd> later</span><span><kbd>⏎</kbd> open</span></footer>

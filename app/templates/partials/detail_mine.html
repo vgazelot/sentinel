@@ -1,0 +1,25 @@
+{% from "partials/agent_macro.html" import agent_block with context %}
+{% from "partials/detail_macros.html" import top, heading, triage %}
+{% import "partials/detail_pr.html" as pr_ %}
+{% set p = v.p %}
+{{ top(v.ref, 'your pull request', v.url) }}
+<div class="d-body d-grid"{% if pr %} data-blob="{{ v.url.split('/pull/')[0] }}/blob/{{ pr.head_sha }}"{% endif %}>
+    <div class="d-main">
+        {{ heading(v.headline) }}
+        <p class="d-why">{{ p.why }}</p>
+        <div class="bar">
+            <a class="btn primary" href="{{ v.url }}" target="_blank" rel="noopener">{{ 'Merge on GitHub' if p.action == 'merge' else 'Open on GitHub' }}</a>
+            <span class="spacer"></span>
+            {{ triage(v) }}
+        </div>
+        {% if claude_enabled and p.action == 'ci' %}{{ agent_block(why, ['whyred'], runs.get(why) or {}) }}
+        {% elif claude_enabled and p.action in ('changes', 'threads') %}{{ agent_block(asks, ['asks'], runs.get(asks) or {}) }}{% endif %}
+        {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
+        {% if pr %}
+        {{ pr_.failing(pr) }}
+        {{ pr_.asked(pr) }}
+        {{ pr_.files(pr, v, True) }}
+        {% endif %}
+    </div>
+    {% if pr %}{{ pr_.props(pr, v) }}{% endif %}
+</div>

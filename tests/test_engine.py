@@ -143,10 +143,15 @@ class TriageTest(SentinelTest):
         db.set_watcher_state("github_reviews", "error_since", db.ago(31))
         engine.check_health()
         self.assertEqual(len(self.pushes), 1)
+        db.record_run("my_prs", "boom")
+        db.set_watcher_state("my_prs", "error_since", db.ago(40))
+        engine.check_health()
+        self.assertEqual(len(self.pushes), 1, "a second source down is the same outage: no second push")
         db.record_run("github_reviews")
+        db.record_run("my_prs")
         engine.check_health()
         engine.check_health()
-        self.assertEqual(state("github_reviews")["state"], "resolved")
+        self.assertEqual(state("sources")["state"], "resolved")
 
     def test_snooze_wakes_loud_items_only(self):
         import db

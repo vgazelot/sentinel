@@ -12,6 +12,7 @@ import re
 import requests
 
 import config
+import github
 
 log = logging.getLogger("sentinel.evidence")
 API = "https://api.github.com"
@@ -134,6 +135,32 @@ def failing_checks(repo: str, sha: str) -> list[tuple[str, str]]:
     runs = _get(f"/repos/{repo}/commits/{sha}/check-runs", per_page=100).get("check_runs", [])
     return [(r["name"], r.get("details_url") or r.get("html_url") or "") for r in runs
             if r.get("conclusion") in ("failure", "timed_out")]
+
+
+ASKS_QUERY = """
+query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $n) {
+  latestReviews(first: 10) { nodes { state body author { login } } }
+  reviewThreads(first: 50) { nodes { isResolved isOutdated path line
+    comments(first: 8) { nodes { author { login } body } } } }
+} } }
+"""
+
+
+def review_asks(repo: str, number: int) -> str:
+    """What reviewers wrote on a PR: review bodies and the open, current threads (file:line first)."""
+    owner, name = repo.split("/", 1)
+    try:
+        pr = github.graphql(ASKS_QUERY, {"owner": owner, "name": name, "n": number})["repository"]["pullRequest"]
+    except Exception as e:  # noqa: BLE001 — GraphQL errors are not RequestExceptions
+        return f"(review comments unavailable: {e})"
+    out = [f"Review by {r['author']['login']} ({r['state'].lower().replace('_', ' ')}): {r['body'][:1500]}"
+           for r in pr["latestReviews"]["nodes"] if r.get("body") and r.get("author")]
+    for t in pr["reviewThreads"]["nodes"]:
+        if t["isResolved"] or t["isOutdated"]:
+            continue
+        out.append(f"Open thread on {t['path']}:{t['line'] or '?'}")
+        out += [f"  {c['author']['login'] if c.get('author') else '?'}: {c['body'][:800]}" for c in t["comments"]["nodes"]]
+    return "\n".join(out) or "(no review message and no open thread)"
 
 
 def _job_key(name: str) -> str:

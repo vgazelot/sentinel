@@ -32,6 +32,9 @@ AGENT_DEFAULTS = {
     "max_runs_per_day": 30,     # automatic runs only (prechecks, follow-ups); on-demand ones are never capped
     "precheck": True,           # Claude reads each dependency bump before you approve it
     "followup": True,           # Claude investigates when a PR you approved breaks something after merge
+    "brief": True,              # Claude reads each review asked of you: what it changes, how carefully to read it
+    "whyred": True,             # Claude reads the failed job logs when one of your PRs goes red
+    "asks": True,               # Claude turns the reviewers' comments on your PR into a to-do
 }
 
 

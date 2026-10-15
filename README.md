@@ -6,7 +6,7 @@
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![Docker](https://img.shields.io/badge/runs%20in-Docker-2496ED?logo=docker&logoColor=white)
 
-![Sentinel — the Now page](docs/screenshot.png)
+![Sentinel — the inbox](docs/screenshot.png)
 
 ## Why
 
@@ -15,13 +15,14 @@ A review inbox that pushes every request is mostly noise: on a team, most review
 ## What it does
 
 - **Triage, not a firehose.** Each signal gets a lane and an urgency. A review asked of you by name pushes right away; one asked of your team pushes only if nobody picked it up within a grace period, and disappears once someone approved; dependency bumps never push. More than three at once become a single notification.
-- **Reviews.** Inline panel: numbered diff, CI checks, existing threads with reply, GitHub-style **line comments** (click a line, shift-click a range) sent as one review with **Approve**, **Comment** or **Request changes**.
+- **One inbox, one item at a time.** A list on the left — *Priority* (what waits on you), *Later* (what may wait), *Done* — and the selected item on the right with its actions. `↑` `↓` to move, `E` done, `L` later (back tomorrow 9:00), `⏎` open on GitHub; after an action the next item is selected.
+- **Reviews.** The PR on the right: numbered diff, CI checks, reviews, and **Approve**, **Comment** or **Request changes** with a message — line comments and threads stay on GitHub.
 - **Dependency bumps, one decision per bump.** Renovate and Dependabot PRs are grouped by `package@version` across repositories, sized from the update table (major / minor / patch), and **Approve the green ones** approves, in one click, the PRs of the bump you were shown — green, and still on the commit whose CI was green. With Claude enabled, each bump is read before you approve it: release notes, a deliberate version pin quietly removed, a failing plan that the bump explains.
 - **Your pull requests, by what they wait for.** Conflicts, changes requested, red CI (grouped by failing job: ten PRs red on the same CI job are one problem), approved and green, open threads, nobody asked to review, no movement for days. A PR that starts waiting on you pushes once.
 - **Follow-up after you approve.** Every PR you approved (bots by default) is followed until it has *landed*: merged, and every check that ran on the merge commit green — `terraform apply`, deploy, release. A dismissed approval, a PR stuck for days, a post-merge failure or a revert become items. A failing job that already failed in the previous run of its workflow is told apart (*not this PR's doing*), and with Claude enabled a fresh failure is investigated — *caused by this PR*, *unrelated*, or *unclear* — with the root cause from the logs and what to do; one Claude traced elsewhere stops asking for you.
-- **Status pages.** Any [Atlassian Statuspage](https://www.atlassian.com/software/statuspage) (Scaleway, OVHcloud, GitHub, Cloudflare…) with component and keyword filters. Planned maintenance is listed, never pushed; a noisy page can be set to `notify: quiet`.
+- **Status pages.** Any [Atlassian Statuspage](https://www.atlassian.com/software/statuspage) (Scaleway, OVHcloud, GitHub, Cloudflare…) with component and keyword filters. Incidents and maintenance are listed under *Later*, never pushed.
 - **Watch** (optional). The Zabbix problems still open and the Grafana dashboards you keep open, read back every few minutes: a counter that stops, a status that changes, a curve leaving its usual band over the last 30 minutes. A stop or a status change pushes; everything else waits on the Watch page.
-- **Health.** A source failing for half an hour (expired token, API change) becomes an item instead of a silent gap.
+- **Health.** A light in the sidebar; sources failing for half an hour (expired token, network down) give one push, however many of them fail.
 - **Cycle objectives** (optional). Your big rocks from a [Slite](https://slite.com) note joined with their [Shortcut](https://shortcut.com) epics, and a push when one goes quiet for too long.
 
 Everything runs locally in one Docker container with a SQLite file — no account, no cloud, no telemetry. Notifications are native Web Push through your browser; an optional [Claude Code](https://claude.com/claude-code) mod puts the same inbox in your terminal's status line.
@@ -52,18 +53,19 @@ Open **http://localhost:8300**, then **Settings → Subscribe this browser** (us
 
 ## When Sentinel interrupts you
 
-| Signal | Lane | Pushed |
+| Signal | Shown in | Pushed |
 |---|---|---|
-| Review asked of you by name | Reviews for you | right away |
-| Review asked of a team you belong to | Team requests → Reviews for you | only if still unclaimed after `team_grace_minutes`; gone once somebody approved |
-| Dependency bump (bot PR) | Dependency bumps | never — grouped by bump |
-| Your PR starts waiting on you | Your pull requests | once per transition (conflicts, changes requested, red CI, approved and green, open threads) |
-| A PR you approved: approval dismissed, stuck, broken after merge, reverted | After you approved | once |
-| Provider incident on your components | Incidents | right away (`notify: quiet` and maintenance: never) |
+| Review asked of you by name | For you | right away |
+| Review asked of a team you belong to | Later → For you | only if still unclaimed after `team_grace_minutes`; gone once somebody approved |
+| Dependency bump (bot PR) | Later | never — grouped by bump |
+| Your PR starts waiting on you | Your pull requests | once per transition (conflicts, changes requested, red CI, open threads); approved and green: never |
+| A PR you approved: approval dismissed, stuck, broken after merge, reverted | For you | once |
+| Provider incident on your components | Later | never |
 | Zabbix problem at `push_severity` or above; a dashboard counter that stops or a status that changes (two reads in a row) | Monitoring | right away |
-| A source failing | Sentinel needs a hand | after `health_minutes` |
+| Sentinel cannot reach a source | the sidebar light | once, after `health_minutes`, however many sources |
+| A big rock stalls (Cycle) | Cycle tab | once |
 
-Every item can be marked **done** (silent until it changes), **hidden for good**, or **snoozed** (1 h, 4 h, tomorrow 9:00) — one by one or a whole group at once. An item that leaves its source (PR merged, incident resolved) resolves itself. The first pass of a new source records what is already there without pushing it.
+Every item can be marked **Done** (out of the inbox until it changes) or sent to **Later** (back tomorrow at 9:00). An item that leaves its source (PR merged, incident resolved) resolves itself. The first pass of a new source records what is already there without pushing it.
 
 ## Configuration
 
@@ -118,19 +120,21 @@ Environment variables (`.env`):
 
 ## Claude (optional)
 
-Claude Code runs on the **host** — that is where your skills, repositories and `gh` login live — so `contrib/claude-bridge/` is a stdlib-only HTTP server the container calls on `127.0.0.1:8301`. It runs `claude -p` in one of four modes; the bridge owns prompts, models and tools, the app only sends PR URLs and a little context.
+Claude Code runs on the **host** — that is where your skills, repositories and `gh` login live — so `contrib/claude-bridge/` is a stdlib-only HTTP server the container calls on `127.0.0.1:8301`. It runs `claude -p` in one of six modes; the bridge owns prompts, models and tools, the app only sends PR URLs and a little context.
 
 | Mode | When | What |
 |---|---|---|
-| `quick` | on demand, review panel | typos, naming, leftovers, PR text vs change, from the diff Sentinel sends (`sonnet`) |
-| `deep` | on demand, review panel of a PR written by a person | devil's advocate review, reading the repositories (subagents, default model) |
+| `deep` | on demand, from a review of a PR written by a person | devil's advocate review, reading the repositories (subagents, default model) |
 | `precheck` | automatic, each pending dependency bump | release notes, removed pins, failing checks the bump explains → `safe` / `check` / `risky` (`sonnet`) |
+| `brief` | automatic, each review asked of you (once per commit) | what it changes and how carefully to read it → `trivial` / `routine` / `careful`, shown on the row (`sonnet`) |
+| `whyred` | automatic, your PRs red on the same CI job (once per set of heads) | the failed job logs → `fix-in-pr` / `flaky` / `elsewhere` / `unclear`, the key log line and what to do |
+| `asks` | automatic, your PRs with changes requested or open threads | the reviewers' comments as a `file:line` to-do (`sonnet`) |
 | `followup` | automatic, a fresh post-merge failure of a PR you approved | the failed run's logs, the history of the same workflow → `caused-by-this-pr` / `unrelated` / `unclear` and what to do |
 
 A follow-up investigation answers with a push. A failure Claude traced to something else stops asking for you — unless a fact Claude could not argue with says otherwise: the failing job passed right before the merge, its log could not be read, or it failed after the investigation (which then runs again). Automatic runs are capped per day (`agents.max_runs_per_day`) and run at most `agents.concurrency` at a time.
 
 **What Claude can touch.**
-- **`quick`, `precheck` and `followup` get no tool at all.** They read third-party text (a diff, release notes, CI logs), so Sentinel fetches the material itself — the PR and its diff, the failed job logs, the recent runs of the failing workflow — and Claude only reads it, fenced as untrusted data. A text written to steer the model can bend a verdict; it cannot read a file or reach a host.
+- **Every automatic mode (`precheck`, `followup`, `brief`, `whyred`, `asks`) gets no tool at all.** They read third-party text (a diff, release notes, CI logs), so Sentinel fetches the material itself — the PR and its diff, the failed job logs, the recent runs of the failing workflow — and Claude only reads it, fenced as untrusted data. A text written to steer the model can bend a verdict; it cannot read a file or reach a host.
 - **`deep`** explores the repositories with named read-only commands (`gh pr view/diff/checks`, `gh run view`, `git log/show`, `git fetch origin`, `grep`…): no `gh api` (with `-f` it is a POST, and `-X` can follow any prefix, so no rule tells a read from a merge), no WebFetch, and its Read tool refuses `.env`, `.mcp.json`, keys and `~/.ssh`, `~/.aws`, `~/.config`. It is offered only on PRs written by people, never on a bot's. What remains possible to a PR crafted against it: read a file through a shell and leak it in a `gh … -R <host>` lookup — a review you start yourself, on a colleague's PR.
 - Every run loads your *user* settings only (`--setting-sources user`): the allow rules of the project the bridge starts in would otherwise add to the bridge's lists (an allowed `tee` there wrote a file in a run meant to be read-only). No MCP servers.
 - The bridge answers local hosts only (no DNS rebinding) and runs nothing without `BRIDGE_TOKEN` — set on it, and the same value as `CLAUDE_BRIDGE_TOKEN` in Sentinel's `.env` — so only Sentinel can make it run Claude, not a page your browser opens.
@@ -152,7 +156,7 @@ Bridge environment: `BRIDGE_TOKEN`, `BRIDGE_LANG` (answer language, default Engl
 
 ## Claude Code status line (optional)
 
-`contrib/claude-code-mod/` is a [Claude Code](https://claude.com/claude-code) mod that reads `GET /api/summary`: the status line shows what needs you (`● 3 for you · 2 bumps · landing 1 failed`), new notifications appear as toasts, and `/sentinel` opens the inbox in a pane — open, done, snooze, and a quick pass or devil's advocate review run right in your session. It only reads Sentinel's API: one source of truth, no second poller.
+`contrib/claude-code-mod/` is a [Claude Code](https://claude.com/claude-code) mod that reads `GET /api/summary`: the status line shows what needs you (`● 3 for you · 2 bumps · landing 1 failed`), new notifications appear as toasts, and `/sentinel` opens the inbox in a pane — open, done, later, and a devil's advocate review run right in your session. It only reads Sentinel's API: one source of truth, no second poller.
 
 ## Cycle tab (optional)
 
@@ -182,7 +186,7 @@ docker run --rm -v "$PWD/app:/app" -v "$PWD/tests:/tests" -v "$PWD/contrib:/cont
 
 ## Architecture
 
-Flask 3 + APScheduler (in-process, hence the single gunicorn worker) + SQLite (WAL) + HTMX, no build step. A watcher is one class whose `fetch()` returns the current state as items with a lane and an urgency; `engine.py` diffs it against the stored state and owns the notification policy (urgency, grace period, bursts, ack/snooze). My PRs, Follow-up and Cycle compute their own state and feed the same engine. See [CLAUDE.md](CLAUDE.md) for the full tour.
+Flask 3 + APScheduler (in-process, hence the single gunicorn worker) + SQLite (WAL) + HTMX, no build step. A watcher is one class whose `fetch()` returns the current state as items with a lane and an urgency; `engine.py` diffs it against the stored state and owns the notification policy (urgency, grace period, bursts, ack/snooze). Your PRs, the follow-up of what you approved and Cycle compute their own state and feed the same engine. See [CLAUDE.md](CLAUDE.md) for the full tour.
 
 ## License
 

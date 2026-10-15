@@ -1,0 +1,30 @@
+{% from "partials/agent_macro.html" import agent_block with context %}
+{% from "partials/detail_macros.html" import top, heading, triage %}
+{% import "partials/detail_pr.html" as pr_ %}
+{{ top(v.ref, 'asked you by name' if v.lane == 'you' else ('team review' if v.attention else 'team review · yours in ' ~ (v.first_seen | minutes_left) ~ ' min'), v.url) }}
+<div class="d-body d-grid"{% if pr %} data-blob="{{ v.url.split('/pull/')[0] }}/blob/{{ pr.head_sha }}"{% endif %}>
+    <div class="d-main">
+        {{ heading(v.headline) }}
+        {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
+        {% if pr %}
+        <form class="d-review" onsubmit="return false">
+            <input type="hidden" name="head_sha" value="{{ pr.head_sha }}">
+            <textarea name="body" class="field" rows="2" placeholder="Message — optional to approve, needed to comment or request changes"></textarea>
+            <div class="bar">
+                <button type="button" class="btn primary" hx-post="/api/items/{{ v.id }}/approve" hx-include="closest form" hx-disabled-elt="this">Approve</button>
+                <button type="button" class="btn" hx-post="/api/items/{{ v.id }}/comment" hx-include="closest form" hx-disabled-elt="this">Comment</button>
+                <button type="button" class="btn danger" hx-post="/api/items/{{ v.id }}/request-changes" hx-include="closest form" hx-disabled-elt="this">Request changes</button>
+                <span class="spacer"></span>
+                {{ triage(v) }}
+            </div>
+        </form>
+        {% if claude_enabled and modes %}{{ agent_block(subject, modes, runs) }}{% endif %}
+        {{ pr_.failing(pr) }}
+        {{ pr_.asked(pr) }}
+        {{ pr_.files(pr, v, False) }}
+        {% else %}
+        <div class="bar">{{ triage(v) }}</div>
+        {% endif %}
+    </div>
+    {% if pr %}{{ pr_.props(pr, v) }}{% endif %}
+</div>

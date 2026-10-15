@@ -15,8 +15,6 @@ class StatuspageWatcher(Watcher):
         self.components = [c.lower() for c in instance.get("components", []) or []]
         self.keywords = [k.lower() for k in instance.get("keywords", []) or []]
         self.include_maintenances = instance.get("include_maintenances", False)
-        # `notify: quiet` lists the incidents without ever pushing them (noisy pages, informative only)
-        self.quiet = instance.get("notify", "now") == "quiet"
 
     def fetch(self) -> list[WatchedItem]:
         r = requests.get(self.url, timeout=10)
@@ -55,8 +53,8 @@ class StatuspageWatcher(Watcher):
                         "scheduled_until": inc.get("scheduled_until"),
                     },
                     lane="incident",
-                    # a planned maintenance is announced, not happening to you: listed, never pushed
-                    urgency="quiet" if (self.quiet or planned) else "now",
+                    # a provider incident is context, not a decision of yours: listed, never pushed
+                    urgency="quiet",
                 )
             )
         return items

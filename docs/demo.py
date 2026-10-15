@@ -90,9 +90,14 @@ for subject, mode, output in [
      "`network/eip.tf:12` fails the apply (run 1, step Apply)\n- still failing on the next run\n- revert #305, or pin `< 6.0` in network"),
     ("deps:karpenter@v1.15.0", "precheck", "Verdict: safe\n- release notes: no breaking change for the NodePool v1 API "
      "used in infra, cluster and tools\n- CI green on the 3 PRs"),
+    ("acme/api#412", "brief", "Verdict: routine\n- cursor pagination replaces the offset query of the audit log\n"
+     "- look first at `api/audit/handlers.go:96`: the cursor is decoded before the org check"),
+    ("why:Molecule", "whyred", "Verdict: elsewhere\n- the three PRs fail the same way, unrelated to their diff: the scenario "
+     "destroy runs before create and the CI account lacks `ec2:DescribeVpcs`\n- re-run once the CI role is fixed; nothing to change in the PRs"),
+    ("asks:acme/infra#301", "asks", "Verdict: todo\n- `dns/zones.tf:14` — keep the old record until the TTL expires (carol)\n"
+     "- `dns/zones.tf:31` — why 300 s? (answer)"),
     ("deps:hashicorp/google@v7.0.0", "precheck", "Verdict: risky\n- v7 removes `google_container_cluster.enable_binary_authorization`, "
      "still set in `infra/gke/main.tf:41` — the plan fails on it"),
-    ("acme/api#412", "quick", "Verdict: clean"),
 ]:
     db.queue_run(subject, mode, "https://github.com/acme/x/pull/1", {})
     db.finish_run(db.get_run(subject, mode)["id"], output=output)

@@ -1,0 +1,41 @@
+{% from "partials/agent_macro.html" import agent_block with context %}
+{% from "partials/detail_macros.html" import top, prop, triage %}
+{% set green = g.approvable %}
+{{ top('', 'dependency bump', g.prs[0].url) }}
+<div class="d-body d-grid">
+    <div class="d-main">
+    <h2 class="d-title">{{ g.name }}{% if g.kind %} <span class="muted">{{ g.kind }}</span>{% endif %}{% if g.to %} <span class="mono">→ {{ g.to }}</span>{% endif %}</h2>
+    <div class="d-sub">
+        <span>{{ g.prs | length }} repo{{ 's' if g.prs | length > 1 }}</span>
+        {% if g.type %}<span class="pill {{ 'warn' if g.type == 'major' else '' }}">{{ g.type }}</span>{% endif %}
+        {% if g.security %}<span class="pill bad">security</span>{% endif %}
+        {% if g.prs | selectattr('direct') | list %}<span class="pill hot">asked you</span>{% endif %}
+        {% if g.prs | selectattr('automerge') | list %}<span>merges itself once approved</span>{% endif %}
+    </div>
+    <div class="bar">
+        {% if green %}
+        <button type="button" class="btn primary" hx-post="/api/deps/approve"
+                hx-vals='{"key": {{ g.key | tojson }}, "ids": "{% for p in green %}{{ p.item_id }}:{{ p.head_sha }}{{ ',' if not loop.last }}{% endfor %}"}'
+                hx-confirm="Approve {{ green | length }} green PR{{ 's' if green | length > 1 }} of {{ g.name }} → {{ g.to }} on GitHub?" hx-disabled-elt="this">Approve {{ green | length }} green</button>
+        {% endif %}
+        <span class="spacer"></span>
+        {{ triage(ids=g.prs | map(attribute='item_id') | join(',')) }}
+    </div>
+    {% if claude_enabled %}{{ agent_block(subject, ['precheck'], runs.get(subject) or {}) }}{% endif %}
+    <div class="d-list">
+        {% for p in g.prs %}
+        <a class="d-pr" href="{{ p.url }}" target="_blank" rel="noopener">
+            <span class="t"><svg class="ic {{ {'success': 'ok', 'failure': 'bad', 'pending': 'warn'}.get(p.ci, 'neutral') }}"><use href="#i-dot"/></svg>{{ p.repo.split('/')[-1] }}#{{ p.number }}</span>
+            <span class="mono">{{ p.dep.get('from') or '' }}{% if p.dep.get('from') %} → {% endif %}{{ p.dep.get('change_to') or p.dep.get('to') }}</span>
+            <span class="muted">{{ {'success': 'CI green', 'failure': 'CI failing', 'pending': 'CI running'}.get(p.ci, '') }}{% if p.mergeable == 'CONFLICTING' %} · conflicts{% endif %}</span>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+    <aside class="d-side">
+        {% call prop('Bump') %}{{ g.type or '—' }}{% endcall %}
+        {% call prop('Repositories') %}{{ g.prs | length }}{% endcall %}
+        {% call prop('Ready') %}<span class="st {{ 'ok' if green else '' }}">{{ green | length }} green</span>{% endcall %}
+        {% call prop('Automerge') %}{{ 'yes' if g.prs | selectattr('automerge') | list else 'no' }}{% endcall %}
+    </aside>
+</div>
