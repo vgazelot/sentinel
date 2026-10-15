@@ -12,6 +12,7 @@
         <h1>Watch</h1>
         <p class="muted">
             {% if to_look %}{{ to_look }} to look at{% else %}Nothing to look at{% endif %}
+            {% if in_inbox %} · {{ in_inbox }} in the Inbox{% endif %}
             {% if zabbix %} · Zabbix {{ zabbix.read }}{% endif %}
             {% if grafana %} · dashboards {{ grafana.read }}{% endif %}
         </p>
@@ -32,7 +33,7 @@
         <li class="compact watch-problem">
             <span class="dot {{ 'bad' if r.level >= 4 else 'warn' }} small"></span>
             <div><a class="compact-title" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }}</a>
-                <div class="compact-meta">{{ r.host }} · {{ r.severity }} · {{ r.age }}</div></div>
+                <div class="compact-meta">{{ r.host }} · {{ r.severity }} · {{ r.age }}{% if r.item %} · in the Inbox{% endif %}</div></div>
         </li>
         {% endfor %}
     </ul>
@@ -78,7 +79,7 @@
             <li class="compact watch-change">
                 {{ spark(a.spark) }}
                 <span class="compact-title">{{ a.series }}</span>
-                <span class="compact-meta">{{ a.panel }} · {{ a.text }}{% if not a.confirmed %} · first read{% endif %}</span>
+                <span class="compact-meta">{{ a.panel }} · {{ a.text }}{% if a.item %} · in the Inbox{% elif not a.confirmed %} · first read{% endif %}</span>
             </li>
             {% endfor %}
             {% if c.anomalies | length > 8 %}

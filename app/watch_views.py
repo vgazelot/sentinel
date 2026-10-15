@@ -43,16 +43,18 @@ def context() -> dict:
             "web_url": z["web_url"],
         }
     if g := snap["grafana"]:
-        cards = g["dashboards"]
+        cards = [g[k] for k in sorted(g)]
         grafana = {
             "cards": cards,
-            "changes": sum(len(c["anomalies"]) for c in cards),
             "series": sum(c["series"] for c in cards),
-            "hours": g["window_minutes"] // 60,
-            "read": _read(now, g["read_at"]),
+            "hours": cards[0]["window_minutes"] // 60,
+            # the oldest read: every dashboard was read at least this recently
+            "read": _read(now, min(c["read_at"] for c in cards)),
         }
-    to_look = (len(zabbix["look"]) if zabbix else 0) + (grafana["changes"] if grafana else 0)
-    return {"zabbix": zabbix, "grafana": grafana, "to_look": to_look}
+    # the Watch badge counts what only this page shows: what pushes is already in the inbox
+    entries = (zabbix["look"] if zabbix else []) + [a for c in (grafana["cards"] if grafana else []) for a in c["anomalies"]]
+    to_look = sum(1 for e in entries if not e.get("item"))
+    return {"zabbix": zabbix, "grafana": grafana, "to_look": to_look, "in_inbox": len(entries) - to_look}
 
 
 @bp.app_context_processor

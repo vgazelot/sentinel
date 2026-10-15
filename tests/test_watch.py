@@ -141,24 +141,27 @@ DASHBOARD = {"dashboard": {"title": "Pipeline", "templating": {"list": [{"name":
     ]},
     {"id": 2, "title": "Logs", "type": "logs", "datasource": {"type": "loki", "uid": "l1"}, "targets": [{"expr": "{app=\"x\"}"}]},
 ]}}
-QUIET = {"dashboard": {"title": "Other", "panels": []}}
 GAUGE = {"dashboard": {"title": "Queues", "panels": [
     {"id": 7, "title": "Queue size", "type": "timeseries", "datasource": {"type": "graphite", "uid": "g1"},
      "targets": [{"target": "app.queue.size"}]}]}}
+GRAFANA = {"url": "https://grafana.example.com", "dashboards": ["https://grafana.example.com/d/abc/pipeline?var-source=$__all"]}
 
 
 class GrafanaTest(SentinelTest):
     def setUp(self):
         super().setUp()
-        from watchers.grafana import GrafanaWatcher
-
-        with mock.patch.dict("os.environ", {"GRAFANA_TOKEN": "tok"}):
-            self.w = GrafanaWatcher({"dashboards": ["https://grafana.example.com/d/abc/pipeline?var-source=$__all",
-                                                    "https://grafana.example.com/d/other/x"]})
         self.renders = []
         self.down = False
         self.panel_down = False
+        self.pulled_stops = True
         self.accepted_stops = False
+        self.w = self.watcher(GRAFANA["dashboards"][0])
+
+    def watcher(self, link, **cfg):
+        from watchers.grafana import GrafanaWatcher
+
+        with mock.patch.dict("os.environ", {"GRAFANA_TOKEN": "tok"}):
+            return GrafanaWatcher({**GRAFANA, **cfg}, link, 0)
 
     def get(self, url, params=None, timeout=None):
         resp = mock.Mock()
@@ -167,8 +170,6 @@ class GrafanaTest(SentinelTest):
             if self.down:
                 raise requests.ConnectionError("unreachable")
             resp.json = lambda: DASHBOARD
-        elif url.endswith("/api/dashboards/uid/other"):
-            resp.json = lambda: QUIET
         elif url.endswith("/api/dashboards/uid/gauge"):
             resp.json = lambda: GAUGE
         elif ("target", "app.queue.size") in params:
@@ -179,64 +180,81 @@ class GrafanaTest(SentinelTest):
             resp.json = lambda: [series("accepted", [50.0] * 110 + ([0.0] if self.accepted_stops else [50.0]) * 9)]
         else:
             self.renders.append(params)
-            resp.json = lambda: [series("total", [50.0] * 110 + [0.0] * 9)]
+            resp.json = lambda: [series("total", [50.0] * 110 + ([0.0] if self.pulled_stops else [50.0]) * 9)]
         return resp
 
-    def fetch(self):
+    def fetch(self, w=None):
         with mock.patch("requests.Session.get", side_effect=self.get):
-            return self.w.fetch()
+            return (w or self.w).fetch()
 
-    def test_a_stop_is_pushed_on_the_second_read_only(self):
+    def card(self):
         import quart
 
-        self.assertEqual(self.fetch(), [], "one read alone pushes nothing")
-        card = quart.snapshot()["grafana"]["dashboards"][0]
-        self.assertEqual((card["panels"], card["series"], card["anomalies"][0]["confirmed"]), (2, 2, False))
-        self.assertIn(("target", "aliasByNode(stats_counts.app.pulled.*, 3)"), self.renders[0], "the link's value wins over the saved one")
+        return quart.snapshot()["grafana"][0]
 
+    def test_what_is_there_at_start_is_recorded_without_a_push(self):
+        import engine
+
+        self.assertEqual(self.w.name, "grafana:abc")
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            engine.run_watcher(self.w)
         [item] = self.fetch()
         self.assertEqual((item.urgency, item.lane, item.fingerprint), ("now", "watch", "stop"))
         self.assertEqual((item.title, item.payload["why"]), ("total — stopped for 30 min (≈ 50 before)", "Pipeline · Pulled"))
+        self.assertEqual(self.pushes, [], "the first pass of a source is its baseline")
+        self.assertIn(("target", "aliasByNode(stats_counts.app.pulled.*, 3)"), self.renders[0], "the link's value wins over the saved one")
+
+    def test_a_new_stop_is_pushed_on_its_second_read(self):
+        import engine
+
+        self.pulled_stops = False
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            engine.run_watcher(self.w)
+            self.accepted_stops = True
+            engine.run_watcher(self.w)
+            self.assertEqual(self.pushes, [], "one read alone pushes nothing")
+            self.assertFalse(self.card()["anomalies"][0]["confirmed"])
+            engine.run_watcher(self.w)
+        self.assertEqual(len(self.pushes), 1)
 
     def test_a_drift_is_listed_never_an_item(self):
-        import quart
+        w = self.watcher("https://grafana.example.com/d/gauge/queues")
+        self.assertEqual(self.fetch(w), [])
+        [a] = self.card()["anomalies"]
+        self.assertEqual((a["kind"], a["confirmed"], a["item"]), ("drift", True, False))
 
-        self.w.dashboards = ["https://grafana.example.com/d/gauge/queues"]
-        self.fetch()
-        self.assertEqual(self.fetch(), [])
-        [a] = quart.snapshot()["grafana"]["dashboards"][0]["anomalies"]
-        self.assertEqual((a["kind"], a["confirmed"]), ("drift", True))
+    def test_an_unreadable_dashboard_fails_its_own_read(self):
+        import db
+        import engine
 
-    def test_an_unreadable_dashboard_keeps_what_was_known(self):
-        import quart
-
-        self.fetch()
-        [kept] = self.fetch()
-        self.down = True
-        self.assertEqual(self.fetch(), [kept])
-        self.assertIn("unreachable", quart.snapshot()["grafana"]["dashboards"][0]["error"])
+        self.seed("grafana:abc")
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            engine.run_watcher(self.w)
+            self.down = True
+            engine.run_watcher(self.w)
+        self.assertEqual(len(db.items("watcher = 'grafana:abc' AND state = 'pending'")), 1, "the engine keeps its item")
+        self.assertIn("unreachable", db.watcher_states()["grafana:abc"]["last_error"])
+        self.assertIn("unreachable", self.card()["error"])
 
     def test_one_unreadable_panel_keeps_its_items_and_the_rest_is_read(self):
-        import quart
-
         self.accepted_stops = True
-        self.fetch()
         self.assertEqual(len(self.fetch()), 2)
         self.panel_down = True
         items = self.fetch()
         self.assertEqual(sorted(i.payload["panel"] for i in items), ["Accepted", "Pulled"])
-        self.assertEqual(quart.snapshot()["grafana"]["dashboards"][0]["unread"], 1)
+        self.assertEqual(self.card()["unread"], 1)
 
     def test_saved_variable_values_fill_a_link_that_names_none(self):
-        self.w.dashboards = ["https://grafana.example.com/d/abc/pipeline"]
-        self.fetch()
+        self.fetch(self.watcher("https://grafana.example.com/d/abc/pipeline"))
         self.assertIn(("target", "aliasByNode(stats_counts.app.pulled.web, 3)"), self.renders[0])
 
-    def test_no_dashboard_readable_fails_the_read(self):
-        self.w.dashboards = self.w.dashboards[:1]
-        self.down = True
-        with self.assertRaises(RuntimeError):
-            self.fetch()
+    def test_the_token_only_goes_to_the_grafana_named_in_url(self):
+        for w in (self.watcher("https://elsewhere.example.net/d/abc/pipeline"), self.watcher(GRAFANA["dashboards"][0], url="http://grafana.example.com"),
+                  self.watcher("https://grafana.example.com/d-solo/abc/pipeline?panelId=2")):
+            with mock.patch("requests.Session.get", side_effect=self.get) as get, self.assertRaises(ValueError):
+                w.fetch()
+            get.assert_not_called()
+        self.assertEqual(self.watcher("https://grafana.example.com/d-solo/abc/x").name, "grafana:0")
 
 
 class WatchPageTest(SentinelTest):
@@ -256,23 +274,27 @@ class WatchPageTest(SentinelTest):
         now = __import__("time").time()
         quart.publish("zabbix", {"read_at": now, "acked": 1, "dependent": 2, "disabled": 0, "web_url": "https://zabbix.example.com", "problems": [
             {"host": "kafka-1.example.net", "name": "Consumer delay above 1h", "severity": "high", "level": 4, "since": now - 3600,
-             "known": False, "url": "https://zabbix.example.com/tr_events.php?triggerid=1&eventid=2"},
+             "known": False, "item": True, "url": "https://zabbix.example.com/tr_events.php?triggerid=1&eventid=2"},
+            {"host": "kafka-1.example.net", "name": "Swap usage high", "severity": "average", "level": 3, "since": now - 600,
+             "known": False, "item": False, "url": "https://zabbix.example.com/tr_events.php?triggerid=5&eventid=6"},
             {"host": "kafka-2.example.net", "name": "Interface bandwidth usage too high", "severity": "average", "level": 3,
-             "since": now - 7200, "known": True, "url": "https://zabbix.example.com/tr_events.php?triggerid=3&eventid=4"},
+             "since": now - 7200, "known": True, "item": False, "url": "https://zabbix.example.com/tr_events.php?triggerid=3&eventid=4"},
         ]})
         spark = quart.sparkline([50.0] * 110 + [0.0] * 9)
-        quart.publish("grafana", {"read_at": now, "window_minutes": 360, "dashboards": [
-            {"uid": "abc", "title": "Pipeline", "link": "https://grafana.example.com/d/abc/pipeline", "error": None, "panels": 3, "series": 40,
-             "anomalies": [{"kind": "stop", "series": "total", "text": "stopped for 30 min (≈ 50 before)", "panel": "Pulled",
-                            "panel_id": 1, "volume": True, "discrete": False, "confirmed": True, "spark": spark}]},
-            {"uid": "other", "title": "Other", "link": "https://grafana.example.com/d/other/x", "error": None, "panels": 2, "series": 5, "anomalies": []},
-        ]})
+        quart.publish("grafana", {})
+        quart.publish_dashboard(0, {"uid": "abc", "title": "Pipeline", "link": "https://grafana.example.com/d/abc/pipeline", "error": None,
+                                    "panels": 3, "series": 40, "unread": 0, "window_minutes": 360,
+                                    "anomalies": [{"kind": "stop", "series": "total", "text": "stopped for 30 min (≈ 50 before)", "panel": "Pulled",
+                                                   "panel_id": 1, "volume": True, "discrete": False, "confirmed": True, "item": True, "spark": spark}]})
+        quart.publish_dashboard(1, {"uid": "other", "title": "Other", "link": "https://grafana.example.com/d/other/x", "error": None,
+                                    "panels": 2, "series": 5, "unread": 0, "window_minutes": 360, "anomalies": []})
         client = main.app.test_client()
         page = client.get("/watch").get_data(as_text=True)
         for text in ("Consumer delay above 1h", "1 known noise", "1 acknowledged · 2 hidden behind the problem they depend on",
-                     "Zabbix read just now",
-                     "Pipeline", "stopped for 30 min", "nothing changed", 'href="/watch"', "2 to look at"):
+                     "Zabbix read just now", "Pipeline", "stopped for 30 min", "nothing changed", 'href="/watch"',
+                     "1 to look at", "2 in the Inbox"):
             self.assertIn(text, page)
+        self.assertLess(page.index("Pipeline"), page.index("Other"), "dashboards in the order of the config")
         self.assertEqual(client.get("/partials/watch").status_code, 200)
 
     def test_first_read_in_progress(self):
@@ -280,5 +302,5 @@ class WatchPageTest(SentinelTest):
         import quart
 
         quart.publish("zabbix", None)
-        quart.publish("grafana", None)
+        quart.publish("grafana", {})
         self.assertIn("First read in progress", main.app.test_client().get("/watch").get_data(as_text=True))

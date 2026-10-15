@@ -37,9 +37,9 @@ watchers:
         keywords: [france, europe, gra, rbx, sbg]
         include_maintenances: false
 
-  # Zabbix: open problems as incidents (lane incident), shown on the Watch page. Dependent problems
-  # are hidden the way Zabbix hides them, acknowledged ones only counted. A problem at push_severity
-  # or above is pushed, unless its name matches one of `quiet` (known noise, listed without pushing).
+  # Zabbix: open problems, shown on the Watch page. Dependent problems are hidden the way Zabbix
+  # hides them, acknowledged ones only counted. A problem at push_severity or above is also an inbox
+  # item (lane watch, pushed), unless its name matches one of `quiet` (known noise, listed apart).
   zabbix:
     enabled: false
     interval_seconds: 120
@@ -53,13 +53,14 @@ watchers:
     push_severity: 4                 # high and above are pushed
     quiet: []                        # regexes on the problem name
 
-  # Grafana: the dashboards you keep open, read back every few minutes (Graphite panels). Each
-  # curve's last 30 min is compared with the hours before: a counter that stops or a whole-number
-  # gauge that changes is pushed once seen on two reads in a row, a drift is listed. Paste the links
-  # as you open them: their var-… parameters are the template variables used.
+  # Grafana: the dashboards you keep open, read back every few minutes (Graphite panels), each one
+  # its own source. Each curve's last 30 min is compared with the hours before: a counter that stops
+  # or a whole-number gauge that changes is pushed once seen on two reads in a row, a drift is
+  # listed. Paste the links as you open them: their var-… parameters are the template variables used.
   grafana:
     enabled: false
     interval_seconds: 300
+    url: https://grafana.example.com # the token only goes there: links elsewhere are refused
     token_env: GRAFANA_TOKEN         # a Viewer service account token, in .env
     client_cert: /certs/client.crt
     client_key: /certs/client.key

@@ -1,13 +1,15 @@
-"""The Grafana dashboards you keep open, read back by Sentinel (Graphite panels).
+"""A Grafana dashboard you keep open, read back by Sentinel (Graphite panels). One source per
+dashboard (`grafana:<uid>`): one that cannot be read keeps its items and lights the health light,
+the others go on being read.
 
 Each curve's last 30 min is compared with the hours before it (`quart.verdicts`); every change is
 listed on the Watch page. A counter that stops, or a whole-number gauge that changes, is also an
-inbox item (lane `watch`, pushed) once seen on two reads in a row. A dashboard that cannot be read
-keeps the items it had.
+inbox item (lane `watch`, pushed) once seen on two reads in a row — the first read after a start
+counts as seen: what is there already is the engine's baseline, recorded without pushing.
 """
 import logging
 import os
-import time
+from urllib.parse import urlparse
 
 import requests
 
@@ -18,18 +20,33 @@ log = logging.getLogger("sentinel.grafana")
 
 
 class GrafanaWatcher(Watcher):
-    name = "grafana"
-
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, link: str, order: int):
+        self.link = link
+        self.order = order
+        try:
+            self.base, self.uid, self.variables = quart.parse_dashboard_url(link)
+        except ValueError:
+            self.base, self.uid, self.variables = "", "", {}
+        self.name = f"grafana:{self.uid or order}"
         self.interval_seconds = cfg.get("interval_seconds", 300)
         self.window_minutes = int(cfg.get("window_hours", 6) * 60)
         self.points = cfg.get("points", 120)
-        self.dashboards = cfg.get("dashboards") or []
+        self.url = (cfg.get("url") or "").rstrip("/")
         self.token = os.environ.get(cfg.get("token_env", "GRAFANA_TOKEN"), "")
         self.cert = (cfg["client_cert"], cfg["client_key"]) if cfg.get("client_cert") else None
         self.verify = cfg.get("ca_cert") or True
-        self._seen: set[str] = set()
-        self._kept: dict[str, dict] = {}  # dashboard uid → panel id → confirmed items
+        self.title = self.uid or link
+        self._seen: set[str] | None = None  # None: no read since the start
+        self._kept: dict = {}  # panel id → confirmed items
+
+    def _check(self):
+        """The token only ever goes to the Grafana named in `url`, over https."""
+        if urlparse(self.url).scheme != "https":
+            raise ValueError("grafana.url must be the https address of your Grafana")
+        if not self.uid:
+            raise ValueError("not a dashboard link (…/d/<uid>/…)")
+        if self.base != self.url:
+            raise ValueError(f"link outside {self.url}")
 
     def _session(self) -> requests.Session:
         s = requests.Session()
@@ -39,43 +56,36 @@ class GrafanaWatcher(Watcher):
         return s
 
     def fetch(self) -> list[WatchedItem]:
-        s = self._session()
-        cards, items, seen, failed = [], [], set(), 0
-        for link in self.dashboards:
-            base, uid, variables = quart.parse_dashboard_url(link)
-            try:
-                card = self._read(s, base, uid, variables, link)
-            except (requests.RequestException, KeyError, ValueError) as e:
-                failed += 1
-                log.warning("grafana %s: %s", uid, e)
-                cards.append({"uid": uid, "title": uid, "link": link, "error": str(e)[:200], "panels": 0, "series": 0,
-                              "unread": 0, "anomalies": []})
-                items.extend(i for panel_items in self._kept.get(uid, {}).values() for i in panel_items)
-                continue
-            before = self._kept.get(uid, {})
-            kept = {pid: before.get(pid, []) for pid in card.pop("unread_ids")}
-            for a in card["anomalies"]:
-                key = f"{uid}:{a['panel_id']}:{a['series']}:{a['kind']}"
-                seen.add(key)
-                a["confirmed"] = key in self._seen
-                if a["confirmed"] and ((a["kind"] == "stop" and a["volume"]) or (a["kind"] == "state" and a["discrete"])):
-                    kept.setdefault(a["panel_id"], []).append(self._item(key, card, a))
-            self._kept[uid] = kept
-            items.extend(i for panel_items in kept.values() for i in panel_items)
-            cards.append(card)
-        if self.dashboards and failed == len(self.dashboards):
-            raise RuntimeError("no dashboard could be read")
-        self._seen = seen
-        quart.publish("grafana", {"read_at": time.time(), "window_minutes": self.window_minutes, "dashboards": cards})
-        return items
+        try:
+            self._check()
+            card = self._read(self._session())
+        except Exception as e:
+            quart.publish_dashboard(self.order, {"uid": self.uid, "title": self.title, "link": self.link, "error": str(e)[:200],
+                                                 "panels": 0, "series": 0, "unread": 0, "anomalies": [],
+                                                 "window_minutes": self.window_minutes})
+            raise
+        first = self._seen is None
+        seen = set()
+        kept = {pid: self._kept.get(pid, []) for pid in card.pop("unread_ids")}
+        for a in card["anomalies"]:
+            key = f"{self.uid}:{a['panel_id']}:{a['series']}:{a['kind']}"
+            seen.add(key)
+            a["confirmed"] = first or key in self._seen
+            a["item"] = a["confirmed"] and quart.pushes(a)
+            if a["item"]:
+                kept.setdefault(a["panel_id"], []).append(self._item(key, card, a))
+        self._seen, self._kept = seen, kept
+        quart.publish_dashboard(self.order, card)
+        return [i for items in kept.values() for i in items]
 
-    def _read(self, s: requests.Session, base: str, uid: str, variables: dict, link: str) -> dict:
-        r = s.get(f"{base}/api/dashboards/uid/{uid}", timeout=30)
+    def _read(self, s: requests.Session) -> dict:
+        r = s.get(f"{self.base}/api/dashboards/uid/{self.uid}", timeout=30)
         r.raise_for_status()
         dashboard = r.json()["dashboard"]
-        variables = {**quart.defaults(dashboard), **variables}
-        card = {"uid": uid, "title": dashboard.get("title", uid), "link": link, "error": None, "panels": 0, "series": 0,
-                "unread": 0, "unread_ids": [], "anomalies": []}
+        self.title = dashboard.get("title", self.uid)
+        variables = {**quart.defaults(dashboard), **self.variables}
+        card = {"uid": self.uid, "title": self.title, "link": self.link, "error": None, "panels": 0, "series": 0,
+                "unread": 0, "unread_ids": [], "anomalies": [], "window_minutes": self.window_minutes}
         error = None
         for panel in quart.panels(dashboard):
             graphite = quart.graphite_targets(panel, variables)
@@ -86,7 +96,7 @@ class GrafanaWatcher(Watcher):
             params = [("target", t) for t in targets] + [
                 ("from", f"-{self.window_minutes}min"), ("until", "now"), ("format", "json"), ("maxDataPoints", self.points)]
             try:
-                r = s.get(f"{base}/api/datasources/proxy/uid/{ds}/render", params=params, timeout=60)
+                r = s.get(f"{self.base}/api/datasources/proxy/uid/{ds}/render", params=params, timeout=60)
                 r.raise_for_status()
                 series = r.json()
             except (requests.RequestException, ValueError) as e:

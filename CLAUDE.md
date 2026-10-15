@@ -23,7 +23,7 @@ app/
 │   ├── github_reviews.py   # GraphQL: lanes you / team / deps, team+APPROVED dropped, bump bodies cached
 │   ├── statuspage.py       # generic Atlassian Statuspage; maintenance + `notify: quiet` → quiet
 │   ├── zabbix.py           # open problems as the front shows them (skipDependent, monitored); ≥ push_severity → items (lane watch)
-│   └── grafana.py          # dashboards read back (Graphite panels): confirmed stop / status change → items (lane watch)
+│   └── grafana.py          # one source per dashboard (grafana:<uid>, token pinned to `url`): confirmed stop / status change → items (lane watch)
 ├── quart.py          # Watch: stop / state / drift over the last 30 min vs the hours before + the snapshot the page reads
 ├── watch_views.py    # Watch page (blueprint); client certs for an mTLS proxy mounted on /certs (SENTINEL_CERTS)
 ├── checks.py         # check runs / statuses read one way: rollup, outcome (cancelled = neutral), CI family

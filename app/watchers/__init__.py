@@ -11,7 +11,7 @@ class WatchedItem:
     fingerprint: str
     severity: str | None = None
     payload: dict = field(default_factory=dict)
-    # where it shows up (you, team, deps, mine, followup, incident, health) and whether it may
+    # where it shows up (you, team, deps, mine, followup, incident, watch, health) and whether it may
     # interrupt you (now, later = after the team grace period, quiet = never) — see engine.py
     lane: str = "you"
     urgency: str = "now"
@@ -46,9 +46,15 @@ def build_watchers(cfg: dict) -> dict[str, Watcher]:
             w = StatuspageWatcher(instance, sp.get("interval_seconds", 300))
             watchers[w.name] = w
 
-    for key, cls in (("zabbix", ZabbixWatcher), ("grafana", GrafanaWatcher)):
-        if wcfg.get(key, {}).get("enabled"):
-            w = cls(wcfg[key])
+    zb = wcfg.get("zabbix", {})
+    if zb.get("enabled"):
+        w = ZabbixWatcher(zb)
+        watchers[w.name] = w
+
+    gf = wcfg.get("grafana", {})
+    if gf.get("enabled"):
+        for order, link in enumerate(gf.get("dashboards") or []):
+            w = GrafanaWatcher(gf, link, order)
             watchers[w.name] = w
 
     return watchers

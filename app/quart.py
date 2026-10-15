@@ -12,6 +12,7 @@ tried and dropped: older points come from another archive, and the traffic of ye
 import re
 import statistics
 import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
 VAR = re.compile(r"\$\{(\w+)\}|\[\[(\w+)\]\]|\$(\w+)")
@@ -22,12 +23,18 @@ VOLUME = re.compile(r"(^|[(,\s])stats_counts\.|\.count\b")
 RECENT_MINUTES = 30
 
 _lock = threading.Lock()
-_snapshot: dict = {"grafana": None, "zabbix": None}
+_snapshot: dict = {"zabbix": None, "grafana": {}}
 
 
-def publish(source: str, data: dict):
+def publish(source: str, data):
     with _lock:
         _snapshot[source] = data
+
+
+def publish_dashboard(order: int, card: dict):
+    """Each dashboard is its own source: its card lands at its place in the config."""
+    with _lock:
+        _snapshot["grafana"] = {**_snapshot["grafana"], order: {**card, "read_at": time.time()}}
 
 
 def snapshot() -> dict:
@@ -39,7 +46,10 @@ def parse_dashboard_url(url: str) -> tuple[str, str, dict[str, list[str]]]:
     """A dashboard link as you open it (…/d/<uid>/<slug>?var-x=a&var-x=b) → (base, uid, variables)."""
     u = urlparse(url)
     parts = u.path.split("/")
-    uid = parts[parts.index("d") + 1]
+    i = parts.index("d") + 1  # ValueError for any other link (d-solo, playlists…)
+    uid = parts[i] if i < len(parts) else ""
+    if not uid:
+        raise ValueError("no dashboard uid")
     variables = {k[4:]: v for k, v in parse_qs(u.query).items() if k.startswith("var-")}
     return f"{u.scheme}://{u.netloc}", uid, variables
 
@@ -104,6 +114,11 @@ def verdicts(series: list[dict], window_minutes: int, volume: bool = False) -> l
         if found:
             out.append({"series": name, "values": values, "volume": counts, **found})
     return out
+
+
+def pushes(a: dict) -> bool:
+    """A counter that stops or a status that changes: worth an interruption. A drift is only listed."""
+    return (a["kind"] == "stop" and a["volume"]) or (a["kind"] == "state" and a["discrete"])
 
 
 def _stop(known, before, recent):

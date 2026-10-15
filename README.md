@@ -160,7 +160,7 @@ Hidden unless `SLITE_API_KEY` and `SHORTCUT_API_TOKEN` are in `.env` *and* `conf
 
 ## Watch (optional)
 
-Hidden unless `config.yaml` has a `zabbix:` or `grafana:` block under `watchers` — see [config.example.yaml](config.example.yaml). Dashboards are given as the links you open them with: the link's variables are used, the dashboard's saved values fill the rest. Tokens go in `.env` (`ZABBIX_TOKEN`, `GRAFANA_TOKEN`, read-only is enough); a client certificate for an mTLS proxy goes in the folder `SENTINEL_CERTS` points to, mounted on `/certs`.
+Hidden unless `config.yaml` has a `zabbix:` or `grafana:` block under `watchers` — see [config.example.yaml](config.example.yaml). Dashboards are given as the links you open them with: the link's variables are used, the dashboard's saved values fill the rest; each one is its own source, and the token only goes to the Grafana named in `url`. Tokens go in `.env` (`ZABBIX_TOKEN`, `GRAFANA_TOKEN`, read-only is enough); a client certificate for an mTLS proxy goes in the folder `SENTINEL_CERTS` points to, mounted on `/certs`.
 
 ## Fallback notifier (macOS, optional)
 
