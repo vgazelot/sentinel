@@ -37,8 +37,8 @@ function renderLight() {
 }
 
 // --- Selection -----------------------------------------------------------------------------
-// the rows you can see: a folded group (Sessions' tickets to start) is skipped
-const rows = () => [...document.querySelectorAll('#rows .it')].filter((r) => !r.closest('details:not([open])'));
+// the rows you can see: a folded group (Sessions' tickets to start, a folded big rock) or a filtered row is skipped
+const rows = () => [...document.querySelectorAll('#rows .it')].filter((r) => !r.closest('details:not([open]), .folded') && r.getClientRects().length);
 let selected = { key: null, index: 0 };
 
 function select(row, { load = true } = {}) {
@@ -46,6 +46,7 @@ function select(row, { load = true } = {}) {
     rows().forEach((r) => r.classList.toggle('sel', r === row));
     selected = { key: row.dataset.key, index: rows().indexOf(row) };
     row.scrollIntoView({ block: 'nearest' });
+    document.dispatchEvent(new CustomEvent('row-selected', { detail: { key: row.dataset.key } }));
     if (!load || !row.dataset.detail) return;
     const detail = document.getElementById('detail');
     // the pane answers at once; GitHub fills it in a moment

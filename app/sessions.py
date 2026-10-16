@@ -128,9 +128,21 @@ def _session_row(s: dict, now: float, home: dict) -> dict:
     }
 
 
+def _glyph(st: dict) -> tuple[str, str]:
+    """A ticket's state as a shape (backlog dashed, to do empty, started half full, in review three quarters) — the
+    workflow's own names only for review and blocked, its state types for the rest."""
+    name = st["state"].lower()
+    if "block" in name:
+        return "s-blocked", "warn"
+    if st["state_type"] == "started":
+        return ("s-review" if "review" in name else "s-started"), "dim"
+    return ("s-backlog" if st["state_type"] == "backlog" else "s-todo"), "neutral"
+
+
 def _story_row(st: dict, group: str) -> dict:
+    icon, tone = _glyph(st)
     return {"key": f"story:{st['id']}", "title": st["name"], "story": f"sc-{st['id']}", "url": st["url"],
-            "group": group, "state": "none", "icon": "i-dot", "tone": "neutral", "word": st["state"],
+            "group": group, "state": "none", "icon": icon, "tone": tone, "word": st["state"],
             "at": st["updated_at"], "where": "", "advice": "", "tokens": 0, "fresh": "", "session": None}
 
 
@@ -230,7 +242,8 @@ def sessions_page():
 
 @bp.get("/partials/sessions")
 def partial_sessions():
-    return render_template("partials/sessions_list.html", **board())
+    # the tabs over the pane list the same sessions: they come along, swapped in place
+    return render_template("partials/sessions_list.html", tabs_oob=True, **board())
 
 
 @bp.get("/partials/session")

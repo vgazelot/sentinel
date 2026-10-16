@@ -194,10 +194,30 @@ class SessionsTest(SentinelTest):
         self.assertEqual(ctx, {"story": "", "project": "mesh", "tokens": 0, "answeredAt": 0, "cold": False, "advise": "cold",
                                "nextUsd": 0, "freshUsd": 0, "handoff": ""}, "a command typed into a live session, never a \\r")
 
+    def test_tickets_show_their_state_as_a_shape(self):
+        import sessions
+
+        def glyph(state_type, state):
+            return sessions._glyph({"state_type": state_type, "state": state})
+
+        self.assertEqual(glyph("backlog", "Backlog"), ("s-backlog", "neutral"))
+        self.assertEqual(glyph("unstarted", "Ready for Development"), ("s-todo", "neutral"))
+        self.assertEqual(glyph("started", "In Development"), ("s-started", "dim"))
+        self.assertEqual(glyph("started", "Ready for Review"), ("s-review", "dim"))
+        self.assertEqual(glyph("started", "Blocked"), ("s-blocked", "warn"), "a workflow's own word for blocked says it")
+
     def test_pages_render(self):
         page = self.client.get("/sessions").get_data(as_text=True)
         self.assertIn("Upgrade", page)
         self.assertRegex(page, r'id="nav-sessions"\s*>1<')
+        self.assertIn('<section class="proj has-live" id="proj-Mesh">', page, "a big rock is one block, its sessions say so")
+        self.assertIn('href="#s-started"', page, "a started ticket without a session is drawn half full")
+        tabs = page[page.index('<nav class="tabs" id="tabs"'):page.index("</nav>", page.index('<nav class="tabs"'))]
+        self.assertNotIn("hx-swap-oob", tabs, "the page draws the tabs in place")
+        self.assertEqual(tabs.count('class="tab"'), 4, "every live session has its tab, no ticket does")
+        polled = self.client.get("/partials/sessions").get_data(as_text=True)
+        self.assertIn('<nav class="tabs" id="tabs" aria-label="Live sessions" hx-swap-oob="true">', polled,
+                      "the polled list brings the tabs along")
         facts = {"id": 1001, "name": "Runbook", "url": "https://app.shortcut.com/acme/story/1001", "state": "In Development",
                  "prs": [{"url": "https://github.com/acme/infra/pull/7", "ref": "infra#7", "title": "feat: [sc-1001] runbook", "draft": True}],
                  "note": {"text": "## Handoff\n- **Left**: the alerts", "at": "2026-10-15T08:00:00Z", "handoff": True}}

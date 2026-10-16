@@ -6,24 +6,61 @@
 {% if r.story %}<span class="mono">{{ r.story }}</span> · {% endif %}{{ r.word }}{% if r.where %} · {{ r.where }}{% endif %}
 {% endcall %}
 {%- endmacro %}
+{# a ticket without a session: one line, its state drawn by the icon #}
+{% macro ticket_row(r) -%}
+<div class="it tk" data-key="{{ r.key }}" data-detail="/partials/session?key={{ r.key | urlencode }}"{% if r.url %} data-url="{{ r.url }}"{% endif %} title="{{ (r.title | subject).text }} · {{ r.word }}">
+    <svg class="ic {{ r.tone }}" role="img" aria-label="{{ r.word }}"><use href="#{{ r.icon }}"/></svg>
+    <span class="t">{{ (r.title | subject).text }}</span><span class="ref">{{ r.story }}</span><span class="tm">{{ r.at | age if r.at else '' }}</span>
+</div>
+{%- endmacro %}
+{% set n = namespace(live=0, all=0) %}
+{% for g in groups %}{% set n.live = n.live + (g.rows | selectattr('session') | list | length) %}{% set n.all = n.all + (g.rows | length) + (g.later | length) %}{% endfor %}
 <span id="sessions-count" hidden>{{ waiting }}</span>
 <header class="list-head">
+    <button type="button" class="icon-btn s-focus-only" data-overview title="Back to every ticket (Esc)"><svg><use href="#i-grid"/></svg></button>
     <h1>Sessions</h1>
-    <button type="button" class="btn small" data-unselect hx-get="/partials/session?key=new" hx-target="#detail" title="Claude Code on a new task, in a console here">New</button>
+    <div class="seg s-overview-only" role="group" aria-label="Show">
+        <button type="button" data-filter="live">Live<b>{{ n.live }}</b></button>
+        <button type="button" data-filter="all">All<b>{{ n.all }}</b></button>
+    </div>
+    <button type="button" class="icon-btn s-focus-only" data-tabs title="Tabs on top (⌥0)"><svg><use href="#i-tabs"/></svg></button>
+    <button type="button" class="btn small s-overview-only" data-unselect hx-get="/partials/session?key=new" hx-target="#detail" title="Claude Code on a new task, in a console here">New</button>
 </header>
 {% if error %}<div class="notice bad s-error">{{ error }}</div>{% endif %}
 <div class="scroll" id="rows">
+    <i class="s-hl" aria-hidden="true"></i>
 {% for g in groups %}
-    <div class="grp">{{ g.title }} <span>{{ g.rows | length }}</span></div>
-    {% for r in g.rows %}{{ session_row(r) }}{% endfor %}
-    {% if g.later %}
-    <details class="fold s-later" id="later-{{ g.title | domid }}">
-        <summary>{{ g.later | length }} to start</summary>
-        {% for r in g.later %}{{ session_row(r) }}{% endfor %}
-    </details>
-    {% endif %}
+    {% set live = g.rows | selectattr('session') | list %}
+    {% set waiting_here = live | selectattr('state', 'equalto', 'waiting') | list | length %}
+    {% set tickets = g.rows | rejectattr('session') | list %}
+    <section class="proj{% if live %} has-live{% endif %}" id="proj-{{ g.title | domid }}">
+        <button type="button" class="proj-head" data-fold="{{ g.title | domid }}" title="{{ g.title }}">
+            <svg class="chev"><use href="#i-chev"/></svg><span class="pn">{{ g.title }}</span>
+            <span class="pc">
+                {%- if waiting_here %}<span class="pw" title="waits for you"><svg><use href="#i-chat"/></svg>{{ waiting_here }}</span>{% endif %}
+                {%- if live %}<span class="pl">{{ live | length }} live</span>{% endif %}
+                {%- if tickets or g.later %}<span class="pt">{{ tickets | length + g.later | length }} ticket{{ 's' if tickets | length + g.later | length > 1 }}</span>{% endif -%}
+            </span>
+        </button>
+        <div class="proj-body"><div class="proj-in">
+            {% for r in live %}{{ session_row(r) }}{% endfor %}
+            {% if live and tickets %}<div class="split"></div>{% endif %}
+            {% for r in tickets %}{{ ticket_row(r) }}{% endfor %}
+            {% if g.later %}
+            <details class="fold s-later" id="later-{{ g.title | domid }}">
+                <summary>{{ g.later | length }} to start</summary>
+                {% for r in g.later %}{{ ticket_row(r) }}{% endfor %}
+            </details>
+            {% endif %}
+        </div></div>
+    </section>
 {% else %}
     <div class="zero"><p class="zero-title">No session running</p><p>New starts one here, in a console.</p></div>
 {% endfor %}
+    <p class="s-none">No session running. <button type="button" data-filter="all">Show every ticket</button></p>
 </div>
-<footer class="hints"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>⏎</kbd> open the ticket</span></footer>
+<footer class="hints">
+    <span class="s-overview-only"><kbd>↑</kbd><kbd>↓</kbd> move</span><span class="s-overview-only"><kbd>⏎</kbd> open</span>
+    <span><kbd>⌥</kbd><kbd>1</kbd>…<kbd>9</kbd> a session</span><span class="s-focus-only"><kbd>⌥</kbd><kbd>0</kbd> tabs</span><span class="s-focus-only"><kbd>esc</kbd> every ticket</span>
+</footer>
+{% if tabs_oob %}{% include "partials/session_tabs.html" %}{% endif %}

@@ -45,7 +45,9 @@
             term.open(host);
             term.onData((d) => { if (ws && ws.readyState === 1) ws.send(encoder.encode(d)); });
             term.onResize(({ cols, rows }) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ cols, rows })); });
-            sizer = new ResizeObserver(() => { if (host.offsetParent) fit.fit(); });
+            // once the size has settled: the Sessions columns glide, and every step would redraw Claude Code
+            let resized = null;
+            sizer = new ResizeObserver(() => { clearTimeout(resized); resized = setTimeout(() => { if (term && host.offsetParent) fit.fit(); }, 120); });
             sizer.observe(host);
             return term;
         }

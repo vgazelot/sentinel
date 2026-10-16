@@ -20,6 +20,7 @@
     --green: #5fd39d;         /* good news */
     --claude: #e08a68;
     --window: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 20px 50px rgba(0, 0, 0, 0.45);
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);   /* things that move land softly */
     --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
     --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
 }
@@ -337,11 +338,90 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .spark .band { fill: var(--pane-3); }
 .spark path { fill: none; stroke: var(--orange); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 
-/* --- Sessions: the selected session's console fills the detail pane ---------------------------- */
-.list-head > .btn { margin-left: auto; }
+/* --- Sessions: every ticket by big rock to choose, one live session to work in ------------------------------ */
+.icon-btn { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border: 0; border-radius: 7px; background: none; color: var(--text-2); cursor: pointer; transition: background-color 0.12s, color 0.12s; }
+.icon-btn:hover { background: var(--pane-3); color: var(--text); }
+.s-work { min-width: 0; }
+.s-detail { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
 .s-error { margin: 0 16px 8px; }
-.s-later > summary { margin: 8px 10px 4px; }
+.seg button { border: 0; background: none; padding: 3px 10px; border-radius: 6px; font: inherit; font-size: 12px; font-weight: 500; color: var(--text-3); white-space: nowrap; cursor: pointer; }
+.seg button:hover { color: var(--text); }
+#list:not(.s-live) [data-filter="all"], #list.s-live [data-filter="live"] { background: var(--pane-3); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+.app:not(.s-focus) .s-focus-only, .app.s-focus .s-overview-only { display: none; }
+.list-head [data-tabs] { margin-left: auto; }
+
+/* a big rock is one block, its header stays in view while you scroll through it */
+.proj { margin-bottom: 10px; background: var(--pane-2); border-radius: 10px; box-shadow: 0 0 0 1px var(--line); }
+.proj-head { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 12px 9px 10px; border: 0; border-radius: 10px 10px 0 0; background: var(--pane-2); font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.proj.folded .proj-head { border-radius: 10px; }
+.chev { width: 12px; height: 12px; color: var(--text-3); transition: transform 0.22s var(--ease); }
+.proj.folded .chev { transform: rotate(-90deg); }
+.pn { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pw { display: inline-flex; align-items: center; gap: 4px; color: var(--blue); font-weight: 600; }
+.pw svg { width: 13px; height: 13px; }
+.pl { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); }
+.pl::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--claude); }
+.proj-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 0.26s var(--ease); }
+.proj.folded .proj-body { grid-template-rows: 0fr; }
+.proj-in { min-height: 0; overflow: hidden; padding: 0 4px; }
+.proj:not(.folded) .proj-in { padding-bottom: 4px; }
+.proj .it:hover { background: var(--hover); }
+.split { height: 1px; background: var(--line); margin: 4px 8px; }
+.s-later > summary { margin: 4px 10px; font-size: 12px; color: var(--text-3); }
+.it.tk { grid-template-columns: 16px minmax(0, 1fr) auto auto; align-items: center; padding: 6px 10px; }
+.it.tk .ic { grid-row: auto; margin: 0; }
+.it.tk .t { font-weight: 400; color: var(--text-2); }
+.it.tk:hover .t, .it.tk.sel .t { color: var(--text); }
+.it.tk .ref { font-size: 11px; color: var(--text-3); }
+.ic.dim { color: var(--text-2); }
 .ic.run { color: var(--claude); animation: spin 1.2s linear infinite; }
+.s-none { display: none; margin: 4px 10px; font-size: 12px; color: var(--text-3); }
+.s-none button { border: 0; background: none; padding: 0; font: inherit; color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+#list.s-live :is(.it.tk, .split, .s-later, .pt), #list.s-live .proj:not(.has-live) { display: none; }
+#list.s-live #rows:not(:has(.has-live)) .s-none { display: block; }
+/* the selection glides from row to row (static/sessions.js) */
+#rows:has(> .s-hl) { position: relative; }
+#rows:has(> .s-hl) .it { position: relative; z-index: 2; }
+#rows.s-glide .it.sel { background: transparent; box-shadow: none; }
+.s-hl { position: absolute; left: 0; top: 0; z-index: 1; border-radius: 8px; background: var(--sel); box-shadow: inset 0 0 0 1px rgba(87, 193, 255, 0.25); pointer-events: none; opacity: 0; transition: transform 0.22s var(--ease), width 0.22s var(--ease), height 0.22s var(--ease), opacity 0.15s; }
+
+/* the live sessions as tabs over the pane, grouped by big rock like a browser's tab groups */
+.tabs { display: flex; align-items: center; gap: 4px; height: 0; padding: 0 8px; flex: none; overflow: hidden; opacity: 0; visibility: hidden; border-bottom: 1px solid transparent; transition: height 0.34s var(--ease), opacity 0.2s, visibility 0.2s, border-color 0.2s; }
+.tabs-scroll { position: relative; display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
+.tabs-scroll::-webkit-scrollbar { display: none; }
+.tg { display: contents; }   /* every tab narrows alike before the strip scrolls */
+.tg ~ .tg > .tg-l { margin-left: 6px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--line-2); }
+.tg-l { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px 0 2px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-3); }
+.tab { position: relative; z-index: 2; display: flex; align-items: center; gap: 7px; flex: 0 1 auto; min-width: 64px; height: 30px; max-width: 210px; padding: 0 10px; border: 0; border-radius: 8px; background: none; font: inherit; font-size: 12.5px; color: var(--text-2); white-space: nowrap; cursor: pointer; }
+.tab span { overflow: hidden; text-overflow: ellipsis; }
+.tab svg { width: 13px; height: 13px; }
+.tab:hover, .tab.on { color: var(--text); }
+.tab-ind { position: absolute; left: 0; top: 0; z-index: 1; border-radius: 8px; background: var(--pane-3); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px var(--line); pointer-events: none; opacity: 0; transition: transform 0.24s var(--ease), width 0.24s var(--ease), opacity 0.15s; }
+
+/* focus: the sidebar folds into a rail (open over the list while hovered), the list keeps the live sessions or
+   makes way for the tabs; the columns glide */
+@media (min-width: 901px) {
+    .app:has(> .s-work) { --s-side: 200px; --s-list: clamp(340px, 30vw, 460px); grid-template-columns: var(--s-side) var(--s-list) minmax(0, 1fr); transition: grid-template-columns 0.34s var(--ease); }
+    .app.s-focus { --s-side: 56px; --s-list: 292px; }
+    .app.s-focus.s-tabs { --s-list: 0px; }
+    .app:has(> .s-work) > .list { min-width: 0; transition: opacity 0.2s, visibility 0.2s; }
+    .app:has(> .s-work) > .s-work { transition: margin 0.34s var(--ease); }
+    .app.s-focus > .list > * { min-width: 284px; }
+    .app.s-focus.s-tabs > .list { opacity: 0; visibility: hidden; }
+    .app.s-focus.s-tabs > .s-work { margin-left: -8px; }
+    .app.s-focus.s-tabs .tabs { height: 44px; opacity: 1; visibility: visible; border-bottom-color: var(--line); }
+    .app.s-focus #list :is(.it.tk, .split, .s-later, .pt, .pl, .s-none), .app.s-focus #list .proj:not(.has-live) { display: none; }
+    .app.s-focus #list .it { grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; padding: 6px 10px; }
+    .app.s-focus #list .it .ic { grid-row: auto; margin: 0; }
+    .app.s-focus #list .it .m { display: none; }
+    .side .l, .side .light span, .side .nav .n { transition: opacity 0.2s; }
+    .side .brand, .side .nav { position: relative; white-space: nowrap; }
+    .app.s-focus > .side { position: relative; z-index: 30; width: 100%; border-radius: 12px; overflow: hidden; transition: width 0.34s var(--ease), background-color 0.2s, box-shadow 0.2s; }
+    .app.s-focus > .side:is(:hover, :focus-within) { width: 208px; background: var(--pane-2); box-shadow: var(--window); }
+    .app.s-focus > .side:not(:hover, :focus-within) :is(.l, .light span, .nav .n:not(.hot)) { opacity: 0; }
+    .app.s-focus > .side:not(:hover, :focus-within) .nav .n.hot { position: absolute; left: 20px; top: 2px; min-width: 15px; height: 14px; padding: 0 4px; font-size: 10px; border-radius: 7px; box-shadow: 0 0 0 2px var(--bg); }
+}
 .s-live { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .s-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
 .s-advice { display: flex; align-items: center; gap: 12px; padding: 9px 20px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--text-2); }
