@@ -347,7 +347,6 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .seg button { border: 0; background: none; padding: 3px 10px; border-radius: 6px; font: inherit; font-size: 12px; font-weight: 500; color: var(--text-3); white-space: nowrap; cursor: pointer; }
 .seg button:hover { color: var(--text); }
 #list:not(.s-live) [data-filter="all"], #list.s-live [data-filter="live"] { background: var(--pane-3); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
-.app:not(.s-focus) .s-focus-only, .app.s-focus .s-overview-only { display: none; }
 .list-head [data-tabs] { margin-left: auto; }
 
 /* a big rock is one block, its header stays in view while you scroll through it */
@@ -401,7 +400,9 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 
 /* focus: the sidebar folds into a rail (open over the list while hovered), the list keeps the live sessions or
    makes way for the tabs; the columns glide */
+@media (max-width: 900px) { .s-focus-only { display: none; } }
 @media (min-width: 901px) {
+    .app:not(.s-focus) .s-focus-only, .app.s-focus .s-overview-only { display: none; }
     .app:has(> .s-work) { --s-side: 200px; --s-list: clamp(340px, 30vw, 460px); grid-template-columns: var(--s-side) var(--s-list) minmax(0, 1fr); transition: grid-template-columns 0.34s var(--ease); }
     .app.s-focus { --s-side: 56px; --s-list: 292px; }
     .app.s-focus.s-tabs { --s-list: 0px; }

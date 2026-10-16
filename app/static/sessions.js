@@ -21,7 +21,10 @@
     function dress() {
         app.classList.toggle('s-tabs', !!load('tabs', false));
         list.classList.toggle('s-live', load('filter', 'all') === 'live');
-        list.querySelectorAll('.proj').forEach((p) => p.classList.toggle('folded', folded.has(p.id.slice(5))));
+        list.querySelectorAll('.proj').forEach((p) => {
+            p.classList.toggle('folded', folded.has(p.id.slice(5)));
+            p.querySelector('.proj-head').setAttribute('aria-expanded', !p.classList.contains('folded'));
+        });
     }
 
     // `el` over `target`, in `box`'s scrolled coordinates; fresh (just drawn, or hidden until now) means no glide
@@ -102,7 +105,7 @@
             const id = fold.dataset.fold;
             if (!folded.delete(id)) folded.add(id);
             save('folded', [...folded]);
-            fold.closest('.proj').classList.toggle('folded', folded.has(id));
+            dress();
             relayout();  // the rows below move while it folds
             return;
         }
@@ -134,12 +137,13 @@
         }
     }, true);
 
-    document.addEventListener('htmx:afterSwap', (e) => { if (e.detail.target === list) dress(); });
+    // htmx swaps the tabs (out of band) before the list: both are in place here, re-dressed before the next paint
+    document.addEventListener('htmx:afterSwap', (e) => { if (e.detail.target === list) { dress(); mark(false); } });
     document.addEventListener('htmx:afterSettle', (e) => {
         if (e.detail.target !== list) return;
-        // the session worked in has ended: back to every ticket
-        if (app.classList.contains('s-focus') && !list.querySelector(`#rows .it[data-key="${CSS.escape(selectedKey || '')}"]`)) focus(false);
-        mark(false);
+        // the session worked in has ended — not a bridge that failed once, which lists nothing for a poll
+        const gone = !list.querySelector(`#rows .it[data-key="${CSS.escape(selectedKey || '')}"]`);
+        if (app.classList.contains('s-focus') && gone && !list.querySelector('.s-error')) focus(false);
     });
     window.addEventListener('resize', () => mark(false));
     dress();
