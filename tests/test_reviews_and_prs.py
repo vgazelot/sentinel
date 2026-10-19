@@ -19,12 +19,12 @@ def review_node(requested=(("User", "me"),), author=("User", "alice"), decision=
 
 
 class LaneTest(SentinelTest):
-    def watcher(self):
+    def watcher(self, **cfg):
         from unittest import mock
 
         from watchers.github_reviews import GithubReviewsWatcher
 
-        w = GithubReviewsWatcher({"login": "me", "orgs": ["acme"]})
+        w = GithubReviewsWatcher({"login": "me", "orgs": ["acme"], **cfg})
         mock.patch("watchers.github_reviews._body", return_value="").start()
         self.addCleanup(mock.patch.stopall)
         return w
@@ -39,6 +39,13 @@ class LaneTest(SentinelTest):
         self.assertEqual((it.lane, it.urgency, it.fingerprint), ("team", "later", "team"))
         self.assertIsNone(w._item(review_node(requested=(("Team", "infra"),), decision="APPROVED")))
         self.assertIsNotNone(w._item(review_node(decision="APPROVED")), "asked by name: stays")
+
+    def test_priority_team_is_pushed_at_once_and_still_leaves_once_approved(self):
+        w = self.watcher(priority_teams=["Infra"])
+        it = w._item(review_node(requested=(("Team", "infra"),)))
+        self.assertEqual((it.lane, it.urgency, it.fingerprint), ("team", "now", "team"))
+        self.assertEqual(w._item(review_node(requested=(("Team", "web"),))).urgency, "later")
+        self.assertIsNone(w._item(review_node(requested=(("Team", "infra"),), decision="APPROVED")))
 
     def test_bot_bump_is_quiet_and_keyed_by_version(self):
         it = self.watcher()._item(review_node(requested=(("Team", "infra"),), author=("Bot", "renovate"),

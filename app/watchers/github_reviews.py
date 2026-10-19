@@ -2,7 +2,8 @@
 
   you   your review was requested by name                  → pushed right away
   team  requested through a team you belong to             → pushed only if nobody took it within
-                                                             the grace period; gone once approved
+                                                             the grace period (at once for priority_teams);
+                                                             gone once approved
   deps  a bot's dependency bump (Renovate, Dependabot)     → never pushed, grouped by bump
 
 Drafts never push. A team or deps PR somebody else already approved no longer needs you,
@@ -46,6 +47,7 @@ class GithubReviewsWatcher(Watcher):
         self.interval_seconds = cfg.get("interval_seconds", 180)
         self.login = cfg["login"]
         self.orgs = cfg.get("orgs", [])
+        self.priority_teams = {t.lower() for t in cfg.get("priority_teams", [])}
         # Renovate's update table (major/minor/patch, from → to) lives in the PR body, which is
         # far too heavy to pull every poll: read once per PR title (a new version = a new title)
         self._bodies: dict[tuple[str, str], dict] = {}
@@ -111,7 +113,8 @@ class GithubReviewsWatcher(Watcher):
             payload["why"] = f"asked you directly · by {payload['author']}"
         else:
             # a team request that moves (new commits, comments) is still not yours: never re-notify
-            lane, urgency, fingerprint = "team", "later", "team"
+            urgent = any(t.lower() in self.priority_teams for t in teams)
+            lane, urgency, fingerprint = "team", "now" if urgent else "later", "team"
             payload["why"] = f"team {', '.join(teams) or '?'} · by {payload['author']}"
         if pr["isDraft"]:
             urgency = "quiet"

@@ -7,6 +7,7 @@ watchers:
     interval_seconds: 180
     login: your-github-username
     orgs: [your-org, another-org]
+    priority_teams: []   # team slugs whose requests skip the grace period and are pushed at once
 
   # Generic Atlassian Statuspage watcher — works with any status page exposing
   # /api/v2/summary.json (Scaleway, OVHcloud, GitHub, Cloudflare, ...).

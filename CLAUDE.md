@@ -20,7 +20,7 @@ app/
 ├── db.py             # schema + migrations (_migrate_items, _migrate_reviews) + helpers, no ORM
 ├── engine.py         # CORE: diff fetch vs state, notification policy, ack/snooze, grace, health
 ├── watchers/         # 1 watcher = fetch() → list[WatchedItem] (lane + urgency), nothing else
-│   ├── github_reviews.py   # GraphQL: lanes you / team / deps, team+APPROVED dropped, bump bodies cached
+│   ├── github_reviews.py   # GraphQL: lanes you / team / deps, team+APPROVED dropped, `priority_teams` = team pushed at once, bump bodies cached
 │   ├── statuspage.py       # generic Atlassian Statuspage; every incident quiet (listed in Later, never pushed)
 │   ├── zabbix.py           # open problems as the front shows them (skipDependent, monitored); ≥ push_severity → items (lane watch)
 │   └── grafana.py          # one source per dashboard (grafana:<uid>, token pinned to `url`): confirmed stop / status change → items (lane watch)
