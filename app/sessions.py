@@ -36,6 +36,7 @@ STATES = {
     "idle": ("i-clock", "neutral", "idle"),
 }
 ORDER = ("waiting", "working", "starting", "done", "idle")
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _live: dict = {"at": 0.0, "rows": [], "error": ""}
 
 
@@ -279,14 +280,25 @@ def api_new():
 
 @bp.post("/api/sessions/end")
 def api_end():
-    name = request.form.get("name", "")
-    if not console.NAME.fullmatch(name):
+    """A console closes, a session in another terminal stops there; `quiet` (a tab's ×, the pane showing another one)
+    answers nothing, the list says it on its next poll."""
+    key = request.form.get("key", "")
+    kind, _, ref = key.partition(":")
+    if not (kind == "console" and console.NAME.fullmatch(ref) or kind == "session" and SESSION_ID.fullmatch(ref)):
         abort(404)
+    before = _find(key)
     try:
-        console.end(name)
+        if kind == "console":
+            console.end(ref)
+        else:
+            console.stop(ref)
     except (requests.RequestException, RuntimeError, ValueError) as e:
-        return _session(_find(f"console:{name}"), f"the Claude bridge: {e}")
+        return _session(before, f"the Claude bridge: {e}")
     _live["at"] = 0.0
-    row = _find(f"console:{name}")
+    if request.form.get("quiet"):
+        return "", 204
+    # its ticket, to pick up again
+    story = (before or {}).get("story", "")
+    row = _find(key) or (_find(f"story:{story[3:]}") if story else None)
     return _session(row) if row else _detail("partials/detail_gone.html", gone="Session ended",
                                              why="Its transcript stays in Claude Code's history.")

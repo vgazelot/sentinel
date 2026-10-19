@@ -7,7 +7,7 @@
     <div class="d-top">
         {% if row.story %}<span class="mono">{{ row.story }}</span>{% endif %}<span class="s-title">{{ (row.title | subject).text }}</span><span class="console-state"></span>
         <span class="spacer"></span>
-        <button type="button" class="btn small ghost" hx-post="/api/sessions/end" hx-vals='{"name": "{{ s.console }}"}'
+        <button type="button" class="btn small ghost" hx-post="/api/sessions/end" hx-vals='{"key": "{{ row.key }}"}'
                 hx-confirm="End this Claude session? Its transcript stays." title="Stops Claude Code and closes the console">End</button>
         {% if url %}<a class="d-open" href="{{ url }}" target="_blank" rel="noopener" data-open>Ticket</a>{% endif %}
     </div>
@@ -26,6 +26,11 @@
     <h2 class="d-title">{{ (row.title | subject).text }}</h2>
     {% if s %}
     <p class="d-why">Runs in another terminal: <span class="mono">{{ s.name }}</span>, {{ row.word }}{% if row.at %} {{ row.at | age }} ago{% endif %}. Sentinel shows here the sessions it starts.</p>
+    <div class="bar">
+        <button type="button" class="btn" hx-post="/api/sessions/end" hx-vals='{"key": "{{ row.key }}"}' hx-disabled-elt="this"
+                hx-confirm="End this Claude session? Its transcript stays.">End</button>
+        <span class="muted">Claude Code exits, its terminal stays: <code>claude --resume</code> there brings it back.</span>
+    </div>
     {% if row.advice %}<p class="d-note">{{ row.advice }}{% if row.fresh %} <code>{{ row.fresh }}</code> in its terminal writes where it stands into its ticket, then starts fresh from there.{% endif %}</p>{% endif %}
     {% else %}
     <div class="bar">

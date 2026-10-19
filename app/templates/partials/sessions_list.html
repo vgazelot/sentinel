@@ -1,8 +1,10 @@
 {% import "partials/list_macros.html" as l with context %}
 {# the context size, on a session that would rather start fresh #}
 {% macro size(r) -%}{% if r.advice %}<span class="tag warn">{{ r.tokens // 1000 }}k</span>{% endif %}{%- endmacro %}
+{# the age, and in its place while the row is hovered, the × #}
+{% macro trail(r) -%}{{ size(r) }}<span class="end"><span class="age">{{ r.at | age if r.at }}</span>{{ l.close(r) }}</span>{%- endmacro %}
 {% macro session_row(r) -%}
-{% call l.row(r.key, (r.title | subject).text, r.tone, r.icon, '/partials/session?key=' ~ (r.key | urlencode), r.url, r.at | age if r.at else '', size(r)) %}
+{% call l.row(r.key, (r.title | subject).text, r.tone, r.icon, '/partials/session?key=' ~ (r.key | urlencode), r.url, '', trail(r)) %}
 {% if r.story %}<span class="mono">{{ r.story }}</span> · {% endif %}{{ r.word }}{% if r.where %} · {{ r.where }}{% endif %}
 {% endcall %}
 {%- endmacro %}

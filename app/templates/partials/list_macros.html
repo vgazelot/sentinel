@@ -11,6 +11,11 @@
 </div>
 {%- endmacro %}
 
+{# a live session's ×: static/sessions.js ends it, asking first when it works or waits on you #}
+{% macro close(r) -%}
+<button type="button" class="x" data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'working', 'starting') %} data-ask{% endif %} title="End this session — its transcript stays (claude --resume)"><svg><use href="#i-close"/></svg></button>
+{%- endmacro %}
+
 {% macro icon_of(v) -%}
 {%- if v.lane == 'followup' -%}{{ 'i-x' if v.p.kind in ('failed', 'reverted') else 'i-warn' }}
 {%- elif v.lane == 'mine' -%}{{ MINE_ICON.get(v.p.action, 'i-pr') }}

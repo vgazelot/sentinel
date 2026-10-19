@@ -115,6 +115,23 @@
         if (t.closest('[data-tabs]')) toggleTabs();
     });
 
+    // a session's ×, before its row or tab sees the click: the session in the pane ends there, like its End button,
+    // another one without a word; the list, fetched again, drops it — or, if it failed, gives it back
+    document.addEventListener('click', (e) => {
+        const x = e.target.closest('[data-close]');
+        if (!x) return;
+        e.stopPropagation();
+        const key = x.dataset.close;
+        if (x.hasAttribute('data-ask') && !confirm(`End this Claude session (${x.dataset.word})? Its transcript stays.`)) return;
+        const closing = (on) => document.querySelectorAll(`:is(.it, .tab)[data-key="${CSS.escape(key)}"]`).forEach((el) => el.classList.toggle('closing', on));
+        closing(true);
+        const here = key === selectedKey;
+        // from the × itself: htmx.ajax wants a source or a target, and no other request queues this one
+        htmx.ajax('POST', '/api/sessions/end', here ? { source: x, values: { key }, target: '#detail', swap: 'innerHTML' } : { source: x, values: { key, quiet: 1 }, swap: 'none' })
+            .then(() => htmx.ajax('GET', '/partials/sessions', { source: x, target: list, swap: 'innerHTML' }))
+            .finally(() => closing(false));
+    }, true);
+
     // ⌥1…9 and ⌥0 work in the terminal too: taken before xterm sees them
     document.addEventListener('keydown', (e) => {
         if (e.target.closest('#console')) return;

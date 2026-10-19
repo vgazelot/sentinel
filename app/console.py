@@ -33,7 +33,7 @@ def _bridge(path: str, payload: dict) -> dict:
     if r.status_code == 404 and str(data.get("error", "")).startswith("no console"):
         abort(404)
     if r.status_code == 404:
-        raise RuntimeError("this bridge has no console — restart it (launchctl bootout, then bootstrap)")
+        raise RuntimeError("this bridge is older than Sentinel — restart it (launchctl bootout, then bootstrap)")
     if r.status_code >= 400:
         raise RuntimeError(data.get("error") or f"bridge HTTP {r.status_code}")
     return data
@@ -50,6 +50,11 @@ def start(name: str, prompt: str = "", story: str = "") -> dict:
 def end(name: str):
     _bridge("/console/end", {"name": name})
     _alive["at"] = 0.0
+
+
+def stop(session_id: str):
+    """A session in another terminal stops there: its terminal stays, its transcript too."""
+    _bridge("/sessions/end", {"id": session_id})
 
 
 def answer(name: str, title: str, prompt: str = ""):

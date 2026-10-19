@@ -105,6 +105,46 @@ class BridgeSessionsTest(SentinelTest):
         tmux.assert_called_once_with("kill-session", "-t", "=sc-1234")
         self.assertEqual([c.args[0] for c in running.call_args_list], [200, 200, 200], "that console's Claude only, until it is gone")
 
+    def test_ending_a_session_stops_its_claude_only(self):
+        listed = [{"pid": 300, "sessionId": "other"}, {"pid": 400, "sessionId": SID}]
+
+        def end(comm, alive=(True, False)):
+            answers = iter(alive)
+            ps = mock.Mock(returncode=0, stdout=f"{comm}\n")
+            with mock.patch.object(self.b, "_agents", return_value=listed), \
+                    mock.patch.object(self.b.subprocess, "run", return_value=ps) as run, \
+                    mock.patch.object(self.b.os, "kill") as kill, mock.patch.object(self.b.time, "sleep"), \
+                    mock.patch.object(self.b, "_running", side_effect=lambda pid: next(answers)):
+                self.b.end_session(SID)
+            return run, kill
+
+        run, kill = end("claude")
+        self.assertEqual(run.call_args.args[0], ["ps", "-o", "comm=", "-p", "400"])
+        kill.assert_called_once_with(400, self.b.signal.SIGTERM)
+        self.assertFalse(end("/usr/bin/vim")[1].called, "a pid left behind is another program's by now")
+        with mock.patch.object(self.b, "_agents", return_value=listed[:1]), mock.patch.object(self.b.os, "kill") as kill:
+            self.b.end_session(SID)
+        self.assertFalse(kill.called, "gone already: nothing to do")
+        with mock.patch.object(self.b.time, "monotonic", side_effect=[0, 0, 11]), self.assertRaises(RuntimeError):
+            end("claude", alive=(True, True))
+
+    def test_ending_a_session_takes_its_id_only(self):
+        import http.client
+        import threading
+
+        server = self.b.ThreadingHTTPServer(("127.0.0.1", 0), self.b.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with mock.patch.object(self.b, "TOKEN", "t"), mock.patch.object(self.b, "end_session") as end:
+            for sid, code in (("1; kill -9 -1", 400), (SID, 200)):
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+                conn.request("POST", "/sessions/end", json.dumps({"id": sid}),
+                             headers={"Host": "localhost", "Authorization": "Bearer t", "Content-Type": "application/json"})
+                self.assertEqual(conn.getresponse().status, code)
+                conn.close()
+        end.assert_called_once_with(SID)
+
 
 def story(sid, name, state_type, mine=True):
     return {"id": sid, "name": name, "url": f"https://app.shortcut.com/acme/story/{sid}", "state_type": state_type,
@@ -215,6 +255,9 @@ class SessionsTest(SentinelTest):
         tabs = page[page.index('<nav class="tabs" id="tabs"'):page.index("</nav>", page.index('<nav class="tabs"'))]
         self.assertNotIn("hx-swap-oob", tabs, "the page draws the tabs in place")
         self.assertEqual(tabs.count('class="tab"'), 4, "every live session has its tab, no ticket does")
+        self.assertEqual(tabs.count("data-close="), 4, "each with its ×")
+        self.assertIn('data-close="session:d" data-word="working" data-ask', tabs, "a session at work asks first")
+        self.assertIn('data-close="session:c" data-word="idle" title=', page, "an idle one ends at once")
         polled = self.client.get("/partials/sessions").get_data(as_text=True)
         self.assertIn('<nav class="tabs" id="tabs" aria-label="Live sessions" hx-swap-oob="true">', polled,
                       "the polled list brings the tabs along")
@@ -231,6 +274,7 @@ class SessionsTest(SentinelTest):
         self.assertIn("infra#7", ticket)
         self.assertIn('data-attach="/api/console/sc-1002/attach"', live)
         self.assertIn("another terminal", elsewhere)
+        self.assertIn('hx-vals=\'{"key": "session:c"}\'', elsewhere, "it ends from here too")
         self.assertIn("/handoff", elsewhere)
         self.assertIn("This one is gone", self.client.get("/partials/session?key=session:zz").get_data(as_text=True))
         self.assertIn("New session", self.client.get("/partials/session?key=new").get_data(as_text=True))
@@ -273,12 +317,32 @@ class SessionsTest(SentinelTest):
             self.sessions = [s for s in self.sessions if s["console"] != name]
 
         with mock.patch("console.end", side_effect=end), mock.patch("shortcut.story", side_effect=RuntimeError("x")):
-            page = self.client.post("/api/sessions/end", data={"name": "sc-1002"}).get_data(as_text=True)
+            page = self.client.post("/api/sessions/end", data={"key": "console:sc-1002"}).get_data(as_text=True)
             self.sessions.append(session("p", "idle", console="sc-1001-ab12"))
-            picked = self.client.post("/api/sessions/end", data={"name": "sc-1001-ab12"}).get_data(as_text=True)
+            picked = self.client.post("/api/sessions/end", data={"key": "console:sc-1001-ab12"}).get_data(as_text=True)
         self.assertIn("Pick up", page)
         self.assertIn("Pick up", picked, "a console picked up as sc-N-xxxx gives its ticket back too")
-        self.assertEqual(self.client.post("/api/sessions/end", data={"name": "../x"}).status_code, 404)
+        for key in ("console:../x", "session:../x", "story:1001", "sc-1002"):
+            self.assertEqual(self.client.post("/api/sessions/end", data={"key": key}).status_code, 404, key)
+
+    def test_a_session_in_another_terminal_ends_there(self):
+        self.sessions.append(session(SID, "idle", {"story": "sc-1001"}))
+
+        def stop(sid):
+            self.sessions = [s for s in self.sessions if s["id"] != sid]
+
+        with mock.patch("console.stop", side_effect=stop) as ended, mock.patch("shortcut.story", side_effect=RuntimeError("x")):
+            page = self.client.post("/api/sessions/end", data={"key": f"session:{SID}"}).get_data(as_text=True)
+        ended.assert_called_once_with(SID)
+        self.assertIn("Pick up", page, "its ticket, to pick up again")
+        self.sessions.append(session(SID, "idle"))
+        with mock.patch("console.stop", side_effect=stop):
+            quiet = self.client.post("/api/sessions/end", data={"key": f"session:{SID}", "quiet": "1"})
+        self.assertEqual((quiet.status_code, quiet.get_data()), (204, b""), "a tab's ×: the pane shows another one")
+        with mock.patch("console.stop", side_effect=RuntimeError("Claude (pid 4) still runs 10 s after SIGTERM")):
+            self.sessions.append(session(SID, "idle"))
+            failed = self.client.post("/api/sessions/end", data={"key": f"session:{SID}", "quiet": "1"}).get_data(as_text=True)
+        self.assertIn("still runs 10 s after SIGTERM", failed, "a failure says so, quiet or not")
 
     def test_a_bridge_away_says_so(self):
         self.sessions = []

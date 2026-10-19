@@ -44,11 +44,14 @@ cannot send the token: it attaches with a ticket valid once and for a minute, th
 for, and only from an origin in BRIDGE_ORIGINS — any other page gets nothing, not even a read.
 
 Sessions — every Claude Code session running on this host, in a console or in any other terminal:
-    GET  /sessions → {"sessions": [{"id", "name", "status", "waiting_for", "console", "title", "context"}]}
+    GET  /sessions      → {"sessions": [{"id", "name", "status", "waiting_for", "console", "title", "context"}]}
+    POST /sessions/end {"id"} → stops it, over when Claude has left → {"ended"}
 From `claude agents --json` (Claude Code's own list), the console each one runs in, its title (the end of its
 transcript) and `context`: what contrib/claude-code-context publishes about it (<CLAUDE_CONFIG_DIR>/context-advisor/
 <session id>.json: story, context size, cold cache, advice) — the advisor owns a session's story, read here as is.
 `POST /console` takes an optional `story` (`sc-12345`): the session starts linked to it (CONTEXT_STORY).
+Ending a session sends its Claude a SIGTERM, as `kill` would: Claude restores the terminal and exits, the shell it ran
+in stays, so does its transcript (`claude --resume`).
 """
 import base64
 import fcntl
@@ -207,7 +210,7 @@ LOOKOUT_MODES = ("scout", "assess", "dig")
 MATERIAL_MODES = ("precheck", "followup", "brief", "whyred", "asks") + LOOKOUT_MODES
 TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
             **{mode: ("", [], []) for mode in MATERIAL_MODES}}
-API = 5  # what /healthz reports: Sentinel refuses an older bridge
+API = 6  # what /healthz reports: Sentinel refuses an older bridge
 
 TMUX = os.environ.get("TMUX_BIN") or shutil.which("tmux") or "tmux"
 TMUX_CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmux.conf")
@@ -485,16 +488,21 @@ def _title(session_id: str) -> str:
     return ""
 
 
-def live_sessions() -> list[dict]:
-    """The sessions Claude Code says are running (`claude agents --json`, its interface for scripts), each with the
-    console it runs in, its title and what the context advisor publishes about it."""
+def _agents() -> list[dict]:
+    """The sessions Claude Code says are running: `claude agents --json`, its interface for scripts."""
     out = subprocess.run([CLAUDE, "agents", "--json"], capture_output=True, text=True, timeout=30)
     if out.returncode:
         raise RuntimeError(f"claude agents exited {out.returncode}: {(out.stderr or out.stdout).strip()[-500:]}")
+    return json.loads(out.stdout)
+
+
+def live_sessions() -> list[dict]:
+    """The sessions running, each with the console it runs in, its title and what the context advisor publishes
+    about it."""
     consoles = _console_pids()
     parents = _parents() if consoles else {}
     rows = []
-    for s in json.loads(out.stdout):
+    for s in _agents():
         sid, pid = str(s.get("sessionId") or ""), s.get("pid")
         known = bool(SESSION_ID.fullmatch(sid))
         rows.append({
@@ -516,6 +524,23 @@ def live_sessions() -> list[dict]:
         except OSError:  # another read pruned it first
             pass
     return rows
+
+
+def end_session(session_id: str):
+    """The pid Claude Code lists for that session, if it still runs claude (a pid left behind by a session that died
+    can be another program's by now); over when Claude has left, like a console. Gone already: nothing to do."""
+    pid = next((s.get("pid") for s in _agents() if s.get("sessionId") == session_id), None)
+    if not isinstance(pid, int) or pid <= 1:
+        return
+    comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout
+    if not os.path.basename(comm.strip()).startswith("claude"):
+        return
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 10
+    while _running(pid):
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"Claude (pid {pid}) still runs 10 s after SIGTERM")
+        time.sleep(0.2)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -588,12 +613,23 @@ class Handler(BaseHTTPRequestHandler):
         self.log_message("console %s %s", name, "started" if started else "reopened")
         self._json(200, {"name": name, "ticket": ticket(name), "started": started})
 
+    def _end_session(self, data: dict):
+        sid = str(data.get("id") or "")
+        if not SESSION_ID.fullmatch(sid):
+            return self._json(400, {"error": "id: a Claude Code session id"})
+        try:
+            end_session(sid)
+        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
+            return self._json(500, {"error": str(e)})
+        self.log_message("session %s ended", sid)
+        self._json(200, {"ended": sid})
+
     def do_POST(self):
         if self._refused():
             return
         if not TOKEN:
             return self._json(503, {"error": "set BRIDGE_TOKEN on the bridge and the same CLAUDE_BRIDGE_TOKEN in Sentinel"})
-        if self.path not in ("/run", "/review", "/console", "/console/end"):
+        if self.path not in ("/run", "/review", "/console", "/console/end", "/sessions/end"):
             return self._json(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length") or 0)
         try:
@@ -602,6 +638,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "bad json"})
         if self.path.startswith("/console"):
             return self._console(data if isinstance(data, dict) else {})
+        if self.path == "/sessions/end":
+            return self._end_session(data if isinstance(data, dict) else {})
         mode = str(data.get("mode") or "deep")
         url = str(data.get("url") or "")
         urls = [str(u) for u in (data.get("urls") or [])][:8]

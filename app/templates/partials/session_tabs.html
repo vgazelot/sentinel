@@ -1,4 +1,5 @@
 {# the live sessions as tabs over the pane, grouped by big rock: shown in focus when the list makes way (static/sessions.js) #}
+{% from "partials/list_macros.html" import close %}
 <nav class="tabs" id="tabs" aria-label="Live sessions"{% if tabs_oob %} hx-swap-oob="true"{% endif %}>
     <button type="button" class="icon-btn" data-overview title="Back to every ticket (Esc)"><svg><use href="#i-grid"/></svg></button>
     <div class="tabs-scroll">
@@ -6,7 +7,7 @@
         {% for g in groups %}{% set live = g.rows | selectattr('session') | list %}{% if live %}
         <div class="tg">
             <span class="tg-l" title="{{ g.title }}">{{ g.title }}</span>
-            {% for r in live %}<button type="button" class="tab" data-key="{{ r.key }}" title="{{ (r.title | subject).text }} · {{ r.word }}"><svg class="ic {{ r.tone }}"><use href="#{{ r.icon }}"/></svg><span>{{ (r.title | subject).text }}</span></button>{% endfor %}
+            {% for r in live %}<div class="tab" data-key="{{ r.key }}"><button type="button" class="tab-b" title="{{ (r.title | subject).text }} · {{ r.word }}"><svg class="ic {{ r.tone }}"><use href="#{{ r.icon }}"/></svg><span>{{ (r.title | subject).text }}</span></button>{{ close(r) }}</div>{% endfor %}
         </div>
         {% endif %}{% endfor %}
     </div>
