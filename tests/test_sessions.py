@@ -121,7 +121,9 @@ class BridgeSessionsTest(SentinelTest):
         run, kill = end("claude")
         self.assertEqual(run.call_args.args[0], ["ps", "-o", "comm=", "-p", "400"])
         kill.assert_called_once_with(400, self.b.signal.SIGTERM)
-        self.assertFalse(end("/usr/bin/vim")[1].called, "a pid left behind is another program's by now")
+        with self.assertRaisesRegex(RuntimeError, "runs /usr/bin/vim, not claude"):
+            end("/usr/bin/vim")  # a pid left behind is another program's by now: said, not killed, not called ended
+        self.assertFalse(end("")[1].called, "it left on its own meanwhile")
         with mock.patch.object(self.b, "_agents", return_value=listed[:1]), mock.patch.object(self.b.os, "kill") as kill:
             self.b.end_session(SID)
         self.assertFalse(kill.called, "gone already: nothing to do")

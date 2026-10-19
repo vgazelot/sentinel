@@ -111,6 +111,7 @@
         }
         const filter = t.closest('[data-filter]');
         if (filter) { save('filter', filter.dataset.filter); dress(); mark(false); return; }
+        if (t.closest('[data-unselect]')) selectedKey = null;  // the pane is New's now: a × on the old one must not take it
         if (t.closest('[data-overview], [data-unselect]')) { focus(false); return; }
         if (t.closest('[data-tabs]')) toggleTabs();
     });

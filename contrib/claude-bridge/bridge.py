@@ -528,13 +528,15 @@ def live_sessions() -> list[dict]:
 
 def end_session(session_id: str):
     """The pid Claude Code lists for that session, if it still runs claude (a pid left behind by a session that died
-    can be another program's by now); over when Claude has left, like a console. Gone already: nothing to do."""
+    can be another program's by now); over when Claude has left, like a console. Not listed: gone already."""
     pid = next((s.get("pid") for s in _agents() if s.get("sessionId") == session_id), None)
-    if not isinstance(pid, int) or pid <= 1:
+    if not isinstance(pid, int):
         return
-    comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout
-    if not os.path.basename(comm.strip()).startswith("claude"):
+    comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout.strip()
+    if not comm:  # it left on its own meanwhile
         return
+    if not os.path.basename(comm).startswith("claude"):
+        raise RuntimeError(f"pid {pid} runs {comm}, not claude: left as is")
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + 10
     while _running(pid):
