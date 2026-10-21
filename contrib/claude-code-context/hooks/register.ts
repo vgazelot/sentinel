@@ -120,11 +120,19 @@ async function remember($: $T) {
   await $.store.set(`last:${await $.session.id()}`, ctx.lastResponseAt)
 }
 
-async function startHandoff($: $T) {
+// submitted once the hook that decided it is over: a command.run or turn.complete hook holds the session
+function startHandoff($: $T) {
   if (!anchored()) return
-  const f = await figures($)
   ctx.handoff = key(anchor())
-  await $.prompt.submit({ text: handoffPrompt(anchor(), f.tokens) })
+  $.clock.after(50, async () => {
+    try {
+      const f = await figures($)
+      await $.prompt.submit({ text: handoffPrompt(anchor(), f.tokens) })
+    } catch (err) {
+      ctx.handoff = null
+      $.ui.toast(`context: the handoff was not sent: ${String(err)}`, { timeoutMs: 15_000 })
+    }
+  })
 }
 
 async function resumeFresh($: $T, a: Anchor) {
@@ -271,7 +279,7 @@ export const register: Register = on => {
       if (!anchored()) {
         $.ui.toast(`${kTokens(f.tokens)} of context and nothing linked: ${LINK} to be able to start fresh without losing anything.`, { timeoutMs: 15_000 })
       } else if (ctx.settings.auto && !e.answer.trim().endsWith('?')) {
-        void startHandoff($)
+        startHandoff($)
       } else if (ctx.handoffCommand) {
         await $.prompt.suggest({ text: ctx.handoffCommand })
         $.ui.toast(`${kTokens(f.tokens)} of context: ${ctx.handoffCommand} writes the state into ${where(anchor())} then starts fresh (Tab to take it).`, { timeoutMs: 15_000 })
@@ -290,7 +298,7 @@ export const register: Register = on => {
     on('command.run', { command }, async ($, e, next) => {
       if (`/${e.command}` !== ctx.handoffCommand) return next(e)
       if (!anchored()) return { text: `Nothing linked to this session: ${LINK}, then ${ctx.handoffCommand}.` }
-      await startHandoff($)
+      startHandoff($)
       return { text: `Handing off: the state goes into ${where(anchor())}, then a fresh session picks up from there.` }
     })
   }

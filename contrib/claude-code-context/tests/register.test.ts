@@ -7,9 +7,16 @@ declare const setTimeout: (callback: () => void, ms: number) => unknown
 const HOME = '/home/me'
 const START = { cwd: '/work', surface: null, isInteractive: true }
 const NOTHING_LINKED = 'No story linked: /ticket sc-12345 to link one.'
+const MIN = 60_000
 
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-function engine(on: any, env: Record<string, string>, held: string[] = []) {
+async function until(done: () => boolean) {
+  for (let i = 0; i < 100 && !done(); i++) await sleep(5)
+  expect(done()).toBe(true)
+}
+
+function engine(on: any, env: Record<string, string>, held: string[] = [], tokens = 90_000) {
   // one file system: the advisor reads back what it wrote; a /resume changes the session id
   const files = new Map<string, string>()
   const session = { id: 'session-1' }
@@ -20,9 +27,42 @@ function engine(on: any, env: Record<string, string>, held: string[] = []) {
   on('store.set', async () => ({ value: undefined }))
   on('session.id', async () => ({ value: session.id }))
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
-  on('session.usage', async () => ({ value: { startedAt: 0, context: { tokens: 90_000, window: 1_000_000 }, rateLimits: [] } }))
-  on('clock.now', async () => ({ value: 1_000 }))
-  on('clock.every', async () => ({ value: undefined }))
+  on('session.usage', async () => ({ value: { startedAt: 0, context: { tokens, window: 1_000_000 }, rateLimits: [] } }))
+  const clock = { now: 1_000 }
+  on('clock.now', async () => ({ value: clock.now }))
+  // the status line's period passes when the test says so, a delay as it would
+  let period = () => {}
+  on('clock.every', () => new Promise(r => (period = () => r({ value: undefined }))))
+  on('clock.after', async (_: unknown, e: { ms: number }) => {
+    await sleep(e.ms)
+    return { value: undefined }
+  })
+  const tick = async () => {
+    period()
+    await sleep(20)
+  }
+  // what the advisor submits, puts in the prompt box and runs; the box holds `box.text`
+  const submitted: string[] = []
+  const filled: string[] = []
+  const ran: string[] = []
+  const box = { text: '' }
+  on('prompt.submit', async (_: unknown, e: { text: string }) => {
+    submitted.push(e.text)
+    return { text: e.text }
+  })
+  on('prompt.read', async () => ({ value: { text: box.text, cursor: 0 } }))
+  on('prompt.fill', async (_: unknown, e: { text: string }) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  // a command the advisor leaves to the engine: `held` ones are another plugin's
+  on('command.run', async (_: unknown, e: { command: string }) => {
+    ran.push(e.command)
+    return { text: `the other plugin's /${e.command}` }
+  })
+  on('turn.start', async (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', async (_: unknown, e: { answer: string }) => ({ text: e.answer }))
+  on('classic.Stop', async () => ({}))
   on('ui.status', async () => ({ value: undefined }))
   on('ui.toast', async (_: unknown, e: { text: string }) => {
     toasts.push(e.text)
@@ -53,7 +93,7 @@ function engine(on: any, env: Record<string, string>, held: string[] = []) {
     }
     throw new Error(`never published as expected: ${files.get(path())}`)
   }
-  return { state, toasts, session }
+  return { state, toasts, session, clock, tick, submitted, filled, ran, box }
 }
 
 // what /ticket says the session is linked to
@@ -69,7 +109,6 @@ describe('publishing', () => {
 
   test('/handoff held by another plugin: the advisor hands off as /context-handoff, says so, publishes it and leaves /handoff to it', async ($, on) => {
     const { state, toasts } = engine(on, {}, ['handoff'])
-    on('command.run', async () => ({ text: "the other plugin's /handoff" }))
     await $.session.start(START)
     await state(s => s.handoff === '/context-handoff')
     expect(toasts.join(' ')).toContain('/handoff already belong to another plugin here; its handoff is /context-handoff')
@@ -100,5 +139,15 @@ describe('publishing', () => {
     await state(s => s.story === 'sc-5555')
     await $.session.start(START)
     expect(await linked($)).toBe('Linked story: sc-5555.')
+  })
+})
+
+describe('handoff', () => {
+  test('/context-handoff answers, then submits the handoff once its own hook is over', async ($, on) => {
+    const { submitted } = engine(on, { CONTEXT_STORY: 'sc-4242' }, ['handoff'])
+    await $.session.start(START)
+    expect((await $.command.run({ command: 'context-handoff', args: '' })).text).toContain('Handing off')
+    await until(() => submitted.length === 1)
+    expect(submitted[0]).toContain('HANDOFF-OK sc-4242')
   })
 })
