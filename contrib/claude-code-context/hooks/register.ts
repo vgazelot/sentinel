@@ -135,9 +135,19 @@ function startHandoff($: $T) {
   })
 }
 
-async function resumeFresh($: $T, a: Anchor) {
+function resumeFresh($: $T, a: Anchor) {
   ctx.resumeAfterClear = a
-  $.clock.after(100, () => void $.command.run({ command: 'clear' }))
+  $.clock.after(100, async () => {
+    try {
+      await $.command.run({ command: 'clear' })
+    } catch (err) {
+      ctx.resumeAfterClear = null
+      $.ui.toast(`context: /clear failed, nothing started fresh: ${String(err)}`, { timeoutMs: 15_000 })
+      return
+    }
+    // the fresh session's first prompt once /clear is over: a SessionStart initialUserMessage is not run after a /clear (2.1.291)
+    await $.prompt.submit({ text: resumePrompt(a) })
+  })
 }
 
 export const register: Register = on => {
@@ -211,7 +221,6 @@ export const register: Register = on => {
         ctx.project = null
       }
       void refresh($) // a new session id: published now, not at the next tick
-      if (a) return { ...result, initialUserMessage: resumePrompt(a) }
     }
     if (e.source === 'resume' || e.source === 'fork') void refresh($)
     if (e.source === 'compact' && anchored()) {
@@ -266,7 +275,7 @@ export const register: Register = on => {
       const confirm = ctx.handoff
       ctx.handoff = null
       if (e.answer.includes(`HANDOFF-OK ${confirm}`)) {
-        await resumeFresh($, anchor())
+        resumeFresh($, anchor())
       } else {
         $.ui.toast(`Handoff not confirmed: check ${where(anchor())} before starting fresh.`, { timeoutMs: 15_000 })
       }
@@ -305,7 +314,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'fresh' }, async $ => {
     if (!anchored()) return { text: `Nothing linked to this session: ${LINK}, then /fresh.` }
-    await resumeFresh($, anchor())
+    resumeFresh($, anchor())
     return { text: `Fresh session: it picks up ${where(anchor())} and carries on.` }
   })
 

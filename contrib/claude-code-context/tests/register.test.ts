@@ -143,11 +143,14 @@ describe('publishing', () => {
 })
 
 describe('handoff', () => {
-  test('/context-handoff answers, then submits the handoff once its own hook is over', async ($, on) => {
-    const { submitted } = engine(on, { CONTEXT_STORY: 'sc-4242' }, ['handoff'])
+  test('/context-handoff answers, submits the handoff once its own hook is over, then starts fresh from the story', async ($, on) => {
+    const { submitted, ran } = engine(on, { CONTEXT_STORY: 'sc-4242' }, ['handoff'])
     await $.session.start(START)
     expect((await $.command.run({ command: 'context-handoff', args: '' })).text).toContain('Handing off')
     await until(() => submitted.length === 1)
     expect(submitted[0]).toContain('HANDOFF-OK sc-4242')
+    await $.turn.complete({ answer: 'Written.\nHANDOFF-OK sc-4242', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
+    await until(() => submitted.length === 2)
+    expect([ran, submitted[1]?.startsWith('Pick up sc-4242')]).toEqual([['clear'], true])
   })
 })
