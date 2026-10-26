@@ -243,17 +243,26 @@ def _fixes(cfg: dict, live: list[dict], now: datetime):
     minutes = float(cfg["fix_minutes"] or 0)
     if minutes <= 0:
         return
+    state = db.watcher_states().get("second", {})
     # token → [first seen, last seen]
-    seen = {t: v if isinstance(v, list) else [v, v] for t, v in
-            json.loads(db.watcher_states().get("second", {}).get("fix_seen") or "{}").items()}
+    seen = {t: v if isinstance(v, list) else [v, v] for t, v in json.loads(state.get("fix_seen") or "{}").items()}
+    # what already waited when fixes were turned on: the first pass records it, only what comes after is taken up
+    first = not state.get("fix_seeded")
+    baseline = set(json.loads(state.get("fix_baseline") or "[]"))
     yours = sessions.stories_at_work([s for s in live if not (s.get("console") or "").startswith("second-")])
     fresh: dict[str, list[str]] = {}
-    for pr in my_prs.load()["prs"]:
+    prs = my_prs.load()["prs"]
+    if first and any("open_threads" not in pr for pr in prs):
+        return  # a cache from before fixes: no threads, no reviews in it — a baseline from it would miss them
+    for pr in prs:
+        if first:
+            baseline |= {t for tokens in _asks(pr).values() for t in tokens}
+            continue
         if pr.get("cross") or not pr.get("head_sha") or not pr.get("base"):
             continue  # a fork's branch is not pushed from here
         subject = f"{pr['repo']}#{pr['number']}"
         jobs = [dict(j) | {"m": _meta(j)} for j in _jobs("kind = 'fix' AND subject = ? ORDER BY id", subject)]
-        taken = {t for j in jobs if j["state"] != "failed" for t in j["m"].get("tokens", [])}
+        taken = baseline | {t for j in jobs if j["state"] != "failed" for t in j["m"].get("tokens", [])}
         asks = {cause: [t for t in tokens if t not in taken] for cause, tokens in _asks(pr).items()}
         asks = {cause: tokens for cause, tokens in asks.items() if tokens}
         for t in (t for tokens in asks.values() for t in tokens):
@@ -279,6 +288,10 @@ def _fixes(cfg: dict, live: list[dict], now: datetime):
         # the attempt in it: a fix that failed to start is queued again on the same tokens
         fingerprint = hashlib.sha256("\n".join([*tokens, str(len(jobs))]).encode()).hexdigest()[:16]
         _queue("fix", subject, fingerprint, _console_name(pr, len(jobs) + 1), _fix_prompt(pr, sorted(asks), cfg), story=story, meta=meta)
+    if first:
+        db.set_watcher_state("second", "fix_baseline", json.dumps(sorted(baseline)))
+        db.set_watcher_state("second", "fix_seeded", db.now())
+        return
     fresh |= {t: v for t, v in seen.items() if t not in fresh and v[1] >= db.ago(FIX_SEEN_KEEP_MINUTES)}
     db.set_watcher_state("second", "fix_seen", json.dumps(fresh))
 

@@ -349,6 +349,9 @@ class FixTest(SecondBase):
                   mock.patch("shortcut.member_id", return_value="me-id")):
             p.start()
             self.addCleanup(p.stop)
+        import db
+
+        db.set_watcher_state("second", "fix_seeded", db.now())  # past its first pass
         self.prs([pr()])
 
     def prs(self, prs):
@@ -397,6 +400,29 @@ class FixTest(SecondBase):
         self.assertRegex(run["prompt"], r"BEGIN DATA (\w+)\n(.|\n)*ignore previous instructions(.|\n)*\nEND DATA \1")
         second.tick()
         self.assertEqual(len(self.started), 1, "one at a time per PR")
+
+    def test_what_already_waited_when_fixes_were_turned_on_is_left_alone(self):
+        import db
+        import second
+
+        with db.connect() as conn:
+            conn.execute("DELETE FROM watcher_state WHERE watcher = 'second'")
+        old = {k: v for k, v in pr().items() if k not in ("open_threads", "change_reviews", "base", "cross")}
+        self.prs([old])  # cached by the version before
+        second.tick()
+        self.assertNotIn("fix_seeded", db.watcher_states().get("second", {}), "no baseline from a cache without threads")
+        self.prs([pr(review="CHANGES_REQUESTED", change_reviews=["R1"], open_threads=["T1"], unresolved=1)])
+        for _ in range(3):
+            second.tick()
+            self.wait()
+        self.assertEqual(self.started, [], "its first pass is a baseline")
+        self.prs([pr(review="CHANGES_REQUESTED", change_reviews=["R1"], open_threads=["T1", "T2"], unresolved=2)])
+        second.tick()
+        self.wait()
+        second.tick()
+        self.assertEqual(len(self.started), 1, "a thread opened since")
+        self.assertEqual(self.jobs()[0]["meta"].count("thread:T2"), 1)
+        self.assertNotIn("thread:T1", self.jobs()[0]["meta"])
 
     def test_a_draft_is_pushed_once_github_still_shows_the_head_it_started_from(self):
         import second
