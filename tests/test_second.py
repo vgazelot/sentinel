@@ -8,7 +8,8 @@ from helpers import SentinelTest
 
 import second as _second  # noqa: E402 — after helpers, which puts the app on the path
 
-PLAN_DAY = _second._plan_day  # the real one: setUp patches it
+PLAN_DAY = _second._plan_day  # the real ones: setUp patches them
+PLAN_READY = _second._bridge_ready
 SID = "2b2aabb8-84b9-4d5e-bfbc-f8d2f25a3f4b"
 
 
@@ -28,6 +29,7 @@ class SecondTest(SentinelTest):
                     "cycle: {enabled: true, shortcut_member: me}\n")
         self.client = main.app.test_client()
         self.live, self.alive, self.answers, self.started, self.ended, self.attached = [], set(), {}, [], [], set()
+        self.bridge_api = 7
         db.set_watcher_state("cycle", "data", json.dumps({"big_rocks": [], "run": {"label": "RUN", "epics": [{"stories": []}]}}))
 
         def start(name, prompt="", story="", second=None):
@@ -42,7 +44,8 @@ class SecondTest(SentinelTest):
                   mock.patch("console.last_answer", side_effect=lambda sid: self.answers.get(sid, "")),
                   mock.patch("console.sessions", side_effect=lambda: [{"name": n, "attached": int(n in self.attached)} for n in self.alive]),
                   mock.patch("console.end", side_effect=lambda name: self.ended.append(name) or self.alive.discard(name)),
-                  mock.patch("second._plan_day", return_value="")):
+                  mock.patch("second._plan_day", return_value=""),
+                  mock.patch("second._bridge_ready", side_effect=lambda: self.bridge_api >= 7)):
             p.start()
             self.addCleanup(p.stop)
 
@@ -89,6 +92,29 @@ class SecondTest(SentinelTest):
                          "the alert's text is fenced as data")
         second.tick()
         self.assertEqual(len(self.started), 1, "once per occurrence")
+
+    def test_nothing_starts_on_a_bridge_older_than_the_second(self):
+        import second
+
+        self.bridge_api = 6  # it would start a plain console: your settings, no guard
+        self.alert()
+        second.tick()
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.jobs()[0]["state"], "queued")
+        self.bridge_api = 7
+        second.tick()
+        self.assertEqual(len(self.started), 1)
+
+    def test_the_bridge_version_is_asked_of_the_bridge(self):
+        import second
+
+        healthz = lambda api: mock.Mock(ok=True, json=lambda: {"api": api})
+        with mock.patch("requests.get", return_value=healthz(6)):
+            self.assertFalse(PLAN_READY())
+        with mock.patch("requests.get", return_value=healthz(7)):
+            self.assertTrue(PLAN_READY())
+        with mock.patch("requests.get", side_effect=second.requests.ConnectionError("down")):
+            self.assertFalse(PLAN_READY())
 
     def test_an_alert_you_opened_from_watch_is_yours(self):
         import second

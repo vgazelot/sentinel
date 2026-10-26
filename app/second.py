@@ -234,11 +234,25 @@ def _set(job_id: int, **fields):
         conn.execute(f"UPDATE second_jobs SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?", (*fields.values(), job_id))
 
 
+def _bridge_ready() -> bool:
+    """An older bridge ignores `second` and starts a plain console — your settings, no guard: nothing starts until the
+    bridge says it knows the Second's consoles."""
+    try:
+        r = requests.get(f"{config.CLAUDE_BRIDGE_URL}/healthz", headers=agents._auth(), timeout=5)
+        return r.ok and int(r.json().get("api", 0)) >= agents.BRIDGE_API
+    except (requests.RequestException, ValueError, TypeError):
+        return False
+
+
 def _start(cfg: dict, now: datetime):
     room = int(cfg["concurrency"]) - len(_jobs("state = 'running'"))
     left = int(cfg["max_per_day"]) - len(_jobs("started_at >= ?", _day_start(now)))
     hosts = {"ssh_hosts": list(cfg["ssh_hosts"] or []), "curl_hosts": list(cfg["curl_hosts"] or [])}
-    for job in _jobs("state = 'queued' ORDER BY id")[:max(min(room, left), 0)]:
+    queued = _jobs("state = 'queued' ORDER BY id")[:max(min(room, left), 0)]
+    if queued and not _bridge_ready():
+        log.warning("second: the bridge is older than the Second or away, %d job(s) wait", len(queued))
+        return
+    for job in queued:
         try:
             started = console.start(job["console"], job["prompt"], job["story"] or "", second=hosts).get("started", True)
         except (requests.RequestException, RuntimeError, ValueError) as e:
