@@ -55,6 +55,24 @@ LOOKOUT_DEFAULTS = {
 }
 
 
+SECOND_DEFAULTS = {
+    "enabled": False,           # the Second: Claude takes up, read-only, what waits too long (second.py)
+    "concurrency": 2,           # its consoles at work at once
+    "max_per_day": 40,          # consoles started per day
+    "watch_minutes": 5,         # a monitoring alert unacknowledged this long: a diagnosis
+    "watch_hours": 24,          # older alerts are left alone: no digging into last week's when it is turned on
+    "stuck_days": 2,            # a started ticket of yours untouched this long: what blocks it, in a comment
+    "stuck_per_day": 3,         # stalled tickets taken up per day, the oldest first: a backlog goes over days
+    "review_days": 1,           # a review asked of you by name, waiting this long: a devil's advocate read
+    "plan_at": "09:00",         # weekdays, local time: the day's plan; "off" = none
+    "timeout_minutes": 60,      # a console without an answer after this frees its place
+    "lang": "English",          # what it answers in
+    "who": "",                  # who it works for, by name: its prompts say "the person" otherwise
+    "ssh_hosts": [],            # host patterns (`*` within a name) its guard lets ssh read
+    "curl_hosts": [],           # host patterns curl may read (localhost always)
+}
+
+
 def load() -> dict:
     with open(CONFIG_PATH) as f:
         return yaml.safe_load(f) or {}
@@ -70,6 +88,10 @@ def agents() -> dict:
 
 def lookout() -> dict:
     return {**LOOKOUT_DEFAULTS, **(load().get("lookout") or {})}
+
+
+def second() -> dict:
+    return {**SECOND_DEFAULTS, **(load().get("second") or {})}
 
 
 def github() -> dict:

@@ -57,6 +57,7 @@ Open **http://localhost:8300**, then **Settings → Subscribe this browser** (us
 
 | Signal | Shown in | Pushed |
 |---|---|---|
+| The Second's plan for the day (weekdays, `second.plan_at`) | Today | once |
 | A Claude Code session waits for your answer (a question, a permission) | Sessions | after `session_wait_minutes` (3) |
 | Review asked of you by name | For you | right away |
 | Review asked of a team you belong to | Later → For you | only if still unclaimed after `team_grace_minutes`; gone once somebody approved |
@@ -180,6 +181,28 @@ The Claude Code sessions running on your machine, filed under the tickets they w
 - **Side by side.** Up to four sessions on the board: drag one from the list onto a terminal to split it (left or right half, then top or bottom of a column) — the box under the pointer says where it lands; drag a terminal's head onto another to swap them, onto the list (or its ×) to take it off, the session goes on. Selecting a session puts it in the active terminal's place; each row shows where its terminal is. `⌥1`…`⌥4` gives a terminal the keys, even from inside another one. The board is remembered by the browser.
 - **Where it comes from.** `claude agents --json` (Claude Code's list of running sessions) through the bridge, each session's title from its transcript, and — for its ticket, its context size and the advice — what the [context advisor](#claude-code-context-advisor-optional) publishes about it: Sentinel shows the advisor's own figures, it never works them out again. A session started before the advisor was loaded lists without ticket or size.
 - **Consoles.** A session started here — **Pick up** on a ticket, **New** for anything else — runs in a console: the real CLI, on the board, running on when you leave (`tmux -L sentinel attach -t sc-12345` from a terminal). One started in another terminal is listed with its name (`dev-9a`), read-only. **Pick up** starts a fresh session linked to the ticket and told to read it and its last handoff first — `resume_prompt` in a `sessions:` block changes what it is told (`{story}`). **Start fresh** types the advisor's handoff command, Enter is yours: the session writes where it stands into the ticket, then a fresh one picks up from there.
+
+## The Second (optional)
+
+Claude takes up, on its own and read-only, what waits on you too long, in a console of its own you can open from Sessions at any time:
+
+- **A monitoring alert nobody acknowledged** for `watch_minutes` (5): a diagnosis on the alert — what it saw, with the command that showed it, and the commands for you to run, each with its check. Its console is the one Watch's Claude button opens: clicking lands on its work; an alert you opened yourself is left to you.
+- **A started ticket of yours untouched** for `stuck_days` (2), no session on it: what blocks it and the next step, posted as a comment on the ticket (yours only — Sentinel checks the owner), once per stall, at most `stuck_per_day` (3) a day, the longest stalled first.
+- **Your day**, weekdays at `plan_at` (09:00): three things, in order, from what Sentinel knows — a row on top of Priority, pushed once.
+- **A review asked of you by name** for `review_days` (1): the devil's advocate reads it first (the `deep` agent run).
+
+It cannot change anything without you. The bridge starts its consoles with `claude --restricted` (none of your allow rules, hooks, settings or MCP servers), `--permission-mode manual`, no file editing tool, and `contrib/claude-second-guard`: a mod with the last word on every tool call — reading runs on its own (files, `git log`, `gh pr view`, `curl` GET to the hosts you name, `ssh` with a reading command to the hosts you name, MCP tools whose names read), anything else asks you, and the session then waits for you like any session asking a permission (an inbox row, a push). A guard that fails to load leaves the session asking for everything. It narrows what runs without you; it is not a sandbox: what it reads goes into the model's context, and a prompt can try to steer it — alert texts and ticket comments are fenced as data, credential files and token variables are not read on its own, and an answer that looks like it holds a token is not posted on a ticket.
+
+```yaml
+second:
+  enabled: true
+  lang: English            # what it answers in
+  ssh_hosts: ["web-*", "*.internal.example"]   # where ssh may read; none: every ssh asks
+  curl_hosts: []           # where curl may GET (localhost always)
+  # concurrency: 2, max_per_day: 40, watch_minutes: 5, watch_hours: 24, stuck_days: 2, stuck_per_day: 3, review_days: 1, plan_at: "09:00", timeout_minutes: 60
+```
+
+Bridge environment: `BRIDGE_SECOND_MCP` — comma-separated MCP config files its consoles get (monitoring, tickets: `--restricted` loads none of yours), `BRIDGE_SECOND_COMMAND` to replace the whole command. At most `concurrency` consoles at once; one is ended an hour after its answer unless you went on in it (its transcript stays: `claude --resume`).
 
 ## Claude Code status line (optional)
 

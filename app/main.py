@@ -23,6 +23,7 @@ import insight
 import lookout
 import my_prs
 import notify
+import second
 import sessions
 from watchers import build_watchers
 from console import bp as console_bp
@@ -68,6 +69,8 @@ if cycle.enabled(CYCLE_CFG):
     _every(cycle.refresh, CYCLE_CFG.get("interval_seconds", 1800), cycle.NAME, delay=12, args=[CYCLE_CFG])
 if sessions.enabled():
     _every(sessions.watch, 30, sessions.WATCH, delay=25)
+if second.enabled():
+    _every(second.tick, 30, "second", delay=40)
 if agents.enabled():
     _every(agents.tick, 10, "agents", delay=15)
     _every(agents.check_bridge, 120, "claude-bridge", delay=30)
@@ -278,10 +281,10 @@ def _followup_view(prs: list[dict]) -> tuple[list[dict], dict]:
     return prs, count
 
 
-# the inbox: your sessions and the monitoring alerts on top, the health light in the sidebar, cycle in its tab, status
-# pages wait in Later
+# the inbox: the day's plan, your sessions and the monitoring alerts on top, the health light in the sidebar, cycle in
+# its tab, status pages wait in Later
 FOR_YOU = ("you", "team", "followup")
-INBOX = ("session", "watch") + FOR_YOU + ("mine",)
+INBOX = ("plan", "session", "watch") + FOR_YOU + ("mine",)
 TABS = ("priority", "later", "done")
 
 
@@ -328,8 +331,11 @@ def _inbox(notice: str = "", error: str = "") -> dict:
     mine = _mine_groups([v for v in pending if v["lane"] == "mine"])
     return {
         **later,
+        "today": [v for v in attention if v["lane"] == "plan"],
         "sessions": sorted((v for v in attention if v["lane"] == "session"), key=lambda v: v["first_seen"]),
         "watch": newest(v for v in attention if v["lane"] == "watch"),
+        # what the Second does on each alert
+        "seconds": second.for_items([v["id"] for v in attention if v["lane"] == "watch"]),
         "for_you": for_you,
         "mine": mine,
         "acked": acked,
@@ -465,7 +471,8 @@ def partial_item(item_id: int):
         return _mine_detail(v)
     runs = db.runs_for([v["subject"]])
     _clear_by_claude([v], runs)
-    return _detail("partials/detail_item.html", v=v, runs=runs)
+    job = second.job(v["p"]["job"]) if v["lane"] == "plan" and v["p"].get("job") else second.for_items([v["id"]]).get(v["id"])
+    return _detail("partials/detail_item.html", v=v, runs=runs, job=job)
 
 
 @app.get("/partials/group")

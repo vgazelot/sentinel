@@ -25,6 +25,7 @@ data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'w
 {%- if v.lane == 'followup' -%}{{ 'i-x' if v.p.kind in ('failed', 'reverted') else 'i-warn' }}
 {%- elif v.lane == 'mine' -%}{{ MINE_ICON.get(v.p.action, 'i-pr') }}
 {%- elif v.lane == 'session' -%}i-chat
+{%- elif v.lane == 'plan' -%}i-target
 {%- else -%}{{ {'you': 'i-eye', 'team': 'i-eye', 'incident': 'i-cloud', 'watch': 'i-pulse', 'health': 'i-warn', 'cycle': 'i-target'}.get(v.lane, 'i-dot') }}
 {%- endif -%}
 {%- endmacro %}
@@ -33,6 +34,12 @@ data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'w
 {% macro claude_tag(run) -%}
 {% if run and run.status == 'done' %}{% set t = run.output | verdict %}{% if t[0] %}<span class="tag {{ t[1] }}" title="{{ run.output | headline }}">{{ t[0] }}</span>{% endif %}
 {%- elif run and run.status in ('queued', 'running') %}<span class="tag reading">reading</span>{% endif %}
+{%- endmacro %}
+
+{# what the Second does on an alert, one word #}
+{% macro second_tag(job) -%}
+{% if job and job.state in ('queued', 'running') %}<span class="tag reading" title="The Second is looking into it, read-only">Second reading</span>
+{%- elif job and job.state == 'done' %}<span class="tag second" title="{{ (job.report or '').strip().splitlines()[0] if job.report else '' }}">diag ready</span>{% endif %}
 {%- endmacro %}
 
 {% macro item(v, sub='', tag='') -%}

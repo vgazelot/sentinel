@@ -88,6 +88,28 @@ CREATE TABLE IF NOT EXISTS lookout (
     feedback_at TEXT
 );
 CREATE INDEX IF NOT EXISTS lookout_stage ON lookout (stage);
+-- The Second (second.py): one console per (kind, subject, fingerprint) — an alert occurrence, a ticket at a given
+-- update, a day's plan; state queued → running → done | failed.
+CREATE TABLE IF NOT EXISTS second_jobs (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    console TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'queued',
+    item_id INTEGER,
+    story TEXT,
+    prompt TEXT NOT NULL,
+    queued_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    session TEXT,
+    report TEXT,
+    error TEXT,
+    posted_at TEXT,
+    ended_at TEXT,
+    UNIQUE(kind, subject, fingerprint)
+);
 """
 # a pending item counts as "needs you" when it is urgent, or when its grace period ran out
 ATTENTION = "state = 'pending' AND (urgency = 'now' OR (urgency = 'later' AND notified_at IS NOT NULL))"

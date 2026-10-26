@@ -260,6 +260,11 @@ def answered() -> list[dict]:
     return _answered
 
 
+def stories_at_work(live: list[dict]) -> set[str]:
+    """The tickets a running session works on, as the board files them."""
+    return {row["story"] for row in (_session_row(s, 0, {}) for s in live) if row["story"]}
+
+
 def _name(s: dict) -> str:
     return s.get("console") or s.get("name") or ""
 

@@ -34,6 +34,7 @@ browser, or any page it opens, cannot make the bridge run Claude.
 
 Console — a live Claude Code session shown in Sentinel's window, the real CLI, not a chat:
     POST /console {"name": "zabbix-123", "prompt": "..."}  → starts it unless it runs → {"ticket", "started"}
+                  + "second": {"ssh_hosts": [...], "curl_hosts": [...]} → an unattended job's console (BRIDGE_SECOND_COMMAND)
     GET  /console                                          → {"consoles": [{"name", "created", "attached"}]}
     POST /console/end {"name"}                             → ends it
     GET  /console/ws?ticket=…                              → the WebSocket the browser attaches with
@@ -46,12 +47,19 @@ for, and only from an origin in BRIDGE_ORIGINS — any other page gets nothing, 
 Sessions — every Claude Code session running on this host, in a console or in any other terminal:
     GET  /sessions      → {"sessions": [{"id", "name", "status", "waiting_for", "console", "title", "context"}]}
     POST /sessions/end {"id"} → stops it, over when Claude has left → {"ended"}
+    GET  /sessions/answer?id=… → {"answer"}: what Claude wrote last, after its last tool call
 From `claude agents --json` (Claude Code's own list), the console each one runs in, its title (the end of its
 transcript) and `context`: what contrib/claude-code-context publishes about it (<CLAUDE_CONFIG_DIR>/context-advisor/
 <session id>.json: story, context size, cold cache, advice) — the advisor owns a session's story, read here as is.
 `POST /console` takes an optional `story` (`sc-12345`): the session starts linked to it (CONTEXT_STORY).
 Ending a session sends its Claude a SIGTERM, as `kill` would: Claude restores the terminal and exits, the shell it ran
 in stays, so does its transcript (`claude --resume`).
+
+An unattended job's console (Sentinel's Second) runs BRIDGE_SECOND_COMMAND: `claude --restricted` (none of your allow
+rules, hooks, settings or MCP servers), `--permission-mode manual` (what is not allowed asks), contrib/claude-second-guard
+(reading runs on its own, anything else asks — SECOND_SSH_HOSTS / SECOND_CURL_HOSTS name the hosts it may read), the
+context advisor and the MCP configs BRIDGE_SECOND_MCP names, Opus at medium effort. A job that needs more waits for you,
+as any session asking a permission.
 """
 import base64
 import fcntl
@@ -65,6 +73,7 @@ import pwd
 import re
 import secrets
 import select
+import shlex
 import shutil
 import signal
 import struct
@@ -210,11 +219,22 @@ LOOKOUT_MODES = ("scout", "assess", "dig")
 MATERIAL_MODES = ("precheck", "followup", "brief", "whyred", "asks") + LOOKOUT_MODES
 TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
             **{mode: ("", [], []) for mode in MATERIAL_MODES}}
-API = 6  # what /healthz reports: Sentinel refuses an older bridge
+API = 7  # what /healthz reports: Sentinel refuses an older bridge
 
 TMUX = os.environ.get("TMUX_BIN") or shutil.which("tmux") or "tmux"
 TMUX_CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmux.conf")
 CONSOLE_COMMAND = os.environ.get("BRIDGE_CONSOLE_COMMAND", "claude")
+CONTRIB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SECOND_COMMAND = os.environ.get("BRIDGE_SECOND_COMMAND") or " ".join([
+    CONSOLE_COMMAND, "--restricted",
+    # --restricted loads no MCP server of yours: BRIDGE_SECOND_MCP names the configs it gets (comma-separated paths).
+    # --mcp-config takes every word up to the next option: never last, or it swallows the prompt
+    *(f"--mcp-config {shlex.quote(p.strip())}" for p in os.environ.get("BRIDGE_SECOND_MCP", "").split(",") if p.strip()),
+    "--tools", "Bash,Read,Grep,Glob,WebSearch,Agent,Skill,TodoWrite,ToolSearch,AskUserQuestion",
+    "--permission-mode", "manual", "--model", "opus", "--effort", "medium",
+    "--plugin-dir", shlex.quote(os.path.join(CONTRIB, "claude-second-guard")),
+    "--plugin-dir", shlex.quote(os.path.join(CONTRIB, "claude-code-context"))])
+HOST_PATTERN = re.compile(r"[A-Za-z0-9*._-]{1,100}")
 ORIGINS = {o.strip() for o in os.environ.get("BRIDGE_ORIGINS", "http://localhost:8300,http://127.0.0.1:8300").split(",") if o.strip()}
 CONSOLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 STORY = re.compile(r"sc-\d{3,7}")
@@ -301,17 +321,23 @@ def consoles() -> list[dict]:
     return [{"name": n, "created": int(c), "attached": int(a)} for n, c, a in rows]
 
 
-def open_console(name: str, prompt: str, story: str = "") -> bool:
-    """Start the session unless it runs (True when started); without a prompt there is nothing to start."""
+def open_console(name: str, prompt: str, story: str = "", second: dict | None = None) -> bool:
+    """Start the session unless it runs (True when started); without a prompt there is nothing to start. `second`: an
+    unattended job's console, read-only, with the hosts its guard lets it read."""
     if _tmux("has-session", "-t", f"={name}").returncode == 0:
         return False
     if not prompt:
         raise LookupError(f"no console {name}")
     shell = pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
     linked = ["-e", f"CONTEXT_STORY={story}"] if STORY.fullmatch(story) else []
+    guarded = [] if second is None else [
+        arg for key in ("ssh_hosts", "curl_hosts")
+        for arg in ("-e", f"SECOND_{key.upper()}=" + ",".join(
+            h for h in second.get(key) or [] if isinstance(h, str) and HOST_PATTERN.fullmatch(h)))]
+    command = CONSOLE_COMMAND if second is None else SECOND_COMMAND
     # the prompt travels in the environment: the shell expands "$SENTINEL_PROMPT", it never parses it
     started = _tmux("new-session", "-d", "-s", name, "-x", "120", "-y", "32", "-c", CWD, "-e", f"SENTINEL_PROMPT={prompt}",
-                    *linked, shell, "-lic", f'{CONSOLE_COMMAND} "$SENTINEL_PROMPT"')
+                    *linked, *guarded, shell, "-lic", f'{command} "$SENTINEL_PROMPT"')
     if started.returncode:
         raise RuntimeError(started.stderr.strip() or f"tmux exited {started.returncode}")
     return True
@@ -442,6 +468,8 @@ CLAUDE_HOME = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.clau
 ADVISOR = os.path.join(CLAUDE_HOME, "context-advisor")  # written by contrib/claude-code-context, one file per session
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TITLE_TAIL = 1 << 20
+ANSWER_TAIL = 2 << 20
+MAX_ANSWER = 20_000
 ADVISOR_DAYS = 7
 
 
@@ -470,15 +498,43 @@ def _advisor(session_id: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _title(session_id: str) -> str:
-    """Claude Code's title for the session: the last `ai-title` near the end of its transcript, if any."""
+def _tail(session_id: str, size: int) -> bytes:
+    """The end of the session's transcript; nothing when there is none."""
     path = next(iter(glob.glob(os.path.join(CLAUDE_HOME, "projects", "*", f"{session_id}.jsonl"))), "")
     try:
         with open(path, "rb") as f:
-            f.seek(max(os.path.getsize(path) - TITLE_TAIL, 0))
-            tail = f.read()
+            f.seek(max(os.path.getsize(path) - size, 0))
+            return f.read()
     except OSError:
-        return ""
+        return b""
+
+
+def last_answer(session_id: str) -> str:
+    """What Claude wrote last in the session: the text after its last tool call, in its main loop (a subagent's
+    lines are not its answer)."""
+    texts: list[str] = []
+    for line in reversed(_tail(session_id, ANSWER_TAIL).splitlines()):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        content = (entry.get("message") or {}).get("content") if isinstance(entry, dict) else None
+        if entry.get("isSidechain") or entry.get("type") not in ("assistant", "user") or not isinstance(content, list):
+            continue
+        blocks = [b for b in content if isinstance(b, dict)]
+        if entry["type"] == "user" or any(b.get("type") == "tool_use" for b in blocks):
+            if texts:
+                break
+            if entry["type"] == "user" and not all(b.get("type") == "tool_result" for b in blocks):
+                return ""  # a prompt not answered yet
+            continue
+        texts += [str(b.get("text") or "") for b in reversed(blocks) if b.get("type") == "text"]
+    return "\n\n".join(t for t in reversed(texts) if t.strip())[:MAX_ANSWER]
+
+
+def _title(session_id: str) -> str:
+    """Claude Code's title for the session: the last `ai-title` near the end of its transcript, if any."""
+    tail = _tail(session_id, TITLE_TAIL)
     for line in reversed(tail.splitlines()):
         if b'"ai-title"' in line:
             try:
@@ -580,6 +636,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"sessions": live_sessions()})
             except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/sessions/answer":
+            sid = parse_qs(query).get("id", [""])[0]
+            if not SESSION_ID.fullmatch(sid):
+                return self._json(400, {"error": "id: a session id"})
+            return self._json(200, {"answer": last_answer(sid)})
         self._json(404, {"error": "not found"})
 
     def _console_ws(self, query: str):
@@ -607,7 +668,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/console/end":
                 end_console(name)
                 return self._json(200, {"ended": name})
-            started = open_console(name, str(data.get("prompt") or "")[:8000], str(data.get("story") or ""))
+            second = data.get("second") if isinstance(data.get("second"), dict) else None
+            started = open_console(name, str(data.get("prompt") or "")[:12000], str(data.get("story") or ""), second)
         except LookupError as e:
             return self._json(404, {"error": str(e)})
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:

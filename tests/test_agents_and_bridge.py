@@ -53,8 +53,8 @@ class AgentsTest(SentinelTest):
         import agents
         import db
 
-        for info, expected in (({"api": 5, "token": True}, "older version"), ({"api": 6, "token": False}, "BRIDGE_TOKEN"),
-                               ({"api": 6, "token": True}, "")):
+        for info, expected in (({"api": 6, "token": True}, "older version"), ({"api": 7, "token": False}, "BRIDGE_TOKEN"),
+                               ({"api": 7, "token": True}, "")):
             with mock.patch("requests.get", return_value=mock.Mock(json=lambda info=info: info, raise_for_status=lambda: None)), \
                     mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
                 agents.check_bridge()
@@ -67,7 +67,7 @@ class AgentsTest(SentinelTest):
         cfg["watchers"]["zabbix"] = {"enabled": True, "url": "https://z", "claude": True}
         with open(self.cfg_path, "w") as f:
             yaml.safe_dump(cfg, f)
-        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 6, "token": True}, raise_for_status=lambda: None)), \
+        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 7, "token": True}, raise_for_status=lambda: None)), \
                 mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
             agents.check_bridge()
         self.assertIn("no console", db.watcher_states()["claude-bridge"]["last_error"], "the Claude button needs a bridge with consoles")
@@ -192,6 +192,53 @@ class ConsoleBridgeTest(SentinelTest):
         self.assertNotIn("BRIDGE_TOKEN", env)
         with mock.patch.object(b.subprocess, "run", return_value=mock.Mock(returncode=1, stderr="")), self.assertRaises(LookupError):
             b.open_console("zabbix-1", "")  # reopening an ended session starts nothing
+
+    def test_an_unattended_job_runs_restricted_with_the_read_only_guard(self):
+        b = bridge()
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=1 if "has-session" in argv else 0, stderr="")
+
+        with mock.patch.object(b.subprocess, "run", side_effect=run):
+            b.open_console("zabbix-7", "look", "", {"ssh_hosts": ["web-*", "bad host; rm"], "curl_hosts": ["api.example.net"]})
+        argv = calls[-1]
+        self.assertEqual(argv[-1], f'{b.SECOND_COMMAND} "$SENTINEL_PROMPT"')
+        for flag in ("--restricted", "--permission-mode manual", "--model opus", "--effort medium", "claude-second-guard"):
+            self.assertIn(flag, b.SECOND_COMMAND)
+        with mock.patch.dict("os.environ", {"BRIDGE_SECOND_MCP": "/a/.mcp.json, /b/mcp.json"}):
+            command = bridge().SECOND_COMMAND
+        self.assertIn("--mcp-config /a/.mcp.json --mcp-config /b/mcp.json --tools", command,
+                      "an option after the configs: --mcp-config would take the prompt as one more")
+        self.assertIn("SECOND_SSH_HOSTS=web-*", argv, "a pattern that is not a host name never reaches the guard")
+        self.assertIn("SECOND_CURL_HOSTS=api.example.net", argv)
+
+    def test_a_sessions_last_answer_is_its_text_after_its_last_tool_call(self):
+        import os
+
+        b = bridge()
+        b.CLAUDE_HOME = self.tmp.name
+        sid = "2b2aabb8-84b9-4d5e-bfbc-f8d2f25a3f4b"
+        os.makedirs(os.path.join(self.tmp.name, "projects", "-work"))
+        path = os.path.join(self.tmp.name, "projects", "-work", f"{sid}.jsonl")
+
+        def write(*entries):
+            with open(path, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        def said(role, *blocks, **extra):
+            return {"type": role, "message": {"role": role, "content": list(blocks)}, **extra}
+
+        text = lambda t: {"type": "text", "text": t}
+        write(said("user", text("look at web-30")), said("assistant", text("Let me check.")),
+              said("assistant", {"type": "tool_use", "id": "1"}), said("user", {"type": "tool_result", "tool_use_id": "1"}),
+              said("assistant", text("intermediate"), isSidechain=True),
+              said("assistant", {"type": "thinking"}), said("assistant", text("Verdict: disk full.")), said("assistant", text("Run df -h.")))
+        self.assertEqual(b.last_answer(sid), "Verdict: disk full.\n\nRun df -h.")
+        write(said("user", text("look")), said("assistant", text("old")), said("user", text("and now?")))
+        self.assertEqual(b.last_answer(sid), "", "a prompt not answered yet")
+        self.assertEqual(b.last_answer("00000000-0000-4000-8000-000000000000"), "")
 
     def test_the_websocket_wants_sentinel_origin_and_a_ticket(self):
         import http.client

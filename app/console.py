@@ -39,10 +39,11 @@ def _bridge(path: str, payload: dict) -> dict:
     return data
 
 
-def start(name: str, prompt: str = "", story: str = "") -> dict:
+def start(name: str, prompt: str = "", story: str = "", second: dict | None = None) -> dict:
     """Start the session unless it runs (no prompt = reopen only), linked to `story` if given: the bridge's answer, a
-    ticket in it."""
-    data = _bridge("/console", {"name": name, "prompt": prompt, **({"story": story} if story else {})})
+    ticket in it. `second` ({ssh_hosts, curl_hosts}): an unattended job's console, read-only (second.py)."""
+    data = _bridge("/console", {"name": name, "prompt": prompt, **({"story": story} if story else {}),
+                                **({"second": second} if second is not None else {})})
     _alive["at"] = 0.0
     return data
 
@@ -55,6 +56,13 @@ def end(name: str):
 def stop(session_id: str):
     """A session in another terminal stops there: its terminal stays, its transcript too."""
     _bridge("/sessions/end", {"id": session_id})
+
+
+def last_answer(session_id: str) -> str:
+    """What the session wrote last, after its last tool call ('' while a prompt waits for its answer)."""
+    r = requests.get(f"{config.CLAUDE_BRIDGE_URL}/sessions/answer", params={"id": session_id}, headers=agents._auth(), timeout=10)
+    r.raise_for_status()
+    return str(r.json().get("answer") or "")
 
 
 def answer(name: str, title: str, prompt: str = ""):

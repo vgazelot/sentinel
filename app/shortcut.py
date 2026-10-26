@@ -57,6 +57,17 @@ def label_epics(label_id: int) -> list[dict]:
     return [{"id": e["id"], "name": e["name"]} for e in _get(f"/labels/{label_id}/epics")]
 
 
+def comment(story_id: int, text: str, owner_id: str) -> str:
+    """A comment on a story of yours — refused on anyone else's: a ticket belongs to its owner. Returns the story's
+    updated_at once the comment is in."""
+    if not owner_id or owner_id not in (_get(f"/stories/{story_id}").get("owner_ids") or []):
+        raise PermissionError(f"sc-{story_id} is not yours")
+    r = requests.post(f"{API}/stories/{story_id}/comments", json={"text": text},
+                      headers={"Shortcut-Token": config.SHORTCUT_API_TOKEN}, timeout=25)
+    r.raise_for_status()
+    return _get(f"/stories/{story_id}")["updated_at"][:19] + "Z"
+
+
 def member_id(mention_name: str) -> str:
     if not mention_name:
         return ""

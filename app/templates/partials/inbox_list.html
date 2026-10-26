@@ -11,13 +11,17 @@
 </header>
 <div class="scroll" id="rows">
 {% if tab == 'priority' %}
+    {% if today %}
+    <div class="grp">Today</div>
+    {% for v in today %}{{ l.item(v) }}{% endfor %}
+    {% endif %}
     {% if sessions %}
     <div class="grp">Sessions <span>{{ sessions | length }}</span></div>
     {% for v in sessions %}{{ l.item(v) }}{% endfor %}
     {% endif %}
     {% if watch %}
     <div class="grp">Monitoring <span>{{ watch | length }}</span></div>
-    {% for v in watch %}{{ l.item(v) }}{% endfor %}
+    {% for v in watch %}{{ l.item(v, tag=l.second_tag(seconds.get(v.id))) }}{% endfor %}
     {% endif %}
     {% if for_you %}
     <div class="grp">For you <span>{{ for_you | length }}</span></div>
@@ -34,7 +38,7 @@
     {% endcall %}
     {% endfor %}
     {% endif %}
-    {% if not sessions and not watch and not for_you and not mine %}
+    {% if not today and not sessions and not watch and not for_you and not mine %}
     <div class="zero">
         <svg class="zero-mark" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><path d="M15 24.5l6 6 12-13"/></svg>
         <p class="zero-title">Nothing waits on you</p>
