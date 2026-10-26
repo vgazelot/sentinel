@@ -379,12 +379,12 @@ class ConsoleButtonTest(SentinelTest):
 
     def test_off_by_default(self):
         self.configure()
-        self.assertNotIn(b"data-console", self.client.get("/partials/watch").data)
+        self.assertNotIn(b"data-session", self.client.get("/partials/watch").data)
         self.assertEqual(self.client.post("/api/zabbix/42/console").status_code, 404)
 
     def test_the_button_names_the_event_and_sentinel_writes_the_prompt(self):
         self.configure(claude=True)
-        self.assertIn(b'data-console="/api/zabbix/42/console"', self.client.get("/partials/watch").data)
+        self.assertIn(b'data-session="/api/zabbix/42/console"', self.client.get("/partials/watch").data, "it opens in Sessions")
         answer = self.client.post("/api/zabbix/42/console").get_json()
         self.assertEqual(answer, {"name": "zabbix-42", "title": "kafka-1.example.net", "ws": "ws://localhost:8301/console/ws?ticket=T1"})
         url, sent, headers = self.posts[0]
@@ -453,5 +453,5 @@ class ConsoleButtonTest(SentinelTest):
                                               fingerprint="4", severity="high", lane="watch", urgency="now",
                                               payload={"source": "zabbix", "name": "Consumer delay above 1h", "host": "kafka-1"})])
         item = db.items("watcher = 'zabbix'")[0]
-        self.assertIn(b'data-console="/api/zabbix/42/console"', self.client.get(f"/partials/item/{item['id']}").data)
+        self.assertIn(b'data-session="/api/zabbix/42/console"', self.client.get(f"/partials/item/{item['id']}").data)
         self.assertIn(b'id="console"', self.client.get("/watch").data, "the window is on every page")

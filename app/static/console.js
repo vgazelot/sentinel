@@ -191,6 +191,24 @@
             else { act.textContent = box.classList.toggle('big') ? 'Shrink' : 'Expand'; inside(); }
         });
 
+        // `data-session="<url>"`: started (or reopened) here, then shown on Sessions' board beside the active terminal —
+        // out of this window if it was in it: one console, one place
+        document.addEventListener('click', async (e) => {
+            const b = e.target.closest('[data-session]');
+            if (!b || b.disabled) return;
+            e.preventDefault();
+            b.disabled = true;
+            const r = await fetch(b.dataset.session, { method: 'POST' });
+            const answer = r.headers.get('Content-Type')?.includes('json') ? await r.json() : {};
+            if (!r.ok) {
+                b.disabled = false;
+                toast(answer.error || `Sentinel answered ${r.status}`, true);
+                return;
+            }
+            if (current && current.name === answer.name) close();
+            location.href = `/sessions?open=${encodeURIComponent(answer.name)}`;
+        });
+
         const last = remembered();
         if (last) open(`/api/console/${last.name}/attach`, last.title);
     }

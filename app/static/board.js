@@ -3,7 +3,8 @@
 // else takes its place); a terminal's head dragged onto another swaps them, back onto the list takes it off, like its ×.
 // A session selected in the list takes the active terminal's place. The board is this browser's (localStorage): the
 // sessions run on the host whatever it shows. Each terminal is a `Term` (static/console.js) attached while the page
-// lives, the board shown or not; the rows say where theirs is.
+// lives, the board shown or not; the rows say where theirs is. `/sessions?open=<console>` (Watch's Claude button)
+// puts that console beside the active terminal.
 (() => {
     const work = document.querySelector('.s-work');
     const board = document.getElementById('board');
@@ -24,6 +25,7 @@
     let last = null;
     let asked = null;
     let stored = null;
+    let opening = null;  // the console `?open=` names, until the list shows it
 
     const row = (key) => list.querySelector(`#rows .it[data-term][data-key="${CSS.escape(key)}"]`);
     const slotOf = (key) => slots.find((s) => s.key === key);
@@ -140,6 +142,23 @@
         if (active === key) active = slots.length ? ordered()[0].key : null;
     }
 
+    // beside the active terminal while there is room — the full column when the active one is a quarter —, else in its place
+    function join(key) {
+        if (!slotOf(key)) {
+            const a = slotOf(active) || ordered()[0];
+            const room = slots.length < 4 && (a && /^[FLR]$/.test(a.r) ? a : slots.find((s) => /^[LR]$/.test(s.r)));
+            if (!a) slots.push({ key, r: 'F' });
+            else if (!room) a.key = key;
+            else {
+                const [mine, theirs] = room.r === 'F' ? ['R', 'L'] : [`B${room.r}`, `T${room.r}`];
+                room.r = theirs;
+                slots.push({ key, r: mine });
+            }
+        }
+        active = key;
+        work.classList.add('s-board');
+    }
+
     // the list's selection follows the active terminal (app.js `select`, without loading the pane)
     function follow(key) {
         const r = key && row(key);
@@ -159,6 +178,7 @@
         const r = e.target.closest('#rows .it[data-term]');
         if (r) asked = r.dataset.key;
         if (e.target.closest('[data-unselect]')) work.classList.remove('s-board');
+        if (e.target.closest('#rows .it, [data-unselect]')) opening = null;  // you chose something else meanwhile
     });
     document.addEventListener('row-selected', (e) => {
         const key = e.detail.key;
@@ -337,6 +357,7 @@
         if (e.detail.target !== list) return;
         const before = active;
         if (!list.querySelector('.s-error')) slots.filter((s) => !row(s.key)).forEach((s) => remove(s.key));
+        if (opening && row(opening)) { join(opening); opening = null; }
         render();
         if (active !== before && work.classList.contains('s-board')) follow(active);
     });
@@ -366,6 +387,12 @@
             if (!list.querySelector('.s-error')) slots.filter((s) => !row(s.key)).forEach((s) => remove(s.key));
         }
         if (!slotOf(active)) active = slots.length ? ordered()[0].key : null;
+        const asked = new URLSearchParams(location.search).get('open');
+        if (asked && /^[a-z0-9][a-z0-9-]{0,47}$/.test(asked)) {
+            history.replaceState(null, '', location.pathname);  // a reload does not open it again
+            if (row(`console:${asked}`)) join(`console:${asked}`);
+            else opening = `console:${asked}`;  // just started: the bridge lists it in a moment
+        }
         if (active) {
             work.classList.add('s-board');
             row(active)?.classList.add('sel');

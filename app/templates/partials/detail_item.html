@@ -24,7 +24,7 @@
         {% if v.lane == 'incident' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Status page</a>
         {% elif v.lane == 'watch' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open in {{ p.source | capitalize }}</a>
         {% set claude = zabbix_console(v.external_id) if p.source == 'zabbix' else '' %}
-        {% if claude %}<button type="button" class="btn claude" data-console="{{ claude }}" title="Claude Code on this problem, in a window: a ticket, then a read-only investigation. Closing the window keeps the session.">Claude</button>{% endif %}
+        {% if claude %}<button type="button" class="btn claude" data-session="{{ claude }}" title="Claude Code on this problem, in Sessions with the run's other sessions: a ticket, then a read-only investigation. Leaving keeps the session.">Claude</button>{% endif %}
         {% elif v.lane == 'followup' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open the PR</a>{% endif %}
         <span class="spacer"></span>
         {{ triage(v) }}

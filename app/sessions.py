@@ -36,6 +36,7 @@ STATES = {
     "idle": ("i-clock", "neutral", "idle"),
 }
 ORDER = ("waiting", "working", "starting", "done", "idle")
+ALERT = re.compile(r"zabbix-\d+")  # Watch's consoles (watch_views.api_zabbix_console): run work, a ticket or not
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _live: dict = {"at": 0.0, "rows": [], "error": ""}
 
@@ -162,8 +163,12 @@ def board() -> dict:
             home.setdefault(f"sc-{st['id']}", (title, st))
     groups = {title: {"title": title, "rows": [], "later": []} for title, _ in sources}
     off = {"title": "Off cycle" if sources else "Running", "rows": [], "later": []}
+    run = data["run"]["label"] if data.get("run") else ""
     for s in sessions:
         row = _session_row(s, now, home)
+        # an alert's console goes with the run until its ticket says otherwise (a new one reaches the cycle later)
+        if not row["group"] and run and ALERT.fullmatch(s.get("console") or ""):
+            row["group"] = run
         (groups[row["group"]] if row["group"] else off)["rows"].append(row)
     taken = {r["story"] for g in [*groups.values(), off] for r in g["rows"]}
     for title, stories in sources:

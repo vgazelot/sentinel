@@ -204,6 +204,17 @@ class SessionsTest(SentinelTest):
         self.assertIn("≈ $3.20 just to read it again, a fresh session ≈ $0.58", idle["advice"], "the advisor's figures, as it gives them")
         self.assertEqual((idle["story"], idle["where"], idle["fresh"]), ("sc-9999", "dev-c", "/handoff"))
 
+    def test_an_alert_console_goes_with_the_run(self):
+        """Watch's Claude button starts `zabbix-<event>`: run work from the start, before its ticket reaches the cycle."""
+        import sessions
+
+        self.sessions = [session("z", "busy", console="zabbix-42"), session("y", "idle", {"story": "sc-1001"}, console="zabbix-43"),
+                         session("x", "idle", console="check-lag-ab12")]
+        groups = {g["title"]: [r["key"] for r in g["rows"]] for g in sessions.board()["groups"]}
+        self.assertIn("console:zabbix-42", groups["RUN"], "no ticket yet: the run's")
+        self.assertIn("console:zabbix-43", groups["Mesh"], "its ticket says where it goes")
+        self.assertEqual(groups["Off cycle"], ["console:check-lag-ab12"], "any other console without a ticket stays off cycle")
+
     def test_the_advisor_file_reads_whole(self):
         """contrib/claude-code-context/tests/published.ts is what the advisor writes — its own test says so —: every field
         Sentinel reads comes through as written, and a renamed one fails here."""
