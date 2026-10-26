@@ -110,6 +110,10 @@ describe('what the review found', () => {
     expect(bash('grep -n kafka /Users/me/.claude/projects/-Users-me-Dev/memory/MEMORY.md')).toBe('allow')
     expect(check('Read', { file_path: '/Users/me/.claude/projects/-Users-me-Dev/3f2477e8.jsonl' }, cfg).decision).toBe('ask')
     expect(check('Read', { file_path: '/Users/me/.claude/settings.json' }, cfg).decision).toBe('ask')
+    expect(bash("grep -rliE 'consumer|7200 seconds' ~/.claude/projects/*/memory ~/.claude/CLAUDE.md")).toBe('allow')
+    expect(bash('ls ~/.claude/projects/*/memory')).toBe('allow')
+    expect(bash('grep -r AKIA ~/.claude/projects/*/memory ~/Dev')).toBe('ask')
+    expect(bash('cat ~/.claude/projects/*/*.jsonl')).toBe('ask')
   })
 
   test('variables that may hold a token are not expanded', async () => {

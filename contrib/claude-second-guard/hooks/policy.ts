@@ -23,8 +23,10 @@ const SECRET = new RegExp([
 ].join('|'), 'i')
 // …but where ssh goes is no secret (host names, users, bastions), nor Claude's memory of past incidents: what a
 // diagnosis needs first
-const READABLE = /(^|\/)\.ssh\/(config|known_hosts)$|(^|\/)\.claude\/projects\/[^/]+\/memory(\/[^/]*)?$/
-const secretPath = (w: string) => SECRET.test(w) && !READABLE.test(w)
+const READABLE = /(^|\/)\.ssh\/(config|known_hosts)$|(^|\/)\.claude\/projects\/[^/]+\/memory(\/[^/]*)?\/?$|(^|\/)\.claude\/CLAUDE\.md$/
+// a glob stays inside a readable place when the place matches with the glob filled in
+const readable = (w: string) => READABLE.test(w.replace(/[*?]/g, 'x'))
+const secretPath = (w: string) => SECRET.test(w) && !readable(w)
 // a glob or a brace in a path could name one of those without spelling it
 const DODGE = /[*?[{]/
 
@@ -197,7 +199,7 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
   // curl's client certificate and key are used, never printed (mutual TLS to a monitoring front)
   const cert = (w: string, k: number) => name === 'curl' && (/^(-E|--cert|--key|--cacert)$/.test(rest[k - 1] ?? '') || /^--(cert|key|cacert)=/.test(w))
   // a path starting at ~, . or a variable, or through a hidden directory, with a glob or a brace in it
-  const dodges = (w: string) => DODGE.test(w) && /^[~$]|(^|\/)\.[^/]*\/|\/[.$]/.test(w)
+  const dodges = (w: string) => DODGE.test(w) && /^[~$]|(^|\/)\.[^/]*\/|\/[.$]/.test(w) && !readable(w)
   const secret = rest.find((w, k) => (secretPath(w) || dodges(w)) && !cert(w, k))
   if (secret) return ask(`reads ${secret}: secrets are read with you`)
   const no = (why: string) => ask(`${name}: ${why}`)
@@ -214,9 +216,14 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
     case 'jq':  // env and $ENV read the environment, input(s) and the file flags read other files
       return rest.some(w => /\benv\b|\$ENV|\binputs?\b|\$__loc__|\bimport\b|\binclude\b/.test(w))
         || has('--rawfile', '--slurpfile', '-f', '--from-file', '-L', '--library-path') ? no('reads the environment or other files') : yes()
-    case 'grep': case 'egrep': case 'fgrep': case 'zgrep':  // a recursive grep reads every file, hidden ones too: rg skips them
-      return has('-r', '-R', '--recursive', '-d', '--directories') || rest.some(w => /^-[a-zA-Z]*[rR]/.test(w)) || everywhere(rest)
-        ? no('recursive: rg reads the same without hidden files') : yes()
+    case 'grep': case 'egrep': case 'fgrep': case 'zgrep': {
+      // a recursive grep reads every file, hidden ones too (a repo's .env, ~/Dev's .mcp.json): only inside a readable
+      // place — elsewhere rg reads the same without them
+      const recursive = has('-r', '-R', '--recursive', '-d', '--directories') || rest.some(w => /^-[a-zA-Z]*[rR]/.test(w))
+      const paths = has('-e', '--regexp') ? positional : positional.slice(1)
+      return everywhere(rest) || (recursive && !(paths.length && paths.every(readable)))
+        ? no('recursive outside a readable place: rg reads the same without hidden files') : yes()
+    }
     case 'uniq':
       return positional.length > 1 ? no('writes its output to a file') : yes()
     case 'rg':
