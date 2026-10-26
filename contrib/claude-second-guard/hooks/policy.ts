@@ -21,9 +21,10 @@ const SECRET = new RegExp([
   String.raw`(^|/)\.(netrc|pgpass|git-credentials|npmrc|pypirc|terraformrc|claude\.json|mcp\.json)$`, String.raw`(^|/)\.claude/`,
   String.raw`_history$`, String.raw`(^|/)environ$`, String.raw`/Keychains/`, 'credential', 'secret', 'passw', 'token', 'vault_pass',
 ].join('|'), 'i')
-// …but where ssh goes is no secret: host names, users, bastions — what a diagnosis needs first
-const SSH_MAP = /(^|\/)\.ssh\/(config|known_hosts)$/
-const secretPath = (w: string) => SECRET.test(w) && !SSH_MAP.test(w)
+// …but where ssh goes is no secret (host names, users, bastions), nor Claude's memory of past incidents: what a
+// diagnosis needs first
+const READABLE = /(^|\/)\.ssh\/(config|known_hosts)$|(^|\/)\.claude\/projects\/[^/]+\/memory(\/[^/]*)?$/
+const secretPath = (w: string) => SECRET.test(w) && !READABLE.test(w)
 // a glob or a brace in a path could name one of those without spelling it
 const DODGE = /[*?[{]/
 

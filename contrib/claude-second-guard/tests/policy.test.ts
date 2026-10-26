@@ -106,6 +106,10 @@ describe('what the review found', () => {
     expect(bash('cat ~/.ssh/known_hosts')).toBe('allow')
     expect(bash('cat ~/.ssh/id_ed25519')).toBe('ask')
     expect(bash('cat ~/.ssh/config.d/secret')).toBe('ask')
+    expect(check('Read', { file_path: '/Users/me/.claude/projects/-Users-me-Dev/memory/MEMORY.md' }, cfg).decision).toBe('allow')
+    expect(bash('grep -n kafka /Users/me/.claude/projects/-Users-me-Dev/memory/MEMORY.md')).toBe('allow')
+    expect(check('Read', { file_path: '/Users/me/.claude/projects/-Users-me-Dev/3f2477e8.jsonl' }, cfg).decision).toBe('ask')
+    expect(check('Read', { file_path: '/Users/me/.claude/settings.json' }, cfg).decision).toBe('ask')
   })
 
   test('variables that may hold a token are not expanded', async () => {
