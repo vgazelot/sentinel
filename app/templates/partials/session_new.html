@@ -6,6 +6,13 @@
     <form hx-post="/api/sessions/new" hx-disabled-elt="find button">
         <textarea class="field" name="prompt" rows="5" autofocus
                   placeholder="What should Claude work on? Name its ticket (sc-12345) and the session goes under its big rock.">{{ prompt }}</textarea>
+        {% if groups | length > 1 %}
+        <div class="s-under"><span class="muted">Goes under</span>
+            <div class="seg" role="radiogroup" aria-label="Goes under">
+                {% for g in groups %}<label title="{{ g.title }}"><input type="radio" name="under" value="{{ g.key }}"{% if g.key == under %} checked{% endif %}>{{ g.title }}</label>{% endfor %}
+            </div>
+        </div>
+        {% endif %}
         <div class="bar"><button class="btn primary">Start</button><span class="muted">Claude Code in a console here: leave the page, it goes on.</span></div>
     </form>
 </div>

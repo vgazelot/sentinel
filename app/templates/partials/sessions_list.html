@@ -51,8 +51,8 @@
     {% set live = g.rows | selectattr('session') | list %}
     {% set waiting_here = live | selectattr('state', 'equalto', 'waiting') | list | length %}
     {% set tickets = g.rows | rejectattr('session') | list %}
-    <section class="proj{% if live %} has-live{% endif %}" id="proj-{{ g.title | domid }}">
-        <button type="button" class="proj-head" data-fold="{{ g.title | domid }}" title="{{ g.title }}">
+    <section class="proj{% if live %} has-live{% endif %}{% if g.own %} own{% endif %}" id="proj-{{ g.key | domid }}" data-group="{{ g.key }}">
+        <button type="button" class="proj-head" data-fold="{{ g.key | domid }}" title="{{ g.title }}">
             <svg class="chev"><use href="#i-chev"/></svg><span class="pn">{{ g.title }}</span>
             <span class="pc">
                 {%- if waiting_here %}<span class="pw" title="waits for you"><svg><use href="#i-chat"/></svg>{{ waiting_here }}</span>{% endif %}
@@ -60,25 +60,28 @@
                 {%- if tickets or g.later %}<span class="pt">{{ tickets | length + g.later | length }} ticket{{ 's' if tickets | length + g.later | length > 1 }}</span>{% endif -%}
             </span>
         </button>
+        {% if g.own %}<span class="s-secact"><button type="button" class="icon-btn" data-section-rename="{{ g.key[4:] }}" title="Rename"><svg><use href="#i-pencil"/></svg></button><button type="button" class="icon-btn" data-section-delete="{{ g.key[4:] }}" data-live="{{ live | length }}" title="Remove the section: its sessions go back under their tickets"><svg><use href="#i-close"/></svg></button></span>{% endif %}
         <div class="proj-body"><div class="proj-in">
             {% for r in live %}{{ session_row(r) }}{% endfor %}
             {% if live and tickets %}<div class="split"></div>{% endif %}
             {% for r in tickets %}{{ ticket_row(r) }}{% endfor %}
             {% if g.later %}
-            <details class="fold s-later" id="later-{{ g.title | domid }}">
+            <details class="fold s-later" id="later-{{ g.key | domid }}">
                 <summary>{{ g.later | length }} to start</summary>
                 {% for r in g.later %}{{ ticket_row(r) }}{% endfor %}
             </details>
             {% endif %}
+            {% if g.own and not g.rows %}<p class="s-hint">Drag a session here</p>{% endif %}
         </div></div>
     </section>
 {% else %}
     <div class="zero"><p class="zero-title">No session running</p><p>New starts one here, in a console.</p></div>
 {% endfor %}
+    <button type="button" class="s-addsec" data-section-add title="A section of yours — or drop a session here to make one with it">+ New section</button>
     <p class="s-none">No session running. <button type="button" data-filter="all">Show every ticket</button></p>
 </div>
 <footer class="hints">
     <span class="s-overview-only"><kbd>↑</kbd><kbd>↓</kbd> move</span><span class="s-overview-only"><kbd>⏎</kbd> open</span>
-    <span>drag a session onto the board</span><span><kbd>⌥</kbd><kbd>1</kbd>–<kbd>4</kbd> a terminal</span><span class="s-focus-only"><kbd>⌥</kbd><kbd>0</kbd> fold</span><span class="s-focus-only"><kbd>esc</kbd> every ticket</span>
+    <span>drag a session onto the board or a section</span><span><kbd>⌥</kbd><kbd>1</kbd>–<kbd>4</kbd> a terminal</span><span class="s-focus-only"><kbd>⌥</kbd><kbd>0</kbd> fold</span><span class="s-focus-only"><kbd>esc</kbd> every ticket</span>
 </footer>
 <div id="heads" hidden>{% for g in groups %}{% for r in g.rows if r.session and r.session.console %}{{ head(r) }}{% endfor %}{% endfor %}</div>

@@ -1,7 +1,8 @@
 // Sessions' board: up to four consoles side by side — two columns, either one split in two. A live session dragged
 // from the list lands where the box under the pointer says (dropped on a terminal, it splits it while there is room,
 // else takes its place); a terminal's head dragged onto another swaps them, back onto the list takes it off, like its ×.
-// A session selected in the list takes the active terminal's place. The board is this browser's (localStorage): the
+// A session selected in the list takes the active terminal's place; a live row dropped on another group of the list
+// goes there (yours, made on the spot by New section, a big rock, the run, off cycle), whatever its ticket says. The board is this browser's (localStorage): the
 // sessions run on the host whatever it shows. Each terminal is a `Term` (static/console.js) attached while the page
 // lives, the board shown or not; the rows say where theirs is. `/sessions?open=<console>` (Watch's Claude button)
 // puts that console beside the active terminal.
@@ -235,6 +236,12 @@
 
     // what a drop at (x, y) does, and the box it fills
     function zone(x, y) {
+        if (!drag.head) {  // a row over the list: another group, or a new one
+            const over = document.elementFromPoint(x, y)?.closest('#rows .proj[data-group], #rows [data-section-add]');
+            if (over?.matches('[data-section-add]')) return { type: 'section', el: over };
+            if (over) return over === drag.handle.closest('.proj') ? null : { type: 'file', group: over.dataset.group, el: over };
+            if (!drag.term) return null;  // a session of another terminal never goes on the board
+        }
         if (drag.head && inside(list.getBoundingClientRect(), x, y)) return { type: 'off' };
         const B = board.getBoundingClientRect();
         if (!inside(B, x, y)) return null;
@@ -254,14 +261,27 @@
 
     function show(z) {
         list.classList.toggle('b-off-target', !!z && z.type === 'off');
-        if (!z || z.type === 'off') { drop.hidden = true; return; }
+        list.querySelectorAll('.drop-on').forEach((el) => el.classList.toggle('drop-on', el === z?.el));
+        if (z?.el) z.el.classList.add('drop-on');
+        if (!z || z.type === 'off' || z.el) { drop.hidden = true; return; }
         drop.classList.toggle('fresh', drop.hidden);  // the first box appears in place, the next ones glide
         place(drop, z.r);
         drop.firstElementChild.textContent = z.label;
         drop.hidden = false;
     }
 
+    // a row dropped on a group of the list: filed there (or in a new section, named next), the list drawn again
+    async function file(z, key) {
+        const r = await fetch(z.type === 'file' ? '/api/sessions/file' : '/api/sessions/sections', {
+            method: 'POST', body: new URLSearchParams(z.type === 'file' ? { key, group: z.group } : { key, title: 'New section' }) });
+        const made = r.ok && z.type === 'section' ? (await r.json()).key : null;
+        if (!r.ok) toast(await r.text() || `Sentinel answered ${r.status}`, true);
+        await htmx.ajax('GET', '/partials/sessions', { target: list, swap: 'innerHTML' });
+        if (made) document.dispatchEvent(new CustomEvent('section-made', { detail: { key: made } }));
+    }
+
     function land(z, key) {
+        if (z.el) { file(z, key); return; }
         if (z.type === 'off') remove(key);
         else {
             if (z.type === 'place') slots.push({ key, r: 'F' });
@@ -283,20 +303,22 @@
         chip.hidden = true;
         drop.hidden = true;
         list.classList.remove('b-off-target');
+        list.querySelectorAll('.drop-on').forEach((el) => el.classList.remove('drop-on'));
         document.body.classList.remove('s-dragging');
         document.querySelectorAll('.lifted').forEach((el) => el.classList.remove('lifted'));
         if (z) land(z, key);
-        else work.classList.toggle('s-board', was);
+        if (!z || z.el) work.classList.toggle('s-board', was);  // filed in the list: the pane stays what it was
     }
 
     document.addEventListener('pointerdown', (e) => {
         mute = false;
         if (e.button !== 0 || e.target.closest('button, a')) return;
-        const handle = e.target.closest('#rows .it[data-term], .b-head');
+        const handle = e.target.closest('#rows .it[data-term], #rows .it[data-key^="session:"], .b-head');
         if (!handle || handle.closest('.leaving')) return;
         const key = handle.dataset.key || handle.closest('.b-slot').dataset.key;
         drag = { key, handle, id: e.pointerId, x: e.clientX, y: e.clientY, started: false, z: null,
-                 on: !!slotOf(key), head: handle.classList.contains('b-head'), board: work.classList.contains('s-board') };
+                 on: !!slotOf(key), head: handle.classList.contains('b-head'), term: !handle.dataset.key?.startsWith('session:'),
+                 board: work.classList.contains('s-board') };
     });
 
     document.addEventListener('pointermove', (e) => {
@@ -312,7 +334,7 @@
             chip.hidden = false;
             document.body.classList.add('s-dragging');
             (shown.get(drag.key)?.el || drag.handle).classList.add('lifted');
-            work.classList.add('s-board');
+            if (drag.term) work.classList.add('s-board');
         }
         chip.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 12}px)`;
         drag.z = zone(e.clientX, e.clientY);

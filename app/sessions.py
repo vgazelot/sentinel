@@ -11,6 +11,7 @@ import json
 import math
 import re
 import secrets
+import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ import agents
 import config
 import console
 import cycle
+import db
 import shortcut
 
 bp = Blueprint("sessions", __name__)
@@ -37,6 +39,8 @@ STATES = {
 }
 ORDER = ("waiting", "working", "starting", "done", "idle")
 ALERT = re.compile(r"zabbix-\d+")  # Watch's consoles (watch_views.api_zabbix_console): run work, a ticket or not
+_layout_lock = threading.Lock()
+FILED_KEEP = 200  # moves kept, the latest: a console picked up again (sc-N) goes back where you put it
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _live: dict = {"at": 0.0, "rows": [], "error": ""}
 
@@ -148,38 +152,74 @@ def _story_row(st: dict, group: str) -> dict:
             "at": st["updated_at"], "where": "", "advice": "", "tokens": 0, "fresh": "", "session": None}
 
 
+# --- Your sections, and where you put each session ----------------------------------------------
+def _layout() -> tuple[list[dict], dict]:
+    """Your own sections ([{id, title}], in order) and the sessions you moved ({session key: group key})."""
+    st = db.watcher_states().get("sessions", {})
+    try:
+        sections, filed = json.loads(st.get("sections") or "[]"), json.loads(st.get("filing") or "{}")
+    except ValueError:
+        return [], {}
+    return (sections, filed) if isinstance(sections, list) and isinstance(filed, dict) else ([], {})
+
+
+def _save(sections: list[dict] | None = None, filed: dict | None = None):
+    if sections is not None:
+        db.set_watcher_state("sessions", "sections", json.dumps(sections))
+    if filed is not None:
+        db.set_watcher_state("sessions", "filing", json.dumps(filed))
+
+
+def _sources(data: dict) -> list[tuple[str, str, list]]:
+    """The cycle's groups (key, title, stories): each big rock, then the run."""
+    out = [(f"rock:{r['title']}", r["title"], [s for e in r["epics"] for s in e["stories"]]) for r in data.get("big_rocks") or []]
+    if data.get("run"):
+        out.append(("run", data["run"]["label"], [s for e in data["run"]["epics"] for s in e["stories"]]))
+    return out
+
+
+def _groups(data: dict, sections: list[dict]) -> dict:
+    """Every group, in the list's order: big rocks, the run, your sections, then what runs off the cycle."""
+    sources = _sources(data)
+    groups = {key: {"key": key, "title": title, "own": False, "rows": [], "later": []} for key, title, _ in sources}
+    for sec in sections:
+        groups[f"own:{sec['id']}"] = {"key": f"own:{sec['id']}", "title": sec["title"], "own": True, "rows": [], "later": []}
+    groups["off"] = {"key": "off", "title": "Off cycle" if sources else "Running", "own": False, "rows": [], "later": []}
+    return groups
+
+
 def board() -> dict:
-    """Big rocks, then the run, then what runs off the cycle; in each, the sessions — waiting on you first —, then
-    your started tickets without one; your tickets not started yet fold under them."""
+    """Big rocks, then the run, your sections, then what runs off the cycle; in each, the sessions — waiting on you
+    first —, then your started tickets without one; your tickets not started yet fold under them. A session goes where
+    you put it, else under its ticket's group; an alert's goes with the run until its ticket says otherwise."""
     sessions, error = live()
     now = time.time()
     data = cycle.load() if cycle.enabled() else {}
-    sources = [(r["title"], [s for e in r["epics"] for s in e["stories"]]) for r in data.get("big_rocks") or []]
-    if data.get("run"):
-        sources.append((data["run"]["label"], [s for e in data["run"]["epics"] for s in e["stories"]]))
-    home = {}
-    for title, stories in sources:
+    sections, filed = _layout()
+    groups = _groups(data, sections)
+    home, by_title = {}, {}
+    for key, title, stories in _sources(data):
+        by_title[title] = key
         for st in stories:
             home.setdefault(f"sc-{st['id']}", (title, st))
-    groups = {title: {"title": title, "rows": [], "later": []} for title, _ in sources}
-    off = {"title": "Off cycle" if sources else "Running", "rows": [], "later": []}
-    run = data["run"]["label"] if data.get("run") else ""
-    for s in sessions:
-        row = _session_row(s, now, home)
-        # an alert's console goes with the run until its ticket says otherwise (a new one reaches the cycle later)
-        if not row["group"] and run and ALERT.fullmatch(s.get("console") or ""):
-            row["group"] = run
-        (groups[row["group"]] if row["group"] else off)["rows"].append(row)
-    taken = {r["story"] for g in [*groups.values(), off] for r in g["rows"]}
-    for title, stories in sources:
+    rows = [_session_row(s, now, home) for s in sessions]
+    for row in rows:
+        key = filed.get(row["key"])
+        if key not in groups:  # not moved, or its section is gone
+            alert = "run" in groups and ALERT.fullmatch((row["session"] or {}).get("console") or "")
+            key = by_title.get(row["group"]) or ("run" if alert else "off")
+        row["group"] = "" if key == "off" else groups[key]["title"]
+        groups[key]["rows"].append(row)
+    taken = {r["story"] for r in rows}
+    for key, title, stories in _sources(data):
         for st in stories:
             if st["mine"] and f"sc-{st['id']}" not in taken:
-                groups[title]["rows" if st["state_type"] == "started" else "later"].append(_story_row(st, title))
-    for g in [*groups.values(), off]:
-        for rows in (g["rows"], g["later"]):
-            rows.sort(key=lambda r: r["at"], reverse=True)
-            rows.sort(key=lambda r: ORDER.index(r["state"]) if r["state"] in ORDER else len(ORDER))
-    return {"groups": [g for g in groups.values() if g["rows"] or g["later"]] + ([off] if off["rows"] else []),
+                groups[key]["rows" if st["state_type"] == "started" else "later"].append(_story_row(st, title))
+    for g in groups.values():
+        for rs in (g["rows"], g["later"]):
+            rs.sort(key=lambda r: r["at"], reverse=True)
+            rs.sort(key=lambda r: ORDER.index(r["state"]) if r["state"] in ORDER else len(ORDER))
+    return {"groups": [g for g in groups.values() if g["rows"] or g["later"] or g["own"]],
             "waiting": sum(1 for s in sessions if s.get("status") == "waiting"), "error": error}
 
 
@@ -218,11 +258,13 @@ def _slug(text: str) -> str:
     return "-".join(words[:4])[:24].strip("-") or "session"
 
 
-def _start(name: str, prompt: str, fallback, story: str = ""):
+def _start(name: str, prompt: str, fallback, story: str = "", group: str = ""):
     try:
         console.start(name, prompt, story)
     except (requests.RequestException, RuntimeError, ValueError) as e:
         return fallback(f"the Claude bridge: {e}")
+    if group:
+        _file(f"console:{name}", group)
     _live["at"] = 0.0
     resp = _session(_find(f"console:{name}"))
     # the list learns about it on its next poll: select it there
@@ -255,7 +297,7 @@ def partial_sessions():
 def partial_session():
     key = request.args.get("key", "")
     if key == "new":
-        return _detail("partials/session_new.html")
+        return _new()
     return _session(_find(key))
 
 
@@ -273,13 +315,91 @@ def api_start():
     return _start(name, prompt, lambda error: _session(_find(f"story:{story}"), error), f"sc-{story}")
 
 
+def _new(**ctx):
+    """New: the task, and where it goes — the run by default when the cycle has one."""
+    groups = _groups(cycle.load() if cycle.enabled() else {}, _layout()[0])
+    under = ctx.pop("under", "")
+    if under not in groups:
+        under = "run" if "run" in groups else "off"
+    return _detail("partials/session_new.html", groups=list(groups.values()), under=under, **ctx)
+
+
 @bp.post("/api/sessions/new")
 def api_new():
+    """Off cycle files nothing: the session goes where its ticket says, if it gets one."""
     prompt = (request.form.get("prompt") or "").strip()
+    under = request.form.get("under", "")
     if not prompt:
-        return _detail("partials/session_new.html", error="Say what Claude should work on first.")
-    return _start(f"{_slug(prompt)}-{secrets.token_hex(2)}", prompt,
-                  lambda error: _detail("partials/session_new.html", prompt=prompt, error=error))
+        return _new(error="Say what Claude should work on first.", under=under)
+    groups = _groups(cycle.load() if cycle.enabled() else {}, _layout()[0])
+    return _start(f"{_slug(prompt)}-{secrets.token_hex(2)}", prompt, lambda error: _new(prompt=prompt, under=under, error=error),
+                  group=under if under in groups and under != "off" else "")
+
+
+def _title(raw: str) -> str:
+    return " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", raw or "").split())[:60]
+
+
+def _file(key: str, group: str):
+    with _layout_lock:
+        sections, filed = _layout()
+        filed.pop(key, None)
+        filed[key] = group
+        _save(filed=dict(list(filed.items())[-FILED_KEEP:]))
+
+
+@bp.post("/api/sessions/file")
+def api_file():
+    """A session moved to a group of the list (yours, a big rock, the run, off cycle): it stays there until moved
+    again, whatever its ticket says."""
+    key, group = request.form.get("key", ""), request.form.get("group", "")
+    kind, _, ref = key.partition(":")
+    if not (kind == "console" and console.NAME.fullmatch(ref) or kind == "session" and SESSION_ID.fullmatch(ref)):
+        abort(400)
+    if group not in _groups(cycle.load() if cycle.enabled() else {}, _layout()[0]):
+        return "That section is gone: the list is drawn again.", 409
+    _file(key, group)
+    return "", 204
+
+
+@bp.post("/api/sessions/sections")
+def api_section_add():
+    """A section of yours, last before off cycle; with `key`, that session goes in it."""
+    title = _title(request.form.get("title", ""))
+    key = request.form.get("key", "")
+    if not title:
+        return "Name it first.", 400
+    with _layout_lock:
+        sections, filed = _layout()
+        sid = secrets.token_hex(3)
+        _save(sections=[*sections, {"id": sid, "title": title}])
+    if key:
+        kind, _, ref = key.partition(":")
+        if kind == "console" and console.NAME.fullmatch(ref) or kind == "session" and SESSION_ID.fullmatch(ref):
+            _file(key, f"own:{sid}")
+    return {"key": f"own:{sid}"}
+
+
+@bp.post("/api/sessions/sections/<sid>")
+def api_section_rename(sid: str):
+    title = _title(request.form.get("title", ""))
+    if not title:
+        return "Name it first.", 400
+    with _layout_lock:
+        sections, filed = _layout()
+        if not any(s["id"] == sid for s in sections):
+            abort(404)
+        _save(sections=[{**s, "title": title} if s["id"] == sid else s for s in sections])
+    return "", 204
+
+
+@bp.post("/api/sessions/sections/<sid>/delete")
+def api_section_delete(sid: str):
+    """Its sessions go back where their tickets put them."""
+    with _layout_lock:
+        sections, filed = _layout()
+        _save(sections=[s for s in sections if s["id"] != sid], filed={k: v for k, v in filed.items() if v != f"own:{sid}"})
+    return "", 204
 
 
 @bp.post("/api/sessions/end")

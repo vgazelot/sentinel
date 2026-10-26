@@ -263,7 +263,7 @@ class SessionsTest(SentinelTest):
         page = self.client.get("/sessions").get_data(as_text=True)
         self.assertIn("Upgrade", page)
         self.assertRegex(page, r'id="nav-sessions"\s*>1<')
-        self.assertIn('<section class="proj has-live" id="proj-Mesh">', page, "a big rock is one block, its sessions say so")
+        self.assertIn('<section class="proj has-live" id="proj-rock-Mesh" data-group="rock:Mesh">', page, "a big rock is one block, its sessions say so")
         self.assertIn('href="#s-started"', page, "a started ticket without a session is drawn half full")
         self.assertIn('<div class="board" id="board"', page, "the consoles' board, in the pane's place")
         self.assertIn('data-key="console:sc-1002" data-term="sc-1002"', page, "a console's row puts it on the board")
@@ -328,6 +328,54 @@ class SessionsTest(SentinelTest):
         self.assertEqual(story, "")
         self.assertEqual(prompt, "Vérifie le lag Kafka sur node-3, puis dis-moi")
         self.assertEqual(start.call_count, 1)
+
+    def test_new_goes_under_the_run_unless_told_otherwise(self):
+        import sessions
+
+        form = self.client.get("/partials/session?key=new").get_data(as_text=True)
+        self.assertIn('<input type="radio" name="under" value="run" checked>RUN', form, "the run by default")
+        self.assertIn('value="rock:Mesh">Mesh', form, "every group to choose from")
+        with mock.patch("console.start", return_value={"ticket": "t"}) as start:
+            self.client.post("/api/sessions/new", data={"prompt": "Vérifie le lag Kafka", "under": "run"})
+            run_name = start.call_args.args[0]
+            self.client.post("/api/sessions/new", data={"prompt": "Lis la doc", "under": "off"})
+            off_name = start.call_args.args[0]
+            self.client.post("/api/sessions/new", data={"prompt": "Ailleurs", "under": "own:abcdef"})
+            again = self.client.post("/api/sessions/new", data={"prompt": " ", "under": "off"}).get_data(as_text=True)
+        self.assertIn('value="off" checked', again, "the choice survives an error")
+        self.sessions = [session("r", "busy", console=run_name), session("o", "busy", console=off_name)]
+        groups = {g["key"]: [r["key"] for r in g["rows"]] for g in sessions.board()["groups"]}
+        self.assertIn(f"console:{run_name}", groups["run"])
+        self.assertEqual(groups["off"], [f"console:{off_name}"], "off cycle files nothing")
+        self.assertEqual(set(sessions._layout()[1]), {f"console:{run_name}"}, "a group that does not exist is not filed")
+        with mock.patch("cycle.enabled", return_value=False):
+            self.assertNotIn('name="under"', self.client.get("/partials/session?key=new").get_data(as_text=True), "no cycle, no choice")
+
+    def test_a_session_goes_where_you_put_it(self):
+        import sessions
+
+        def groups():
+            return {g["key"]: [r["key"] for r in g["rows"]] for g in sessions.board()["groups"]}
+
+        made = self.client.post("/api/sessions/sections", data={"title": "  Incident\x07 kafka  "}).get_json()["key"]
+        self.assertEqual(sessions._layout()[0][0]["title"], "Incident kafka")
+        self.assertEqual(groups()[made], [], "a section of yours shows empty")
+        self.assertIn("Drag a session here", self.client.get("/sessions").get_data(as_text=True))
+        self.assertEqual(self.client.post("/api/sessions/file", data={"key": "console:sc-1002", "group": made}).status_code, 204)
+        self.assertEqual(groups()[made], ["console:sc-1002"], "your move wins over its big rock's ticket")
+        self.assertEqual(self.client.post("/api/sessions/file", data={"key": "console:sc-1002", "group": "own:ffffff"}).status_code, 409)
+        self.assertEqual(self.client.post("/api/sessions/file", data={"key": "console:../x", "group": "run"}).status_code, 400)
+        self.assertEqual(self.client.post("/api/sessions/sections", data={"title": " "}).status_code, 400)
+        self.client.post(f"/api/sessions/sections/{made[4:]}", data={"title": "Kafka"})
+        self.assertIn('<span class="pn">Kafka</span>', self.client.get("/partials/sessions").get_data(as_text=True))
+        self.client.post(f"/api/sessions/sections/{made[4:]}/delete")
+        self.assertIn("console:sc-1002", groups()["rock:Mesh"], "its section gone, back under its ticket")
+        other = self.client.post("/api/sessions/sections", data={"title": "Spare", "key": "console:sc-1002"}).get_json()["key"]
+        self.assertEqual(groups()[other], ["console:sc-1002"], "a section made by a drop takes the session")
+        for n in range(sessions.FILED_KEEP + 5):
+            sessions._file(f"console:old-{n}", "run")
+        self.assertEqual(len(sessions._layout()[1]), sessions.FILED_KEEP)
+        self.assertIn(f"console:old-{sessions.FILED_KEEP + 4}", sessions._layout()[1], "the latest moves are kept")
 
     def test_an_ended_console_gives_its_ticket_back(self):
         def end(name):

@@ -106,6 +106,56 @@
         if (t.closest('[data-dock]')) toggleDock();
     });
 
+    // your sections: named in place (the list does not poll meanwhile), then the list is fetched again
+    let naming = null;
+    const refresh = () => htmx.ajax('GET', '/partials/sessions', { target: list, swap: 'innerHTML' });
+    const post = (url, values) => fetch(url, { method: 'POST', body: new URLSearchParams(values) })
+        .then(async (r) => { if (!r.ok) toast(await r.text() || `Sentinel answered ${r.status}`, true); })
+        .finally(refresh);
+    function name(anchor, value, done) {
+        const input = Object.assign(document.createElement('input'), { className: 'field s-name', value, placeholder: 'Section name', maxLength: 60 });
+        let over = false;
+        const finish = (keep) => {
+            if (over) return;
+            over = true;
+            naming = null;
+            const title = input.value.trim();
+            input.remove();
+            anchor.hidden = false;
+            if (keep && title && title !== value) done(title);
+        };
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        });
+        input.addEventListener('blur', () => finish(true));
+        anchor.hidden = true;
+        anchor.after(input);
+        naming = input;
+        input.focus();
+        input.select();
+    }
+    const rename = (proj) => {
+        const head = proj.querySelector('.proj-head');
+        name(head, head.querySelector('.pn').textContent, (title) => post(`/api/sessions/sections/${proj.dataset.group.slice(4)}`, { title }));
+    };
+    document.addEventListener('htmx:beforeRequest', (e) => { if (naming && e.detail.elt === list) e.preventDefault(); });
+    // a section made by a drop (static/board.js): its name is yours to write
+    document.addEventListener('section-made', (e) => {
+        const proj = list.querySelector(`.proj[data-group="${CSS.escape(e.detail.key)}"]`);
+        if (proj) rename(proj);
+    });
+    document.addEventListener('click', (e) => {
+        const t = e.target;
+        const add = t.closest('[data-section-add]');
+        if (add) { name(add, '', (title) => post('/api/sessions/sections', { title })); return; }
+        if (t.closest('[data-section-rename]')) { rename(t.closest('.proj')); return; }
+        const del = t.closest('[data-section-delete]');
+        if (del && (del.dataset.live === '0' || confirm('Remove this section? Its sessions go back under their tickets.'))) {
+            post(`/api/sessions/sections/${del.dataset.sectionDelete}/delete`, {});
+        }
+    });
+
     // a session's × or its End on the board, before its row sees the click: a session of another terminal shown in the
     // pane ends there, like its End button; a console or another session without a word — the list, fetched again,
     // drops it from the list and the board, or, if it failed, gives it back
