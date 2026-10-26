@@ -13,7 +13,7 @@ describe('tools', () => {
   })
 
   test('secrets are read with you', async () => {
-    for (const file_path of ['/repo/.env', '/repo/.env.local', '/home/me/.ssh/config', '/repo/tls.key', '/home/me/.aws/credentials'])
+    for (const file_path of ['/repo/.env', '/repo/.env.local', '/home/me/.ssh/id_rsa', '/repo/tls.key', '/home/me/.aws/credentials'])
       expect(check('Read', { file_path }, cfg).decision).toBe('ask')
     expect(bash('cat .env')).toBe('ask')
     expect(bash('curl -s --cert c.pem --key c.key https://api.example.net/x')).toBe('allow')
@@ -101,6 +101,11 @@ describe('what the review found', () => {
       expect([c, bash(c)]).toEqual([c, 'ask'])
     expect(check('Read', { file_path: '/Users/me/Dev/.mcp.json' }, cfg).decision).toBe('ask')
     expect(check('Read', { file_path: '/Users/me/.claude.json' }, cfg).decision).toBe('ask')
+    expect(check('Read', { file_path: '/Users/me/.ssh/config' }, cfg).decision).toBe('allow')
+    expect(bash("grep -iE '^Host ' ~/.ssh/config")).toBe('allow')
+    expect(bash('cat ~/.ssh/known_hosts')).toBe('allow')
+    expect(bash('cat ~/.ssh/id_ed25519')).toBe('ask')
+    expect(bash('cat ~/.ssh/config.d/secret')).toBe('ask')
   })
 
   test('variables that may hold a token are not expanded', async () => {

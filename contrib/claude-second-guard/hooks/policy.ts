@@ -21,14 +21,17 @@ const SECRET = new RegExp([
   String.raw`(^|/)\.(netrc|pgpass|git-credentials|npmrc|pypirc|terraformrc|claude\.json|mcp\.json)$`, String.raw`(^|/)\.claude/`,
   String.raw`_history$`, String.raw`(^|/)environ$`, String.raw`/Keychains/`, 'credential', 'secret', 'passw', 'token', 'vault_pass',
 ].join('|'), 'i')
+// …but where ssh goes is no secret: host names, users, bastions — what a diagnosis needs first
+const SSH_MAP = /(^|\/)\.ssh\/(config|known_hosts)$/
+const secretPath = (w: string) => SECRET.test(w) && !SSH_MAP.test(w)
 // a glob or a brace in a path could name one of those without spelling it
 const DODGE = /[*?[{]/
 
 export function check(tool: string, input: unknown, cfg: Config): Verdict {
   const args = (input ?? {}) as Record<string, unknown>
   if (READ_TOOLS.has(tool)) {
-    const path = [args.file_path, args.path].find(v => typeof v === 'string' && SECRET.test(v))
-      ?? (typeof args.pattern === 'string' && tool === 'Glob' && SECRET.test(args.pattern) ? args.pattern : undefined)
+    const path = [args.file_path, args.path].find(v => typeof v === 'string' && secretPath(v))
+      ?? (typeof args.pattern === 'string' && tool === 'Glob' && secretPath(args.pattern) ? args.pattern : undefined)
     return path ? ask(`${tool} on ${path}: secrets are read with you`) : allow(`${tool} reads`)
   }
   if (tool === 'Bash') return typeof args.command === 'string' ? shell(args.command, cfg, 0) : ask('Bash without a command')
@@ -165,7 +168,7 @@ function shell(src: string, cfg: Config, depth: number): Verdict {
     if (variable) return ask(`expands $${variable}: a variable may hold a token`)
     for (const r of s.redirects) {
       const out = r.op.replace(/^\d/, '')
-      if (out === '<' && !SECRET.test(r.target)) continue
+      if (out === '<' && !secretPath(r.target)) continue
       if (out === '>&' && /^(\d|-)$/.test(r.target)) continue
       if (['>', '>>', '&>', '&>>', '>|'].includes(out) && r.target === '/dev/null') continue
       return ask(`writes to ${r.target}`)
@@ -194,7 +197,7 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
   const cert = (w: string, k: number) => name === 'curl' && (/^(-E|--cert|--key|--cacert)$/.test(rest[k - 1] ?? '') || /^--(cert|key|cacert)=/.test(w))
   // a path starting at ~, . or a variable, or through a hidden directory, with a glob or a brace in it
   const dodges = (w: string) => DODGE.test(w) && /^[~$]|(^|\/)\.[^/]*\/|\/[.$]/.test(w)
-  const secret = rest.find((w, k) => (SECRET.test(w) || dodges(w)) && !cert(w, k))
+  const secret = rest.find((w, k) => (secretPath(w) || dodges(w)) && !cert(w, k))
   if (secret) return ask(`reads ${secret}: secrets are read with you`)
   const no = (why: string) => ask(`${name}: ${why}`)
   const yes = () => allow(name)
