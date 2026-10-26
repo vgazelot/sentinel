@@ -1,0 +1,8 @@
+{
+  "name": "second-guard",
+  "version": "0.1.0",
+  "description": "Read-only guard for unattended Claude Code sessions: reading runs on its own, anything else asks the person. Pair it with --restricted and --permission-mode manual",
+  "author": {
+    "name": "vgazelot"
+  }
+}
