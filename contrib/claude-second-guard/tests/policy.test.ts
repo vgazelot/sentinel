@@ -192,6 +192,15 @@ describe('ssh', () => {
   })
 })
 
+describe('skills', () => {
+  test("a skill's text is read, the rest of ~/.claude is not", async () => {
+    expect(bash('cat ~/.claude/skills/avocat/SKILL.md')).toBe('allow')
+    expect(check('Read', { file_path: '/home/me/.claude/skills/review/references/checklist.md' }, cfg).decision).toBe('refuse', 'one level only')
+    for (const c of ['cat ~/.claude/skills/x/../../settings.json', 'cat ~/.claude/skills/x/run.sh', 'cat ~/.claude/settings.json', 'cat ~/.claude/skills/*/*', 'cat ~/.claude/skills/../x.md', 'cat ~/.claude/skills/../memory.md'])
+      expect(bash(c)).toBe('refuse')
+  })
+})
+
 describe('a fix in its worktree', () => {
   const wt = '/home/me/.cache/second/work/second-infra-12'
   const fix = { ...cfg, worktree: wt }

@@ -74,7 +74,8 @@ SECOND_DEFAULTS = {
                                 # Second makes it in a worktree; a draft is pushed, one under review waits for your
                                 # click; 0 = never
     "fix_per_pr": 3,            # fixes started per PR per day: a check that stays red is not chased all day
-    "fix_review": "",           # how it reads its own diff before answering (e.g. "run /avocat on your diff");
+    "fix_review": "",           # how it reads its own diff before answering — --restricted loads no skill of yours:
+                                # name its text, "read ~/.claude/skills/<name>/SKILL.md and follow it on your diff";
                                 # empty = a devil's advocate read in its own words
 }
 

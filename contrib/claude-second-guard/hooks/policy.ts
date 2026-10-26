@@ -24,8 +24,8 @@ const SECRET = new RegExp([
   String.raw`_history$`, String.raw`(^|/)environ$`, String.raw`/Keychains/`, 'credential', 'secret', 'passw', 'token', 'vault_pass',
 ].join('|'), 'i')
 // …but where ssh goes is no secret (host names, users, bastions), nor Claude's memory of past incidents: what a
-// diagnosis needs first
-const READABLE = /(^|\/)\.ssh\/(config|known_hosts)$|(^|\/)\.claude\/projects\/[^/]+\/memory(\/[^/]*)?\/?$|(^|\/)\.claude\/CLAUDE\.md$/
+// diagnosis needs first — nor your skills' texts (--restricted loads none of them: a prompt names one to read)
+const READABLE = /(^|\/)\.ssh\/(config|known_hosts)$|(^|\/)\.claude\/projects\/[^/]+\/memory(\/[^/]*)?\/?$|(^|\/)\.claude\/CLAUDE\.md$|(^|\/)\.claude\/skills\/[\w-][\w.-]*\/[\w-][\w.-]*\.md$/
 // a glob stays inside a readable place when the place matches with the glob filled in
 const readable = (w: string) => READABLE.test(w.replace(/[*?]/g, 'x'))
 const secretPath = (w: string) => SECRET.test(w) && !readable(w)

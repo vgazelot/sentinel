@@ -204,7 +204,9 @@ second:
   ssh_hosts: ["web-*", "*.internal.example"]   # where ssh may read; none: every ssh asks
   curl_hosts: []           # where curl may GET (localhost always)
   # concurrency: 2, max_per_day: 40, watch_minutes: 5, watch_hours: 24, stuck_days: 2, stuck_per_day: 3, review_days: 1, plan_at: "09:00", timeout_minutes: 60
-  # fix_minutes: 5 (0 = no fixes), fix_per_pr: 3, fix_review: "run /avocat on your diff"   # how it reads its own diff
+  # fix_minutes: 5 (0 = no fixes), fix_per_pr: 3
+  # fix_review: "read ~/.claude/skills/my-review/SKILL.md (cat) and follow it on your diff"   # how it reads its own diff:
+  #   --restricted loads none of your skills, its guard lets it read their texts (~/.claude/skills/<name>/<file>.md)
 ```
 
 Bridge environment: `BRIDGE_SECOND_MCP` — comma-separated MCP config files its consoles get (monitoring, tickets: `--restricted` loads none of yours), `BRIDGE_SECOND_COMMAND` / `BRIDGE_SECOND_FIX_COMMAND` to replace the whole command, `BRIDGE_SECOND_ROOT` (where its clones and worktrees live), `BRIDGE_SECOND_GIT_URL` (`git@github.com:{repo}.git`: your ssh key pushes). A fix's worktree goes once its console has ended and it was pushed, refused or overtaken by the branch, or after three days. At most `concurrency` consoles at once; one is ended an hour after its answer unless you went on in it (its transcript stays: `claude --resume`).
