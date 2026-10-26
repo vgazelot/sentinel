@@ -420,3 +420,141 @@ class SessionsTest(SentinelTest):
         with mock.patch("config.CLAUDE_BRIDGE_URL", ""):
             self.assertEqual(self.client.get("/sessions").status_code, 404)
             self.assertNotIn('href="/sessions"', self.client.get("/").get_data(as_text=True))
+
+
+
+WAITS = "11111111-2222-4333-8444-555555555555"
+ANSWERED = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+
+
+class SessionInboxTest(SentinelTest):
+    """A session waiting on you is an inbox row, pushed after a few minutes; one that answered is only the mod's band's."""
+
+    def setUp(self):
+        super().setUp()
+        import main
+        import sessions
+
+        self.client = main.app.test_client()
+        self.seed(sessions.WATCH)
+        self.now = time.time()
+        self.listed, self.error = [], ""
+        for p in (mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"),
+                  mock.patch("sessions.live", side_effect=lambda: (self.listed, self.error))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def answered(self, minutes_ago, **over):
+        return {"story": "sc-12345", "tokens": 90_000, "answeredAt": (self.now - minutes_ago * 60) * 1000, **over}
+
+    def rows(self):
+        import db
+        import main
+
+        return {r["external_id"]: main._view(r) for r in db.items("state != 'resolved'")}
+
+    def waited(self, minutes, seen=0):
+        import db
+
+        with db.connect() as conn:
+            conn.execute("UPDATE items SET first_seen = ?, last_seen = ? WHERE external_id = ?",
+                         (db.ago(minutes), db.ago(seen), f"wait:{WAITS}"))
+
+    def test_a_session_waiting_is_yours_after_a_few_minutes_and_pushed_once(self):
+        import engine
+        import sessions
+
+        self.listed = [session(WAITS, "waiting", waiting_for="input needed", console="sc-12345")]
+        sessions.watch()
+        row = self.rows()[f"wait:{WAITS}"]
+        self.assertFalse(row["attention"], "you may be answering it right now")
+        self.assertEqual((row["headline"], row["p"]["why"], row["tone"]), (f"title {WAITS}", "waits for you: input needed", "neutral"))
+        self.assertEqual(row["url"].split("/", 3)[-1], "sessions?open=sc-12345", "straight to its console")
+        engine.promote_due()
+        self.assertEqual(self.pushes, [])
+        self.waited(4)
+        engine.promote_due()
+        engine.promote_due()
+        self.assertEqual(self.pushes, [(f"title {WAITS}", "sc-12345 has waited for you 3 min", f"item-{row['id']}")])
+        self.assertEqual(self.rows()[f"wait:{WAITS}"]["tone"], "hot")
+
+    def test_a_wait_answered_between_two_polls_starts_over(self):
+        import engine
+        import sessions
+
+        self.listed = [session(WAITS, "waiting")]
+        sessions.watch()
+        self.waited(2)
+        self.listed = [session(WAITS, "busy")]
+        sessions.watch()
+        self.assertEqual(self.rows(), {}, "a local list: gone at once")
+        self.listed = [session(WAITS, "waiting")]
+        sessions.watch()
+        self.waited(2)
+        engine.promote_due()
+        self.assertEqual(self.pushes, [], "a session asking permission after permission, each answered: no push")
+
+    def test_the_bridge_away_neither_ends_a_wait_nor_pushes_it(self):
+        import engine
+        import sessions
+
+        self.listed = [session(WAITS, "waiting")]
+        sessions.watch()
+        self.listed, self.error = [], "the Claude bridge: connection refused"
+        sessions.watch()
+        sessions.watch()
+        self.assertIn(f"wait:{WAITS}", self.rows())
+        self.waited(4, seen=2)
+        engine.promote_due()
+        self.assertEqual(self.pushes, [], "answered meanwhile, for all it knows")
+        self.listed, self.error = [session(WAITS, "busy")], ""
+        sessions.watch()
+        engine.promote_due()
+        self.assertEqual((self.rows(), self.pushes), ({}, []))
+
+    def test_a_wait_seen_before_sentinel_stopped_is_not_pushed_on_start(self):
+        import engine
+        import sessions
+
+        self.listed = [session(WAITS, "waiting")]
+        sessions.watch()
+        self.waited(10, seen=8)  # Sentinel redeployed or the Mac asleep: promote_due runs before the next watch
+        engine.promote_due()
+        self.assertEqual(self.pushes, [])
+        sessions.watch()  # still waiting once looked at again: pushed
+        engine.promote_due()
+        self.assertEqual(len(self.pushes), 1)
+
+    def test_a_session_that_answered_is_the_bands_never_a_row(self):
+        import sessions
+
+        self.listed = [session(ANSWERED, "idle", self.answered(2)), session(WAITS, "idle", self.answered(70, cold=True)),
+                       session("77777777-8888-4999-8aaa-bbbbbbbbbbbb", "busy", self.answered(1))]
+        sessions.watch()
+        self.assertEqual(self.rows(), {})
+        [a] = sessions.answered()
+        self.assertEqual((a["subject"], a["ref"], a["title"]), (ANSWERED, "sc-12345", f"title {ANSWERED}"))
+        self.assertEqual(a["at"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now - 120)))
+        self.listed, self.error = [], "the Claude bridge: connection refused"
+        sessions.watch()
+        self.assertEqual(sessions.answered(), [], "unknown: the band says nothing")
+
+    def test_priority_the_mod_and_settings_list_the_sessions(self):
+        import db
+        import sessions
+
+        self.listed = [session(WAITS, "waiting", console="sc-12345"), session(ANSWERED, "idle", self.answered(2))]
+        sessions.watch()
+        with db.connect() as conn:
+            conn.execute("UPDATE items SET notified_at = ? WHERE external_id = ?", (db.now(), f"wait:{WAITS}"))
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('<div class="grp">Sessions <span>1</span></div>', page)
+        data = self.client.get("/api/summary").get_json()
+        self.assertEqual([i["subject"] for i in data["items"]][:1], [WAITS], "first")
+        self.assertTrue(data["items"][0]["at"])
+        self.assertEqual([a["subject"] for a in data["answered"]], [ANSWERED])
+        self.assertEqual(data["attention"], 1)
+        detail = self.client.get(f"/partials/item/{data['items'][0]['id']}").get_data(as_text=True)
+        self.assertIn("Open in Sessions", detail)
+        self.assertEqual(detail.count(">sc-12345<"), 2, "the top line and the ticket, not a third time as the session")
+        self.assertIn(sessions.WATCH, self.client.get("/settings").get_data(as_text=True))

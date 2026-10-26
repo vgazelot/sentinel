@@ -2,7 +2,8 @@
 {% from "partials/detail_macros.html" import top, heading, prop, triage %}
 {% set p = v.p %}
 {% set what = {'followup': {'failed': 'broke after merge', 'reverted': 'reverted after merge', 'dismissed': 'your approval was dismissed', 'stuck': 'approved, still not merged'}.get(p.kind, 'after your approval'),
-               'incident': 'status page', 'watch': 'alert', 'health': 'Sentinel', 'cycle': 'cycle'}.get(v.lane, 'your pull request') %}
+               'incident': 'status page', 'watch': 'alert', 'health': 'Sentinel', 'cycle': 'cycle',
+               'session': 'session waiting on you'}.get(v.lane, 'your pull request') %}
 {{ top(v.ref, what, v.url) }}
 <div class="d-body d-grid">
     <div class="d-main">
@@ -25,7 +26,8 @@
         {% elif v.lane == 'watch' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open in {{ p.source | capitalize }}</a>
         {% set claude = zabbix_console(v.external_id) if p.source == 'zabbix' else '' %}
         {% if claude %}<button type="button" class="btn claude" data-session="{{ claude }}" title="Claude Code on this problem, in Sessions with the run's other sessions: a ticket, then a read-only investigation. Leaving keeps the session.">Claude</button>{% endif %}
-        {% elif v.lane == 'followup' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open the PR</a>{% endif %}
+        {% elif v.lane == 'followup' %}<a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open the PR</a>
+        {% elif v.lane == 'session' %}<a class="btn primary" href="{{ v.url }}">Open in Sessions</a>{% endif %}
         <span class="spacer"></span>
         {{ triage(v) }}
     </div>
@@ -36,6 +38,9 @@
         {% call prop('Source') %}{{ p.source }}{% endcall %}
         {% call prop('Status') %}{{ 'maintenance' if p.planned else p.status }}{% endcall %}
         {% if v.severity %}{% call prop('Impact') %}{{ v.severity }}{% endcall %}{% endif %}
+        {% elif v.lane == 'session' %}
+        {% if p.story %}{% call prop('Ticket') %}<span class="mono">{{ p.story }}</span>{% endcall %}{% endif %}
+        {% if p.session and p.session != p.story %}{% call prop('Session') %}<span class="mono">{{ p.session }}</span>{% endcall %}{% endif %}
         {% elif v.lane == 'watch' %}
         {% if p.host %}{% call prop('Host') %}<span class="mono">{{ p.host }}</span>{% endcall %}{% endif %}
         {% if p.dashboard %}{% call prop('Dashboard') %}{{ p.dashboard }}{% endcall %}{% call prop('Panel') %}{{ p.panel }}{% endcall %}{% endif %}

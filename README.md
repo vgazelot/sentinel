@@ -57,6 +57,7 @@ Open **http://localhost:8300**, then **Settings → Subscribe this browser** (us
 
 | Signal | Shown in | Pushed |
 |---|---|---|
+| A Claude Code session waits for your answer (a question, a permission) | Sessions | after `session_wait_minutes` (3) |
 | Review asked of you by name | For you | right away |
 | Review asked of a team you belong to | Later → For you | only if still unclaimed after `team_grace_minutes`; gone once somebody approved |
 | Dependency bump (bot PR) | Later | never — grouped by bump |
@@ -101,6 +102,7 @@ triage:                           # defaults shown
   team_grace_minutes: 60
   health_minutes: 30
   stale_review_days: 3
+  session_wait_minutes: 3          # a session waiting on you: pushed after this
 
 agents:                           # Claude, see below; defaults shown
   precheck: true
@@ -181,7 +183,7 @@ The Claude Code sessions running on your machine, filed under the tickets they w
 
 ## Claude Code status line (optional)
 
-`contrib/claude-code-mod/` is a [Claude Code](https://claude.com/claude-code) mod that reads `GET /api/summary`: the status line shows what needs you (`● 3 for you · 2 bumps · landing 1 failed`), new notifications appear as toasts, and `/sentinel` opens the inbox in a pane — open, done, later, and a devil's advocate review run right in your session. It only reads Sentinel's API: one source of truth, no second poller.
+`contrib/claude-code-mod/` is a [Claude Code](https://claude.com/claude-code) mod that reads `GET /api/summary`: the status line shows what needs you (`● 3 for you · 2 bumps · landing 1 failed`); what began to need you since your last prompt, and the other sessions that answered meanwhile, show above the prompt once the turn is over — never while Claude works, never the session itself (toasts instead where the surface has no such band, VS Code); and `/sentinel` opens the inbox in a pane — open, done, later, and a devil's advocate review run right in your session. It only reads Sentinel's API: one source of truth, no second poller.
 
 ## Claude Code context advisor (optional)
 

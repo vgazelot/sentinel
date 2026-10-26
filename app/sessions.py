@@ -15,6 +15,7 @@ import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import requests
 from flask import Blueprint, abort, make_response, render_template, request
@@ -24,7 +25,9 @@ import config
 import console
 import cycle
 import db
+import engine
 import shortcut
+from watchers import WatchedItem
 
 bp = Blueprint("sessions", __name__)
 RESUME_PROMPT = ('Pick up {story}: read it and its latest "Handoff" comment if any, check its branch and pull requests, '
@@ -178,6 +181,15 @@ def _sources(data: dict) -> list[tuple[str, str, list]]:
     return out
 
 
+def _home(data: dict) -> dict:
+    """The cycle's stories by key (`sc-N`): the title of the first group listing each, and the story."""
+    home = {}
+    for _, title, stories in _sources(data):
+        for st in stories:
+            home.setdefault(f"sc-{st['id']}", (title, st))
+    return home
+
+
 def _groups(data: dict, sections: list[dict]) -> dict:
     """Every group, in the list's order: big rocks, the run, your sections, then what runs off the cycle."""
     sources = _sources(data)
@@ -197,11 +209,7 @@ def board() -> dict:
     data = cycle.load() if cycle.enabled() else {}
     sections, filed = _layout()
     groups = _groups(data, sections)
-    home, by_title = {}, {}
-    for key, title, stories in _sources(data):
-        by_title[title] = key
-        for st in stories:
-            home.setdefault(f"sc-{st['id']}", (title, st))
+    home, by_title = _home(data), {title: key for key, title, _ in _sources(data)}
     rows = [_session_row(s, now, home) for s in sessions]
     for row in rows:
         key = filed.get(row["key"])
@@ -221,6 +229,51 @@ def board() -> dict:
             rs.sort(key=lambda r: ORDER.index(r["state"]) if r["state"] in ORDER else len(ORDER))
     return {"groups": [g for g in groups.values() if g["rows"] or g["later"] or g["own"]],
             "waiting": sum(1 for s in sessions if s.get("status") == "waiting"), "error": error}
+
+
+# --- The inbox: a session that waits on you ------------------------------------------------------
+WATCH = "claude_sessions"  # the inbox's source; "sessions" in watcher_state holds your sections
+_answered: list[dict] = []  # the sessions that answered, cache warm, as the last watch() saw them
+
+
+def watch():
+    """Scheduler job: a session waiting on you is an inbox row, pushed once it has waited `session_wait_minutes`. One
+    that answered is a fact of the moment, not a row to clear: kept for the mod's band (`answered()`)."""
+    global _answered
+    sessions, error = live()
+    if error:  # the bridge away is not every session ended: the rows stay, the band says nothing
+        _answered = []
+        db.record_run(WATCH, error)
+        return
+    db.record_run(WATCH)
+    now, home = time.time(), _home(cycle.load() if cycle.enabled() else {})
+    rows = [(s, _session_row(s, now, home)) for s in sessions if SESSION_ID.fullmatch(s.get("id") or "")]
+    _answered = [{"subject": s["id"], "ref": row["story"] or _name(s), "title": row["title"], "url": _link(s),
+                  "at": _iso(_context(s.get("context"))["answeredAt"] / 1000)}
+                 for s, row in rows if row["state"] == "done"]
+    # a local list, it does not drop rows now and then like GitHub search: a wait answered is gone at once, and the
+    # next one starts its own grace
+    engine.process(WATCH, [_waiting(s, row) for s, row in rows if row["state"] == "waiting"], misses=1)
+
+
+def answered() -> list[dict]:
+    return _answered
+
+
+def _name(s: dict) -> str:
+    return s.get("console") or s.get("name") or ""
+
+
+def _link(s: dict) -> str:
+    return config.BASE_URL.rstrip("/") + "/sessions" + (f"?open={quote(s['console'])}" if s.get("console") else "")
+
+
+def _waiting(s: dict, row: dict) -> WatchedItem:
+    return WatchedItem(
+        external_id=f"wait:{s['id']}", title=row["title"], url=_link(s), fingerprint="waiting", lane="session",
+        urgency="later",
+        payload={"subject": s["id"], "source": row["story"] or _name(s), "story": row["story"], "session": _name(s),
+                 "why": "waits for you" + (f": {s['waiting_for']}" if s.get("waiting_for") else "")})
 
 
 def _find(key: str) -> dict | None:

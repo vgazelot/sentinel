@@ -23,6 +23,7 @@ import insight
 import lookout
 import my_prs
 import notify
+import sessions
 from watchers import build_watchers
 from console import bp as console_bp
 from lookout_views import bp as lookout_bp
@@ -65,6 +66,8 @@ if followup.enabled(FOLLOWUP_CFG):
     _every(followup.refresh, FOLLOWUP_CFG.get("interval_seconds", 300), followup.NAME, delay=10, args=[FOLLOWUP_CFG])
 if cycle.enabled(CYCLE_CFG):
     _every(cycle.refresh, CYCLE_CFG.get("interval_seconds", 1800), cycle.NAME, delay=12, args=[CYCLE_CFG])
+if sessions.enabled():
+    _every(sessions.watch, 30, sessions.WATCH, delay=25)
 if agents.enabled():
     _every(agents.tick, 10, "agents", delay=15)
     _every(agents.check_bridge, 120, "claude-bridge", delay=30)
@@ -275,9 +278,10 @@ def _followup_view(prs: list[dict]) -> tuple[list[dict], dict]:
     return prs, count
 
 
-# the inbox: monitoring alerts on top, the health light in the sidebar, cycle in its tab, status pages wait in Later
+# the inbox: your sessions and the monitoring alerts on top, the health light in the sidebar, cycle in its tab, status
+# pages wait in Later
 FOR_YOU = ("you", "team", "followup")
-INBOX = ("watch",) + FOR_YOU + ("mine",)
+INBOX = ("session", "watch") + FOR_YOU + ("mine",)
 TABS = ("priority", "later", "done")
 
 
@@ -324,6 +328,7 @@ def _inbox(notice: str = "", error: str = "") -> dict:
     mine = _mine_groups([v for v in pending if v["lane"] == "mine"])
     return {
         **later,
+        "sessions": sorted((v for v in attention if v["lane"] == "session"), key=lambda v: v["first_seen"]),
         "watch": newest(v for v in attention if v["lane"] == "watch"),
         "for_you": for_you,
         "mine": mine,
@@ -417,6 +422,8 @@ def _watchers_context() -> dict:
         jobs.append((followup.NAME, FOLLOWUP_CFG.get("interval_seconds", 300)))
     if cycle.enabled(CYCLE_CFG):
         jobs.append((cycle.NAME, CYCLE_CFG.get("interval_seconds", 1800)))
+    if sessions.enabled():
+        jobs.append((sessions.WATCH, 30))
     return {"watchers": [{"name": name, "interval": interval, "runnable": name in WATCHERS,
                           **{k: states.get(name, {}).get(k) for k in ("last_run", "last_error", "error_since")}}
                          for name, interval in jobs]}
@@ -747,6 +754,8 @@ def api_summary():
         run = next((r for r in runs.get(v["subject"], {}).values() if r["status"] == "done"), None)
         return {"id": v["id"], "lane": v["lane"], "ref": v["ref"], "title": v["headline"], "url": v["url"],
                 "why": v["p"].get("why", ""), "since": v["first_seen"], "subject": v["subject"],
+                # when it began to need you: pushed, else listed
+                "at": v["notified_at"] or v["first_seen"],
                 "claude": agents.summary_line(run["output"]) if run else ""}
 
     def lanes(*names):
@@ -760,10 +769,13 @@ def api_summary():
                    "deps": ctx["dep_count"], "grace": len(ctx["grace"]), "radar": len(ctx["radar"]),
                    "broken": sum(1 for v in attention if v["lane"] == "followup" and v["p"].get("kind") in ("failed", "reverted"))},
         "landing": ctx["landing"],
-        # alerts after the reviews and PRs: a storm must not push them out of the 25
-        "items": [brief(v) for v in sorted((v for v in attention if v["lane"] in INBOX), key=lambda v: v["lane"] == "watch")][:25],
+        # sessions first, alerts after the reviews and PRs: a storm must not push them out of the 25
+        "items": [brief(v) for v in sorted((v for v in attention if v["lane"] in INBOX),
+                                           key=lambda v: (v["lane"] != "session", v["lane"] == "watch"))][:25],
         "notifications": [{"id": n["id"], "title": n["title"], "body": n["body"], "url": n["url"],
                            "reason": n["reason"], "lane": n["lane"]} for n in notes],
+        # the sessions that answered, cache warm: the band's, never a row of the inbox
+        "answered": sessions.answered(),
         "seq": db.last_notification_id(),
         "agents": {"running": db.count_runs("status = 'running'"), "queued": db.count_runs("status = 'queued'")},
         "base_url": config.BASE_URL,

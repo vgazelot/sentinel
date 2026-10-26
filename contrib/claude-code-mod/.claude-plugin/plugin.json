@@ -1,7 +1,7 @@
 {
   "name": "sentinel",
-  "version": "0.2.0",
-  "description": "Sentinel in Claude Code: what waits on you in the status line, toasts for new items, the inbox in a /sentinel pane",
+  "version": "0.3.0",
+  "description": "Sentinel in Claude Code: what waits on you in the status line, what began to need you above the prompt between turns, the inbox in a /sentinel pane",
   "author": {
     "name": "vgazelot"
   },

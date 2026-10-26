@@ -4,6 +4,8 @@ self.addEventListener('push', (event) => {
     event.waitUntil(self.registration.showNotification(data.title || 'Sentinel', {
         body: data.body || '',
         tag: data.tag || undefined,
+        // a push that replaces one still on screen (the same item again: a session's next wait) alerts too
+        renotify: Boolean(data.tag),
         data: { url: data.url || '/' },
     }));
 });

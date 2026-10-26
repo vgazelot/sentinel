@@ -2,16 +2,19 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface as $T, Register } from 'claude-code'
 
 import type { Summary, SummaryItem } from '../types'
-import { DEEP_PROMPT, DEFAULT_URL, isReview, prompt, statusLine, toasts } from './core'
+import { band, DEEP_PROMPT, DEFAULT_URL, fromYou, isReview, prompt, statusLine, toasts } from './core'
 
 // A window on Sentinel's own API: Sentinel polls GitHub and the status pages, owns the state and
 // the notification policy; every session only reads GET /api/summary and posts the actions back.
+// What began to need you shows above the prompt once a turn is over, never while Claude works; a
+// session drawn on no surface with that band (VS Code alone) gets toasts instead.
 const PANE = 'sentinel'
 const POLL_MS = 20_000
 const summaryAtom = atom({ plugin: 'sentinel', key: 'summary' } as const, null)
 const errorAtom = atom({ plugin: 'sentinel', key: 'error' } as const, '')
 
-const ctx = { url: DEFAULT_URL, seq: -1, deep: DEEP_PROMPT }
+// since: your last prompt here (ms), what the band counts from
+const ctx = { url: DEFAULT_URL, seq: -1, deep: DEEP_PROMPT, since: 0 }
 
 async function poll($: $T) {
   const since = ctx.seq < 0 ? '' : `?since=${ctx.seq}`
@@ -20,7 +23,8 @@ async function poll($: $T) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     const summary = JSON.parse(r.text) as Summary
     // the first answer of a session is the baseline: no replay of what was already pushed
-    if (ctx.seq >= 0) for (const line of toasts(summary.notifications)) $.ui.toast(line, { timeoutMs: 8000 })
+    const banded = (await $.session.surfaces()).some(s => s === 'terminal' || s === 'desktop')
+    if (ctx.seq >= 0 && !banded) for (const line of toasts(summary.notifications)) $.ui.toast(line, { timeoutMs: 8000 })
     ctx.seq = summary.seq
     await update($, summaryAtom, () => summary)
     await update($, errorAtom, () => '')
@@ -48,6 +52,7 @@ export const register: Register = on => {
     ctx.url = ((await $.env.get('SENTINEL_URL')) || DEFAULT_URL).replace(/\/$/, '')
     ctx.deep = (await $.env.get('SENTINEL_REVIEW_PROMPT')) || DEEP_PROMPT
     ctx.seq = -1
+    ctx.since = await $.clock.now()
     await $.command.register({ name: 'sentinel', description: 'Sentinel: what waits on you (args: refresh)' })
 
     const tick = async () => {
@@ -60,6 +65,30 @@ export const register: Register = on => {
     void tick()
     $.clock.every(POLL_MS, tick)
     return started
+  })
+
+  on('prompt.submit', ($, e, next) => {
+    // never in the way of the prompt
+    if (fromYou(e.origin.kind)) void $.clock.now().then(now => { ctx.since = now }, () => undefined)
+    return next(e)
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const summary = await read($, summaryAtom)
+    if (!summary || e.props.isWorking || e.props.hasSurvey) return next(e)
+    // read each time: a /clear gives the session another id
+    const { lines, more, actionable } = band(summary, ctx.since, await $.session.id())
+    if (!lines.length) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>Sentinel · meanwhile</Text>
+        {lines.map((line, i) => <Text key={`line:${i}`} wrap="truncate-end">{line}</Text>)}
+        {more || actionable ? (
+          <Text dimColor wrap="truncate-end">{[more ? `+${more} more` : '', actionable ? '/sentinel to act on them' : ''].filter(Boolean).join(' · ')}</Text>
+        ) : null}
+      </Box>
+    )
   })
 
   on('command.run', { command: 'sentinel' }, async $ => {

@@ -28,6 +28,7 @@ TRIAGE_DEFAULTS = {
     "team_grace_minutes": 60,   # team review requests: pushed only if still unclaimed after this
     "health_minutes": 30,       # a polling job failing for this long becomes an item
     "stale_review_days": 3,     # your PR waiting for a first review this long → "nudge someone"
+    "session_wait_minutes": 3,  # a Claude Code session waiting on you: pushed once it has waited this long
 }
 AGENT_DEFAULTS = {
     "concurrency": 2,           # bridge runs in parallel

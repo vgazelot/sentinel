@@ -24,6 +24,7 @@ data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'w
 {% macro icon_of(v) -%}
 {%- if v.lane == 'followup' -%}{{ 'i-x' if v.p.kind in ('failed', 'reverted') else 'i-warn' }}
 {%- elif v.lane == 'mine' -%}{{ MINE_ICON.get(v.p.action, 'i-pr') }}
+{%- elif v.lane == 'session' -%}i-chat
 {%- else -%}{{ {'you': 'i-eye', 'team': 'i-eye', 'incident': 'i-cloud', 'watch': 'i-pulse', 'health': 'i-warn', 'cycle': 'i-target'}.get(v.lane, 'i-dot') }}
 {%- endif -%}
 {%- endmacro %}

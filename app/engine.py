@@ -32,8 +32,8 @@ def run_watcher(watcher: Watcher):
     process(watcher.name, items)
 
 
-def process(watcher_name: str, fetched: list[WatchedItem]):
-    """Fetched = the full current state of a watcher; absent items are resolved."""
+def process(watcher_name: str, fetched: list[WatchedItem], misses: int = MISSES):
+    """Fetched = the full current state of a watcher; items absent from `misses` fetches in a row are resolved."""
     ts = db.now()
     to_notify: list[tuple[int, str, WatchedItem]] = []
     # first pass of a new source (or of a fresh database): everything already exists, nothing
@@ -108,7 +108,7 @@ def process(watcher_name: str, fetched: list[WatchedItem]):
         for ext_id, row in existing.items():
             if ext_id in seen or row["state"] == "resolved":
                 continue
-            if row["missed"] + 1 >= MISSES:
+            if row["missed"] + 1 >= misses:
                 conn.execute("UPDATE items SET state = 'resolved', resolved_at = ?, missed = 0 WHERE id = ?",
                              (ts, row["id"]))
             else:
@@ -126,20 +126,31 @@ def process(watcher_name: str, fetched: list[WatchedItem]):
 
 
 def promote_due():
-    """Grace period over and still unclaimed: the item becomes yours (one push)."""
-    grace = config.triage().get("team_grace_minutes", 60)
+    """Grace period over and still there: the item becomes yours (one push) — a team request nobody took, a Claude Code
+    session still waiting on you."""
+    triage = config.triage()
+    team = triage.get("team_grace_minutes", 60)
+    grace = {"session": triage.get("session_wait_minutes", 3)}
     # a source not baselined yet (first pass pending after an upgrade) has nothing "new" to promote
     seeded = [w for w, st in db.watcher_states().items() if st.get("seeded")]
     with db.connect() as conn:
         rows = [r for r in conn.execute(
             """SELECT * FROM items WHERE state = 'pending' AND urgency = 'later' AND missed = 0
                                      AND notified_at IS NULL AND first_seen <= ?""",
-            (db.ago(grace),),
-        ).fetchall() if r["watcher"] in seeded]
+            (db.ago(min(team, *grace.values())),),
+        ).fetchall() if r["watcher"] in seeded and r["first_seen"] <= db.ago(grace.get(r["lane"], team))
+            # a wait is known only while it is watched (every 30 s): one not seen in the last minute — the bridge away,
+            # Sentinel stopped or the Mac asleep — may have been answered meanwhile
+            and (r["lane"] != "session" or r["last_seen"] >= db.ago(1))]
+        notes = []
         for r in rows:
+            minutes = grace.get(r["lane"], team)
+            body = (f"{json.loads(r['payload'] or '{}').get('source') or 'A session'} has waited for you {minutes} min"
+                    if r["lane"] == "session" else _row_body(r, f"nobody took it in {minutes} min"))
             conn.execute("UPDATE items SET notified_at = ? WHERE id = ?", (db.now(), r["id"]))
-            db.log_notification(conn, r["id"], "unclaimed", r["title"], _row_body(r, f"nobody took it in {grace} min"))
-    _push([(r["id"], r["title"], _row_body(r, f"nobody took it in {grace} min"), r["url"]) for r in rows])
+            db.log_notification(conn, r["id"], "unclaimed", r["title"], body)
+            notes.append((r["id"], r["title"], body, r["url"]))
+    _push(notes)
 
 
 def wake_snoozed():
