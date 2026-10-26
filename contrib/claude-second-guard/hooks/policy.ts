@@ -1,10 +1,12 @@
 /** What an unattended session may run: reading. The lists name what reads, never what writes — an unknown tool,
  *  command, subcommand or flag is refused, and so is anything this reader does not parse (command substitution, a
- *  heredoc, a subshell). It narrows what runs without you; it is not a sandbox. */
+ *  heredoc, a subshell). It narrows what runs without you; it is not a sandbox. A session given a worktree (a fix on
+ *  a pull request) also edits the files in it and commits there; pushing stays with the app. */
 
 export type Verdict = { decision: 'allow' | 'refuse'; reason: string }
-/** Host patterns (`*` within a name) ssh and curl may reach; localhost is always readable by curl. */
-export type Config = { sshHosts: string[]; curlHosts: string[] }
+/** Host patterns (`*` within a name) ssh and curl may reach; localhost is always readable by curl. `worktree`: the
+ *  absolute path of the checkout a fix works in — its files are read whatever their name, edited, and committed. */
+export type Config = { sshHosts: string[]; curlHosts: string[]; worktree?: string }
 
 const allow = (reason: string): Verdict => ({ decision: 'allow', reason })
 const refuse = (reason: string): Verdict => ({ decision: 'refuse', reason })
@@ -29,13 +31,35 @@ const readable = (w: string) => READABLE.test(w.replace(/[*?]/g, 'x'))
 const secretPath = (w: string) => SECRET.test(w) && !readable(w)
 // a glob or a brace in a path could name one of those without spelling it
 const DODGE = /[*?[{]/
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+/** Inside the worktree, its `.git` left out; a relative path starts there (the session's working directory, back
+ *  there after every command). A fresh checkout holds the repository and the fix, nothing else: no name is a secret. */
+export function within(path: string, root: string | undefined): boolean {
+  if (!root || !path || /^[~$]/.test(path)) return false
+  const parts: string[] = []
+  for (const p of (path.startsWith('/') ? path : `${root}/${path}`).split('/')) {
+    if (!p || p === '.') continue
+    if (p !== '..') parts.push(p)
+    else if (!parts.pop()) return false
+  }
+  const base = root.replace(/\/+$/, '')
+  if (base.split('/').length < 4) return false  // a checkout lives deep, never at / or a home
+  const full = `/${parts.join('/')}`
+  return (full === base || full.startsWith(`${base}/`)) && !full.slice(base.length).split('/').includes('.git')
+}
 
 export function check(tool: string, input: unknown, cfg: Config): Verdict {
   const args = (input ?? {}) as Record<string, unknown>
+  const hidden = (v: unknown) => typeof v === 'string' && secretPath(v) && !within(v, cfg.worktree)
   if (READ_TOOLS.has(tool)) {
-    const path = [args.file_path, args.path].find(v => typeof v === 'string' && secretPath(v))
-      ?? (typeof args.pattern === 'string' && tool === 'Glob' && secretPath(args.pattern) ? args.pattern : undefined)
+    const path = [args.file_path, args.path].find(hidden) ?? (tool === 'Glob' && hidden(args.pattern) ? args.pattern : undefined)
     return path ? refuse(`${tool} on ${path}: secrets are read with you`) : allow(`${tool} reads`)
+  }
+  if (WRITE_TOOLS.has(tool) && cfg.worktree) {
+    const path = args.file_path ?? args.notebook_path
+    return typeof path === 'string' && within(path, cfg.worktree) ? allow(`${tool} in the worktree`)
+      : refuse(`${tool} on ${String(path)}: only the worktree's files are edited`)
   }
   if (tool === 'Bash') return typeof args.command === 'string' ? shell(args.command, cfg, 0) : refuse('Bash without a command')
   if (tool.startsWith('mcp__')) return mcp(tool)
@@ -213,6 +237,8 @@ function shell(src: string, cfg: Config, depth: number): Verdict {
   const segments = unroll(parsed)
   if (!segments) return refuse('a loop it does not read: nested, while, if, or a list that expands')
   if (!segments.length) return allow('nothing to run')
+  // the worktree's rights hold where the session stands: a command that moves elsewhere only reads
+  if (cfg.worktree && segments.some(s => /^(cd|pushd|popd)$/.test(s.words[0] ?? ''))) cfg = { ...cfg, worktree: '' }
   for (const s of segments) {
     const variable = s.expands.find(v => v && !SAFE_VARS.has(v))
     if (variable) return refuse(`expands $${variable}: a variable may hold a token`)
@@ -247,7 +273,7 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
   const cert = (w: string, k: number) => name === 'curl' && (/^(-E|--cert|--key|--cacert)$/.test(rest[k - 1] ?? '') || /^--(cert|key|cacert)=/.test(w))
   // a path starting at ~, . or a variable, or through a hidden directory, with a glob or a brace in it
   const dodges = (w: string) => DODGE.test(w) && !/\s/.test(w) && /^[~$]|(^|\/)\.[^/]*\/|\/[.$]/.test(w) && !readable(w)
-  const secret = rest.find((w, k) => (secretPath(w) || dodges(w)) && !cert(w, k))
+  const secret = rest.find((w, k) => (secretPath(w) || dodges(w)) && !cert(w, k) && !within(w, cfg.worktree))
   if (secret) return refuse(`reads ${secret}: secrets are read with you`)
   const no = (why: string) => refuse(`${name}: ${why}`)
   const yes = () => allow(name)
@@ -268,7 +294,8 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
       // place — elsewhere rg reads the same without them
       const recursive = has('-r', '-R', '--recursive', '-d', '--directories') || rest.some(w => /^-[a-zA-Z]*[rR]/.test(w))
       const paths = has('-e', '--regexp') ? positional : positional.slice(1)
-      return everywhere(rest) || (recursive && !(paths.length && paths.every(readable)))
+      const place = (w: string) => readable(w) || within(w, cfg.worktree)
+      return everywhere(rest) || (recursive && !(paths.length ? paths.every(place) : !!cfg.worktree))
         ? no('recursive outside a readable place: rg reads the same without hidden files') : yes()
     }
     case 'uniq':
@@ -316,7 +343,7 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
     case 'docker': case 'docker-compose':
       return docker(name === 'docker-compose' ? ['compose', ...rest] : rest) ? yes() : no('not a reading subcommand')
     case 'git':
-      return git(rest)
+      return git(rest, cfg)
     case 'gh':
       return gh(rest)
     case 'curl':
@@ -345,7 +372,7 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
         if (/^-[^nuHE]|^-[nuHE]*[^nuHE]/.test(rest[k]) && rest[k] !== '-u') return no(`${rest[k]} is not a plain run as another user`)
         k += rest[k] === '-u' || /^-[nHE]*u$/.test(rest[k]) ? 2 : 1
       }
-      return command(rest.slice(k), cfg, depth)
+      return command(rest.slice(k), { ...cfg, worktree: '' }, depth)
     }
     case 'timeout': {
       let k = 0
@@ -372,18 +399,25 @@ function docker(args: string[]): boolean {
   return /^(ps|logs|inspect|stats|images|top|version|info|port|history|diff)$/.test(sub ?? '')
 }
 
-function git(args: string[]): Verdict {
+function git(args: string[], cfg: Config): Verdict {
   let k = 0
   while (k < args.length && args[k].startsWith('-')) {
     if (args[k] === '-c' || args[k].startsWith('--config') || args[k].startsWith('--exec-path')) return refuse('git: -c can run any command')
     k += args[k] === '-C' ? 2 : 1
   }
+  // -C, --git-dir, --work-tree: another repository, read only
+  if (k) cfg = { ...cfg, worktree: '' }
   const [sub, ...rest] = args.slice(k)
   const has = (...flags: string[]) => rest.some(w => flags.some(f => w === f || w.startsWith(`${f}=`)))
   if (rest.some(w => w.startsWith('--output') || w === '-O' || w.startsWith('--open-files-in-pager') || w.startsWith('--upload-pack') || w.startsWith('--ext-diff')))
     return refuse(`git ${sub}: writes a file or runs a command`)
   const read = /^(log|show|diff|status|rev-parse|describe|blame|ls-files|ls-tree|cat-file|grep|shortlog|rev-list|merge-base|name-rev|whatchanged|count-objects|fetch|version|help)$/
   if (read.test(sub ?? '')) return allow(`git ${sub}`)
+  if (sub === 'push') return refuse('git push: the app pushes once you answered')
+  if (cfg.worktree) {
+    const fix = commit(sub ?? '', rest)
+    if (fix) return fix
+  }
   const positional = rest.filter(w => !w.startsWith('-'))
   const ok = (sub === 'branch' && !positional.length && !has('-d', '-D', '-m', '-M', '-c', '-C', '--delete', '--move', '--copy', '--set-upstream-to', '-u', '--unset-upstream', '--edit-description', '-f', '--force'))
     || (sub === 'remote' && (!positional.length || /^(show|get-url)$/.test(positional[0])))
@@ -392,6 +426,35 @@ function git(args: string[]): Verdict {
     || (/^(worktree|stash|notes)$/.test(sub ?? '') && /^(list|show)$/.test(positional[0] ?? ''))
     || (sub === 'reflog' && (!positional.length || positional[0] === 'show'))
   return ok ? allow(`git ${sub}`) : refuse(`git ${sub ?? ''}: not a reading subcommand`)
+}
+
+/** What a fix does in its worktree: stage, commit on top, rebase onto the base branch. Never an amend, another
+ *  branch, a message or a pathspec read from a file, or a command run along the way. Null: not one of those. */
+function commit(sub: string, rest: string[]): Verdict | null {
+  const has = (...flags: string[]) => rest.some(w => flags.some(f => w === f || w.startsWith(`${f}=`)))
+  const short = (letters: string) => rest.some(w => new RegExp(`^-[a-zA-Z]*[${letters}]`).test(w) && !w.startsWith('--'))
+  switch (sub) {
+    case 'add': case 'rm': case 'mv': case 'restore':
+      return has('--pathspec-from-file') ? refuse(`git ${sub}: a pathspec read from a file`) : allow(`git ${sub} in the worktree`)
+    case 'checkout':  // files back as they were, never another branch
+      return rest.includes('--') && !has('-b', '-B', '--orphan', '--detach') ? allow('git checkout -- files') : refuse('git checkout: the fix stays on its branch')
+    case 'commit':
+      if (has('--amend', '--author', '--date', '-F', '--file', '-t', '--template', '--pathspec-from-file', '-C', '-c', '--reuse-message', '--reedit-message')
+        || short('FtcC'))
+        return refuse('git commit: a new commit on top, its message given with -m')
+      // without -m git opens no editor here (GIT_EDITOR=true) and aborts on an empty message: say so instead
+      return has('-m', '--message') || short('m') ? allow('git commit in the worktree') : refuse('git commit: give its message with -m')
+    case 'rebase': {
+      if (has('--continue', '--abort', '--skip', '--quit')) return allow(`git rebase ${rest[0]}`)
+      if (has('-i', '--interactive', '-x', '--exec', '--root', '--edit-todo', '--onto', '-r', '--rebase-merges') || short('ixr'))
+        return refuse('git rebase: onto the base branch, without a todo list or a command')
+      const upstream = rest.filter((w, k) => !w.startsWith('-') && !/^(-X|-s|--strategy|--strategy-option)$/.test(rest[k - 1] ?? ''))
+      return upstream.length === 1 && /^origin\/[\w./-]+$/.test(upstream[0]) && !upstream[0].includes('..')
+        ? allow(`git rebase ${upstream[0]}`) : refuse('git rebase: onto origin/<base branch> only')
+    }
+    default:
+      return null
+  }
 }
 
 function gh(args: string[]): Verdict {
@@ -478,7 +541,7 @@ function ssh(args: string[], cfg: Config, depth: number): Verdict {
   if (!matches(host, cfg.sshHosts)) return refuse(`ssh to ${host}: not a host it may read`)
   const remote = args.slice(k + 1).join(' ').trim()
   if (!remote) return refuse(`ssh ${host}: an interactive shell`)
-  const v = shell(remote, cfg, depth + 1)
+  const v = shell(remote, { ...cfg, worktree: '' }, depth + 1)
   return v.decision === 'allow' ? allow(`ssh ${host}: ${v.reason}`) : refuse(`on ${host}: ${v.reason}`)
 }
 

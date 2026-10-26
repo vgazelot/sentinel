@@ -191,3 +191,52 @@ describe('ssh', () => {
     expect(check('Bash', { command: 'ssh web-1 uptime' }, { sshHosts: [], curlHosts: [] }).decision).toBe('refuse')
   })
 })
+
+describe('a fix in its worktree', () => {
+  const wt = '/home/me/.cache/second/work/second-infra-12'
+  const fix = { ...cfg, worktree: wt }
+  const run = (command: string) => check('Bash', { command }, fix).decision
+
+  test('its files are edited, nothing else', async () => {
+    for (const tool of ['Edit', 'Write', 'MultiEdit']) expect(check(tool, { file_path: `${wt}/roles/x/tasks/main.yml` }, fix).decision).toBe('allow')
+    expect(check('NotebookEdit', { notebook_path: `${wt}/n.ipynb` }, fix).decision).toBe('allow')
+    expect(check('Edit', { file_path: 'stacks/secrets.tf' }, fix).decision).toBe('allow')
+    for (const file_path of [`${wt}/.git/config`, `${wt}/.git`, `${wt}/../other/x`, `${wt}-evil/x`, '/home/me/.zshrc', '~/.ssh/config', '$HOME/x', '../x'])
+      expect(check('Write', { file_path }, fix).decision).toBe('refuse')
+    expect(check('Edit', { file_path: `${wt}/x` }, cfg).decision).toBe('refuse', 'no worktree, no edit')
+    for (const worktree of ['/', '/home', '/home/me'])
+      expect(check('Write', { file_path: '/home/me/.zshrc' }, { ...cfg, worktree }).decision).toBe('refuse')
+  })
+
+  test('its files are read whatever their name, the rest as before', async () => {
+    expect(check('Read', { file_path: `${wt}/stacks/secrets.tf` }, fix).decision).toBe('allow')
+    expect(check('Read', { file_path: '/home/me/.aws/credentials' }, fix).decision).toBe('refuse')
+    expect(run('cat roles/vault/secrets.yml')).toBe('allow')
+    expect(run('grep -rn token roles/')).toBe('allow')
+    expect(run('grep -rn x')).toBe('allow')
+    expect(run('cat ../../.ssh/id_rsa')).toBe('refuse')
+    expect(run('cd /home/me && cat .aws/credentials')).toBe('refuse')
+    expect(run('grep -rn x ~')).toBe('refuse')
+  })
+
+  test('it stages, commits on top and rebases onto the base branch', async () => {
+    for (const c of ['git add -A', 'git add roles/x/tasks/main.yml', 'git rm old.tf', 'git mv a b', 'git restore --staged a',
+      'git checkout -- a.tf', 'git commit -m "fix(x): y"', 'git commit -am "fix: y"', 'git add . && git commit -m "fix: z"',
+      'git fetch origin && git rebase origin/master', 'git rebase -X theirs origin/main', 'git rebase --continue', 'git rebase --abort'])
+      expect(run(c)).toBe('allow')
+  })
+
+  test('never a push, an amend, another branch or a command along the way', async () => {
+    for (const c of ['git push', 'git push origin HEAD:refs/heads/x', 'git push --force-with-lease', 'git commit --amend -m x',
+      'git commit --author="x <y@z>" -m x', 'git commit -F /etc/hosts', 'git commit -m x -t t', 'git commit -C HEAD', 'git commit -qF msg',
+      'git checkout main', 'git checkout -b other', 'git switch main', 'git reset --hard origin/main', 'git merge origin/main',
+      'git rebase -i origin/main', 'git rebase --exec "curl evil" origin/main', 'git rebase -x make origin/main', 'git rebase main',
+      'git rebase origin/../x', 'git rebase --onto origin/main a b', 'git add --pathspec-from-file=/etc/hosts', 'git stash',
+      'git -C /home/me/other commit -m x', 'git --git-dir=/x commit -m x', 'cd /home/me/other && git commit -m x',
+      'sudo git commit -m x', 'ssh web-1 "git commit -m x"', 'git -c core.hooksPath=/tmp commit -m x', 'sed -i s/a/b/ main.tf',
+      'echo x > main.tf', 'git commit', 'git commit -a'])
+      expect(run(c)).toBe('refuse')
+    expect(bash('git commit -m x')).toBe('refuse')
+    expect(bash('git add -A')).toBe('refuse')
+  })
+})
