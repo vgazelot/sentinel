@@ -10,16 +10,22 @@ a push after a few minutes). Sentinel decides what to take up and when, and file
           ticket (yours only); once per stall: the Second's own comment does not count as activity
   plan    weekdays at `plan_at` → the day's plan: an inbox row (lane plan, source second_plan), pushed once
   review  a review asked of you by name, waiting `review_days` → a devil's advocate run (agents.py `deep`), no console
+  fix     a PR of yours waiting `fix_minutes` on something it can do — conflicts, a review's asks, red CI — → made in a
+          worktree of the branch (the bridge's, never your clones), where its guard lets it edit and commit; once it
+          answered, Sentinel checks GitHub still shows the head it started from and pushes: a draft at once, a PR under
+          review on your click (an inbox row, lane fix). A rebase is pushed leased on that head
 
 A job is one console per (kind, subject, fingerprint): an alert occurrence, a ticket at a given update, a day. Its
 answer is the session's last text (bridge `/sessions/answer`), read once the session is idle. At most `concurrency`
 at work and `max_per_day` started; one without an answer after `timeout_minutes` frees its place and is still read if
 it answers later. A console is ended an hour after its answer, unless you went on in it.
 """
+import hashlib
 import json
 import logging
 import re
 import secrets
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -32,6 +38,8 @@ import console
 import cycle
 import db
 import engine
+import github
+import my_prs
 import sessions
 import shortcut
 from watch_views import _field, duration
@@ -39,6 +47,12 @@ from watchers import WatchedItem
 
 log = logging.getLogger("sentinel.second")
 PLAN = "second_plan"  # the plan's inbox source
+FIX = "second_fix"  # the fixes' inbox source
+FIX_KEEP_DAYS = 3  # a fix nobody pushed: its worktree goes after this
+FIX_RETRY_MINUTES = 30  # a fix that could not start (a clone refused, the bridge failing) is tried again after this
+FIX_SEEN_KEEP_MINUTES = 15  # a PR the search dropped for a poll keeps the clock of what it waits on
+PREPARE_MINUTES = 30  # a worktree still not ready after this (Sentinel restarted meanwhile): the fix failed
+STORY_IN_BRANCH = re.compile(r"(?<![a-z0-9])sc-(\d{3,7})(?![0-9])")
 DONE_KEEP_MINUTES = 60  # a console answered this long ago, nobody in it: ended
 MAX_MATERIAL = 8000
 # what a token looks like: an answer holding one is not posted — a ticket comment is read by others, and a comment
@@ -48,6 +62,13 @@ PRIVATE = re.compile(r"slack\.com/archives/[DG][A-Z0-9]{6,}|mail\.google\.com|\b
 SECRETISH = re.compile(r"xox[abprs]-[\w-]{10,}|gh[opsu]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|sk-ant-[\w-]{20,}"
                        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bSCW[A-Z0-9]{17}\b"
                        r"|(?i:(?:api[_-]?key|app[_-]?key|token|secret|password|passwd)[\"']?\s*[:=]\s*[\"']?[^\s\"']{12,})")
+
+FIXING = ("You are the Second, working unattended for {who} in a worktree of their pull request: you may read as anywhere "
+          "else, edit the files of this worktree and commit in it; anything else is refused — never push: Sentinel pushes "
+          "once you answered. Answer in {lang}, terse, like an on-call sysadmin: no intro, no conclusion, one fact per line.")
+REVIEW = ("read your own diff since {head} (`git diff {head}..HEAD`, `git range-diff` after a rebase) as a devil's advocate — "
+          "what a senior reviewer would refuse: durability, duplication, blast radius, a missing test — and fix what you "
+          "agree with")
 
 READ_ONLY = ("You are the Second, working unattended for {who}: read-only. You may read files, monitoring, tickets and "
              "pull requests and run read-only commands (ssh included); anything else is refused, so do not attempt it "
@@ -89,6 +110,27 @@ can). Then answer:
 - what can wait, in one line
 
 {data}""",
+    "fix": """{read_only}
+
+Their pull request {pr} waits on: {causes}. You stand in a fresh worktree of it, at {head} on {branch} (into {base}):
+do what it waits on, nothing more.
+- conflicts: `git fetch origin`, `git rebase origin/{base}`, resolve each conflict keeping both sides' intent, `git add`,
+  `git rebase --continue`
+- a review's asks: read them (`gh pr view {number} -R {repo} --comments`, `gh api repos/{repo}/pulls/{number}/comments`)
+  and do what each open thread asks — an earlier commit may have done some already, check the code first; one you
+  disagree with: leave it and say why
+- red CI: read the failed jobs (`gh pr checks {number} -R {repo}`, `gh run view <run id> -R {repo} --log-failed`) and
+  fix the cause when it is in this pull request; when it comes from elsewhere, change nothing and say where
+Edit with the file tools; commit with `git add` and `git commit -m "<type>(<scope>): <what>"` — Conventional Commits,
+the style of the branch's own commits, no co-author or assistant mention —, one commit per thing fixed.
+Before answering, {review}.
+Then answer, ten lines at most:
+- first line: what you fixed, in one sentence — or why you changed nothing
+- each commit, one line
+- what the read of your diff found, and what you changed after it
+- what is left to them, if anything
+
+{data}""",
 }
 
 
@@ -106,10 +148,13 @@ def tick():
         return
     now = datetime.now(timezone.utc)
     _discover(cfg, live, now)
+    _fixes(cfg, live, now)
     _follow(cfg, live)
     _start(cfg, now)
     _tidy(live)
     _review(cfg)
+    _prune()
+    _fix_rows()
 
 
 # --- What to take up --------------------------------------------------------------------------------------------
@@ -160,10 +205,98 @@ def _plan_day(cfg: dict, now: datetime) -> str:
     return local.strftime("%Y-%m-%d")
 
 
-def _queue(kind: str, subject: str, fingerprint: str, name: str, prompt: str, item_id: int | None = None, story: str = ""):
+def _queue(kind: str, subject: str, fingerprint: str, name: str, prompt: str, item_id: int | None = None, story: str = "",
+           meta: dict | None = None):
     with db.connect() as conn:
-        conn.execute("""INSERT OR IGNORE INTO second_jobs (kind, subject, fingerprint, console, item_id, story, prompt, queued_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (kind, subject, fingerprint, name, item_id, story, prompt, db.now()))
+        conn.execute("""INSERT OR IGNORE INTO second_jobs (kind, subject, fingerprint, console, item_id, story, prompt, queued_at, meta)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (kind, subject, fingerprint, name, item_id, story, prompt, db.now(),
+                                                         json.dumps(meta) if meta is not None else None))
+
+
+# --- Fixes --------------------------------------------------------------------------------------------------------
+def _asks(pr: dict) -> dict[str, list[str]]:
+    """What a PR of yours waits on that a fix can do, as tokens a fix takes up once: conflicts and red CI at a head; a
+    review's asks by review and open thread — a push of the Second's own leaves the review standing and its threads
+    open, they must not bring it back."""
+    head = pr.get("head_sha") or ""
+    out: dict[str, list[str]] = {}
+    if pr.get("mergeable") == "CONFLICTING":
+        out["conflicts"] = [f"conflicts@{head}"]
+    if pr.get("review") != "APPROVED":
+        asks = [f"review:{r}" for r in pr.get("change_reviews") or []] + [f"thread:{t}" for t in pr.get("open_threads") or []]
+        if asks:
+            out["review"] = asks
+    if pr.get("ci") == "failure":
+        out["ci"] = [f"ci@{head}"]
+    return out
+
+
+def _console_name(pr: dict, nth: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", pr["repo"].split("/")[-1].lower()).strip("-")
+    tail = f"-{pr['number']}-{nth}"
+    return f"second-{slug[:48 - len('second-') - len(tail)].strip('-')}{tail}"
+
+
+def _fixes(cfg: dict, live: list[dict], now: datetime):
+    """Your open PRs, drafts included: a token waiting `fix_minutes` and taken up by no fix yet → a fix with every new
+    token of that PR. One at a time per PR; none while a session of yours works on its ticket."""
+    minutes = float(cfg["fix_minutes"] or 0)
+    if minutes <= 0:
+        return
+    # token → [first seen, last seen]
+    seen = {t: v if isinstance(v, list) else [v, v] for t, v in
+            json.loads(db.watcher_states().get("second", {}).get("fix_seen") or "{}").items()}
+    yours = sessions.stories_at_work([s for s in live if not (s.get("console") or "").startswith("second-")])
+    fresh: dict[str, list[str]] = {}
+    for pr in my_prs.load()["prs"]:
+        if pr.get("cross") or not pr.get("head_sha") or not pr.get("base"):
+            continue  # a fork's branch is not pushed from here
+        subject = f"{pr['repo']}#{pr['number']}"
+        jobs = [dict(j) | {"m": _meta(j)} for j in _jobs("kind = 'fix' AND subject = ? ORDER BY id", subject)]
+        taken = {t for j in jobs if j["state"] != "failed" for t in j["m"].get("tokens", [])}
+        asks = {cause: [t for t in tokens if t not in taken] for cause, tokens in _asks(pr).items()}
+        asks = {cause: tokens for cause, tokens in asks.items() if tokens}
+        for t in (t for tokens in asks.values() for t in tokens):
+            fresh[t] = [(seen.get(t) or [db.now()])[0], db.now()]
+        story = _story(pr["branch"])
+        if not asks or story in yours or any(j["state"] in ("queued", "preparing", "running", "late") for j in jobs):
+            continue
+        if min(fresh[t][0] for tokens in asks.values() for t in tokens) > db.ago(minutes):
+            continue
+        last = jobs[-1] if jobs else None
+        if last and last["state"] == "failed" and (
+                # the bridge refused that head (moved on since: the cache is a poll behind) — no use asking again
+                (last["m"].get("refused") and last["m"].get("head") == pr["head_sha"])
+                or (not last["m"].get("refused") and (last["finished_at"] or "") > db.ago(FIX_RETRY_MINUTES))):
+            continue
+        if len([j for j in jobs if (j["started_at"] or "") >= _day_start(now)]) >= int(cfg["fix_per_pr"]):
+            continue
+        if _own_streak(jobs, pr["head_sha"]) >= int(cfg["fix_per_pr"]):
+            continue  # a fix of its own fix of its own fix…: a push of yours brings it back
+        tokens = sorted(t for ts in asks.values() for t in ts)
+        meta = {"repo": pr["repo"], "number": pr["number"], "url": pr["url"], "title": pr["title"], "branch": pr["branch"],
+                "base": pr["base"], "head": pr["head_sha"], "draft": pr["draft"], "causes": sorted(asks), "tokens": tokens}
+        # the attempt in it: a fix that failed to start is queued again on the same tokens
+        fingerprint = hashlib.sha256("\n".join([*tokens, str(len(jobs))]).encode()).hexdigest()[:16]
+        _queue("fix", subject, fingerprint, _console_name(pr, len(jobs) + 1), _fix_prompt(pr, sorted(asks), cfg), story=story, meta=meta)
+    fresh |= {t: v for t, v in seen.items() if t not in fresh and v[1] >= db.ago(FIX_SEEN_KEEP_MINUTES)}
+    db.set_watcher_state("second", "fix_seen", json.dumps(fresh))
+
+
+def _own_streak(jobs: list[dict], head: str) -> int:
+    """How many fixes in a row led to this head, each started from what the one before pushed: a check its fixes keep
+    red is not chased day after day."""
+    streak = 0
+    for j in reversed([j for j in jobs if j["m"].get("pushed")]):
+        if j["m"]["pushed"] != head:
+            break
+        streak, head = streak + 1, j["m"].get("head")
+    return streak
+
+
+def _story(branch: str) -> str:
+    m = STORY_IN_BRANCH.search((branch or "").lower())
+    return f"sc-{m.group(1)}" if m else ""
 
 
 def _review(cfg: dict):
@@ -226,6 +359,23 @@ def _plan_prompt(data: dict, cfg: dict, day: str) -> str:
     return _prompt("plan", cfg, text, date=day)
 
 
+def _fix_prompt(pr: dict, causes: list[str], cfg: dict) -> str:
+    said = {"conflicts": f"conflicts with {pr['base']}", "review": "a review's asks", "ci": "red CI"}
+    data = "\n".join([
+        f"Pull request: {pr['repo']}#{pr['number']} — {_field(pr['title'])}", f"Link: {pr['url']}",
+        f"Draft: {'yes' if pr['draft'] else 'no, under review'}", f"Waits on: {', '.join(said[c] for c in causes)}",
+        *([f"Changes asked by: {_field(', '.join(pr.get('changes_by') or []))}"] if "review" in causes and pr.get("changes_by") else []),
+        *([f"Open review threads: {pr.get('unresolved', 0)}"] if "review" in causes else []),
+        *([f"Failing checks: {_field(', '.join(pr.get('ci_failed') or []))}"] if "ci" in causes else [])])
+    head = pr["head_sha"][:12]
+    review = (cfg.get("fix_review") or "").strip() or REVIEW.format(head=head)
+    template = ((cfg.get("prompts") or {}).get("fix") or PROMPTS["fix"]).strip()
+    fixing = FIXING.format(who=cfg.get("who") or "the person you work for", lang=cfg["lang"])
+    return template.format(read_only=fixing, data=_fence(data[:MAX_MATERIAL]), lang=cfg["lang"], pr=f"{pr['repo']}#{pr['number']}",
+                           causes=", ".join(said[c] for c in causes), head=head, branch=pr["branch"], base=pr["base"],
+                           number=pr["number"], repo=pr["repo"], review=review)
+
+
 # --- Running them -----------------------------------------------------------------------------------------------
 def _jobs(where: str, *params) -> list:
     with db.connect() as conn:
@@ -248,7 +398,10 @@ def _bridge_ready() -> bool:
 
 
 def _start(cfg: dict, now: datetime):
-    room = int(cfg["concurrency"]) - len(_jobs("state = 'running'"))
+    for job in _jobs("state = 'preparing'"):  # its thread died with Sentinel
+        if (_meta(job).get("preparing_at") or "") <= db.ago(PREPARE_MINUTES):
+            _set(job["id"], state="failed", error="its worktree was never ready", finished_at=db.now())
+    room = int(cfg["concurrency"]) - len(_jobs("state IN ('running', 'preparing')"))
     left = int(cfg["max_per_day"]) - len(_jobs("started_at >= ?", _day_start(now)))
     hosts = {"ssh_hosts": list(cfg["ssh_hosts"] or []), "curl_hosts": list(cfg["curl_hosts"] or [])}
     queued = _jobs("state = 'queued' ORDER BY id")[:max(min(room, left), 0)]
@@ -256,16 +409,46 @@ def _start(cfg: dict, now: datetime):
         log.warning("second: the bridge is older than the Second or away, %d job(s) wait", len(queued))
         return
     for job in queued:
-        try:
-            started = console.start(job["console"], job["prompt"], job["story"] or "", second=hosts).get("started", True)
-        except (requests.RequestException, RuntimeError, ValueError) as e:
-            _set(job["id"], state="failed", error=f"the Claude bridge: {e}", finished_at=db.now())
-            continue
-        if not started:  # opened meanwhile, from Watch or Sessions: yours
-            _set(job["id"], state="failed", error="a console of that name was already open", finished_at=db.now())
+        if job["kind"] == "fix":
+            meta = _meta(job) | {"preparing_at": db.now()}
+            _set(job["id"], state="preparing", meta=json.dumps(meta))
+            _spawn(_open_fix, dict(job) | {"meta": json.dumps(meta)}, hosts)
         else:
-            _set(job["id"], state="running", started_at=db.now())
-            log.info("second: %s %s started in %s", job["kind"], job["subject"], job["console"])
+            _open(dict(job), hosts)
+
+
+def _spawn(target, *args):
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _open(job: dict, second: dict):
+    try:
+        started = console.start(job["console"], job["prompt"], job["story"] or "", second=second).get("started", True)
+    except (requests.RequestException, RuntimeError, ValueError, LookupError) as e:
+        _set(job["id"], state="failed", error=f"the Claude bridge: {e}", finished_at=db.now())
+        return
+    if not started:  # opened meanwhile, from Watch or Sessions: yours
+        _set(job["id"], state="failed", error="a console of that name was already open", finished_at=db.now())
+    else:
+        _set(job["id"], state="running", started_at=db.now())
+        log.info("second: %s %s started in %s", job["kind"], job["subject"], job["console"])
+
+
+def _open_fix(job: dict, hosts: dict):
+    """In a thread of its own: a repository's first clone takes minutes, the Second's loop goes on meanwhile."""
+    meta = _meta(job)
+    try:
+        if job["console"] in console.alive():
+            raise RuntimeError("a console of that name is open: its worktree stays")
+        # the bridge checks the branch is still at that head: a push of yours since and nothing starts
+        console.fix_prepare(job["console"], {k: meta[k] for k in ("repo", "branch", "head", "base")})
+    except ValueError as e:  # refused at that head: moved on, or a link leaving the repository
+        _set(job["id"], state="failed", error=str(e), finished_at=db.now(), meta=json.dumps(meta | {"refused": True}))
+        return
+    except (requests.RequestException, RuntimeError, LookupError) as e:
+        _set(job["id"], state="failed", error=f"the Claude bridge: {e}", finished_at=db.now())
+        return
+    _open(job, {**hosts, "fix": True})
 
 
 def _follow(cfg: dict, live: list[dict]):
@@ -303,6 +486,8 @@ def _deliver(job: dict):
             _set(job["id"], posted_at=after)
         except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError) as e:
             _set(job["id"], error=f"not posted on {job['subject']}: {e}")
+    elif job["kind"] == "fix":
+        _fix_done(job)
     elif job["kind"] == "plan":
         # its first line, without the markdown, is the push
         lines = [re.sub(r"\*\*|__|`|^#+\s*", "", line).strip("-* :").strip() for line in job["report"].splitlines() if line.strip()]
@@ -312,6 +497,163 @@ def _deliver(job: dict):
             external_id=f"plan:{job['subject']}", title="Today's plan", fingerprint=job["subject"], lane="plan",
             url=config.BASE_URL.rstrip("/") + "/", urgency="now",
             payload={"source": "Second", "why": (lines[0] if lines else "")[:300], "job": job["id"]})], misses=1)
+
+
+def _meta(job) -> dict:
+    return json.loads(job["meta"] or "{}")
+
+
+def _fix_done(job: dict):
+    """The fix answered: what its worktree holds, then a draft pushed at once; a PR under review waits for your click."""
+    meta = _meta(job)
+    try:
+        state = console.fix_state(job["console"])
+    except (requests.RequestException, RuntimeError, LookupError, ValueError) as e:
+        _set(job["id"], error=f"its worktree could not be read: {e}")
+        return
+    meta["result"] = _result(state)
+    _set(job["id"], meta=json.dumps(meta))
+    if not state.get("moved"):
+        _comment(job, meta, "changed nothing")
+        return
+    try:
+        push(job["id"], clicked=False)
+    except (ValueError, RuntimeError, LookupError, requests.RequestException) as e:
+        _set(job["id"], error=f"not pushed: {e}")
+
+
+def _result(state: dict) -> dict:
+    return {k: state.get(k) for k in ("head", "moved", "ff", "busy", "dirty", "commits", "diff", "cut")}
+
+
+def _held(state: dict) -> str:
+    """Why a fix waits for your eyes even on a draft: what it pushes leaves the host, and review comments or CI logs
+    may have steered it — a diff or a commit message that looks like a token or links a private message, or a diff too
+    long to be read whole."""
+    text = "\n".join([state.get("diff") or "", state.get("messages") or "", *(state.get("commits") or [])])
+    if SECRETISH.search(text):
+        return "its diff looks like it holds a secret"
+    if PRIVATE.search(text):
+        return "its diff links a private message"
+    return "its diff is too long to be read whole" if state.get("cut") else ""
+
+
+def push(job_id: int, clicked: bool = True) -> str:
+    """The fix onto its branch once GitHub still shows the head it started from, the PR open and yours: a draft by
+    itself unless its diff is held back, a PR under review only on your click (`clicked`). A rebase goes leased on that
+    head. What happened, in a few words; a refusal raises."""
+    job = _jobs("id = ? AND kind = 'fix'", job_id)
+    if not job:
+        raise LookupError("no such fix")
+    job = dict(job[0])
+    meta = _meta(job)
+    if meta.get("pushed"):
+        return "already pushed"
+    state = console.fix_state(job["console"])  # as it is now: its session may have gone on since it answered
+    meta["result"] = _result(state)
+    _set(job_id, meta=json.dumps(meta))
+    if not state.get("moved"):
+        raise ValueError("no commit to push")
+    if state.get("busy") or state.get("dirty"):
+        raise ValueError("a rebase under way or uncommitted changes in its worktree")
+    pr = github.rest(f"/repos/{meta['repo']}/pulls/{int(meta['number'])}").json()
+    if pr.get("state") != "open":
+        raise ValueError("the pull request is closed")
+    if (pr.get("head") or {}).get("sha") != meta["head"]:
+        raise ValueError("the branch moved on since the fix started: someone pushed")
+    if ((pr.get("head") or {}).get("repo") or {}).get("full_name") != meta["repo"]:
+        raise ValueError("the branch lives in a fork")
+    if ((pr.get("user") or {}).get("login") or "").lower() != (config.github()["login"] or "").lower():
+        raise ValueError("not your pull request")
+    if not pr.get("draft") and not clicked:
+        return "waits for your push"
+    held = "" if clicked else _held(state)
+    if held:
+        _set(job_id, meta=json.dumps(meta | {"held": held}))
+        log.warning("second: fix on %s held back: %s", job["subject"], held)
+        return f"held back: {held}"
+    out = console.fix_push(job["console"], meta["head"], force=True)
+    meta.update(pushed=out["pushed"], forced=bool(out.get("forced")), pushed_at=db.now(), by="you" if clicked else "draft", held="")
+    _set(job_id, meta=json.dumps(meta), error=None)
+    log.info("second: fix %s pushed on %s (%s)", out["pushed"][:12], job["subject"], meta["by"])
+    _comment(job, meta, "pushed")
+    return "pushed"
+
+
+def _comment(job: dict, meta: dict, what: str):
+    """On the PR's ticket (`sc-N` in its branch, yours only): what the fix did — pushed, or why it changed nothing."""
+    if not job.get("story") or not job.get("report"):
+        return
+    held = "looks like it holds a secret" if SECRETISH.search(job["report"]) else "quotes a private message" if PRIVATE.search(job["report"]) else ""
+    if held:
+        _set(job["id"], error=f"not commented on {job['story']}: the answer {held}")
+        return
+    pr = f"{meta['repo']}#{meta['number']}"
+    head = (f"Second — fix pushed on {pr} ({meta['pushed'][:7]}{', rebased' if meta.get('forced') else ''}):" if what == "pushed"
+            else f"Second — looked at {pr}, changed nothing:")
+    try:
+        owner = shortcut.member_id((config.load().get("cycle") or {}).get("shortcut_member", ""))
+        shortcut.comment(int(job["story"][3:]), f"{head}\n\n{job['report']}\n\n{meta['url']}", owner)
+    except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError) as e:
+        _set(job["id"], error=f"not commented on {job['story']}: {e}")
+
+
+def _fix_rows():
+    """One inbox row per PR, its latest fix that answered: ready (waits for your push — the only one that pushes a
+    notification), pushed, or changed nothing. It goes when the PR does, or when its branch moves past the fix."""
+    prs = {f"{p['repo']}#{p['number']}": p for p in my_prs.load()["prs"]}
+    latest: dict[str, dict] = {}
+    for j in _jobs("kind = 'fix' AND state = 'done' ORDER BY id"):
+        latest[j["subject"]] = dict(j)
+    items = []
+    for subject, j in latest.items():
+        meta, pr = _meta(j), prs.get(subject)
+        result = meta.get("result") or {}
+        if not pr or pr.get("head_sha") not in (meta.get("head"), meta.get("pushed")) or (meta.get("removed") and not meta.get("pushed")):
+            continue  # gone, overtaken, or kept past FIX_KEEP_DAYS without a push: nothing left to push
+        first = next((line.strip("-* ").strip() for line in (j["report"] or "").splitlines() if line.strip()), "")
+        if meta.get("pushed"):
+            step, why = "pushed", f"pushed{' (rebased)' if meta.get('forced') else ''} · {first}"
+        elif not result:
+            step, why = "unread", f"its worktree not read · {j['error'] or first}"
+        elif result.get("moved") and (not pr.get("draft") or meta.get("held")) and not j["error"]:
+            step, why = "ready", f"fix ready — push it? · {meta['held'] + ' · ' if meta.get('held') else ''}{first}"
+        elif result.get("moved"):
+            step, why = "refused", f"not pushed · {j['error'] or first}"
+        else:
+            step, why = "nothing", f"changed nothing · {first}"
+        urgency = "now" if step == "ready" else "quiet"
+        items.append(WatchedItem(
+            external_id=f"fix:{subject}", title=f"{subject.split('/')[-1]} — {meta.get('title', '')}", url=meta.get("url", ""),
+            fingerprint=f"{j['id']}:{step}", lane="fix", urgency=urgency,
+            payload={"source": "Second", "repo": meta.get("repo"), "number": meta.get("number"), "title": meta.get("title", ""),
+                     "why": why[:300], "job": j["id"], "step": step}))
+    if not db.watcher_states().get(FIX, {}).get("seeded"):  # a fix is news, the first one too
+        db.set_watcher_state(FIX, "seeded", db.now())
+    engine.process(FIX, items, misses=1)
+
+
+def _prune():
+    """A fix's worktree goes once its console has: pushed, refused, overtaken by the branch, or left `FIX_KEEP_DAYS`."""
+    alive = console.alive()
+    prs = {f"{p['repo']}#{p['number']}": p for p in my_prs.load()["prs"]}
+    for j in _jobs("kind = 'fix' AND state IN ('done', 'failed')"):
+        meta = _meta(j)
+        if meta.get("removed") or j["console"] in alive:
+            continue
+        pr = prs.get(j["subject"])
+        over = (j["state"] == "failed" or meta.get("pushed") or not pr or pr.get("head_sha") != meta.get("head")
+                or (j["finished_at"] or "") <= db.ago(FIX_KEEP_DAYS * 1440))
+        if not over:
+            continue
+        try:
+            console.fix_remove(j["console"])
+        except (requests.RequestException, RuntimeError, ValueError) as e:
+            log.warning("second: could not remove the worktree of %s: %s", j["console"], e)
+            continue
+        except LookupError:
+            pass  # a bridge without it: nothing there
+        _set(j["id"], meta=json.dumps(meta | {"removed": db.now()}))
 
 
 def _tidy(live: list[dict]):

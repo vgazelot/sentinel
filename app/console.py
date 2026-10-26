@@ -48,6 +48,41 @@ def start(name: str, prompt: str = "", story: str = "", second: dict | None = No
     return data
 
 
+def fix_prepare(name: str, fix: dict) -> dict:
+    """A worktree of the PR's branch at `fix["head"]` for the console `name` (a blobless clone, fetched first: a minute
+    for a large repo). A branch that moved on is a ValueError."""
+    r = requests.post(f"{config.CLAUDE_BRIDGE_URL}/second/fix", json={"name": name, **fix}, headers=agents._auth(), timeout=900)
+    return _fix_answer(r)
+
+
+def fix_state(name: str) -> dict:
+    return _fix_answer(requests.get(f"{config.CLAUDE_BRIDGE_URL}/second/fix", params={"name": name}, headers=agents._auth(), timeout=60))
+
+
+def fix_push(name: str, expect: str, force: bool) -> dict:
+    r = requests.post(f"{config.CLAUDE_BRIDGE_URL}/second/fix/push", json={"name": name, "expect": expect, "force": force},
+                      headers=agents._auth(), timeout=240)
+    return _fix_answer(r)
+
+
+def fix_remove(name: str) -> bool:
+    r = requests.post(f"{config.CLAUDE_BRIDGE_URL}/second/fix/remove", json={"name": name}, headers=agents._auth(), timeout=60)
+    return bool(_fix_answer(r).get("removed"))
+
+
+def _fix_answer(r: requests.Response) -> dict:
+    """409: the bridge refused (a branch moved on, nothing to push, a rebase without force) — ValueError; any other
+    failure is a RuntimeError, a worktree it does not know a LookupError."""
+    data = r.json() if r.content else {}
+    if r.status_code == 409:
+        raise ValueError(data.get("error") or "refused by the bridge")
+    if r.status_code == 404:
+        raise LookupError(data.get("error") or "this bridge has no fix worktrees — restart it")
+    if r.status_code >= 400:
+        raise RuntimeError(data.get("error") or f"bridge HTTP {r.status_code}")
+    return data
+
+
 def end(name: str):
     _bridge("/console/end", {"name": name})
     _alive["at"] = 0.0

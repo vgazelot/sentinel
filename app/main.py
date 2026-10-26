@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
+import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, jsonify, make_response, redirect, render_template, request, send_from_directory
 
@@ -236,6 +237,8 @@ def _tone(row, p: dict, attention: bool) -> str:
         return "bad" if row["severity"] in ("stop", "high", "disaster") else "warn"
     if lane == "cycle":
         return "warn"
+    if lane == "fix":
+        return "hot" if attention else {"pushed": "ok", "refused": "warn", "unread": "warn"}.get(p.get("step"), "neutral")
     return "hot" if attention else "neutral"
 
 
@@ -284,7 +287,7 @@ def _followup_view(prs: list[dict]) -> tuple[list[dict], dict]:
 # the inbox: the day's plan, your sessions and the monitoring alerts on top, the health light in the sidebar, cycle in
 # its tab, status pages wait in Later
 FOR_YOU = ("you", "team", "followup")
-INBOX = ("plan", "session", "watch") + FOR_YOU + ("mine",)
+INBOX = ("plan", "session", "watch", "fix") + FOR_YOU + ("mine",)
 TABS = ("priority", "later", "done")
 
 
@@ -316,7 +319,7 @@ def _inbox(notice: str = "", error: str = "") -> dict:
         "dep_groups": groups,
         "incidents": newest(v for v in pending if v["lane"] == "incident"),
         "radar": newest(v for v in pending if v.get("cleared") or (
-            v["urgency"] == "quiet" and v["lane"] not in ("deps", "mine", "incident"))),
+            v["urgency"] == "quiet" and v["lane"] not in ("deps", "mine", "incident", "fix"))),
         "others": sorted((p for p in my_prs.load()["prs"] if p["action"] not in my_prs.PUSHED + my_prs.LISTED),
                          key=lambda p: p["updated_at"], reverse=True),
         # what is moving and fine — a dismissed or stuck one is already in the inbox
@@ -336,6 +339,8 @@ def _inbox(notice: str = "", error: str = "") -> dict:
         "watch": newest(v for v in attention if v["lane"] == "watch"),
         # what the Second does on each alert
         "seconds": second.for_items([v["id"] for v in attention if v["lane"] == "watch"]),
+        # the Second's fixes: the one waiting for your push first, then what it pushed or left, newest first
+        "fixes": sorted(newest(v for v in pending if v["lane"] == "fix"), key=lambda v: not v["attention"]),
         "for_you": for_you,
         "mine": mine,
         "acked": acked,
@@ -469,10 +474,39 @@ def partial_item(item_id: int):
     v = _view(row)
     if v["lane"] == "mine":
         return _mine_detail(v)
+    if v["lane"] == "fix":
+        return _fix_detail(v)
     runs = db.runs_for([v["subject"]])
     _clear_by_claude([v], runs)
     job = second.job(v["p"]["job"]) if v["lane"] == "plan" and v["p"].get("job") else second.for_items([v["id"]]).get(v["id"])
     return _detail("partials/detail_item.html", v=v, runs=runs, job=job)
+
+
+def _fix_detail(v: dict, notice: str = "", error: str = ""):
+    job = second.job(v["p"].get("job") or 0)
+    if job:
+        job["meta_dict"] = json.loads(job.get("meta") or "{}")
+    result = (job or {}).get("meta_dict", {}).get("result") or {}
+    ready = bool(job and result.get("moved") and not job["meta_dict"].get("pushed") and not job["meta_dict"].get("removed")
+                 and not result.get("busy") and not result.get("dirty"))
+    return _detail("partials/detail_fix.html", v=v, job=job, ready=ready, notice=notice, error=error,
+                   console_alive=bool(job and job["console"] in console.alive()))
+
+
+@app.post("/api/second/<int:job_id>/push")
+def api_second_push(job_id: int):
+    """Your click on a fix ready under review: Sentinel checks GitHub again (still open, yours, at the head the fix started
+    from), then the bridge pushes, leased on that head."""
+    try:
+        said, failed = second.push(job_id, clicked=True), ""
+    except (ValueError, RuntimeError, LookupError, requests.RequestException) as e:
+        said, failed = "", f"Not pushed: {e}"
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM items WHERE watcher = ? AND external_id = ?",
+                           (second.FIX, f"fix:{(second.job(job_id) or {}).get('subject', '')}")).fetchone()
+    if not row:
+        return _gone()
+    return _fix_detail(_view(row), notice="Pushed: GitHub runs its checks now" if said == "pushed" else said, error=failed)
 
 
 @app.get("/partials/group")

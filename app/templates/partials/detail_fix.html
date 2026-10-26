@@ -1,0 +1,41 @@
+{% from "partials/detail_macros.html" import top, heading, prop, triage %}
+{% set p = v.p %}{% set meta = job.meta_dict if job else {} %}{% set result = meta.result or {} %}
+{{ top(v.ref, 'the Second', v.url) }}
+<div class="d-body d-grid">
+    <div class="d-main">
+    {{ heading(v.headline) }}
+    <p class="d-why">{{ p.why }}</p>
+    {% if notice %}<div class="notice ok">{{ notice }}</div>{% endif %}
+    {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
+    {% if meta.held and not meta.pushed %}<div class="notice bad">A draft, yet not pushed on its own: {{ meta.held }}. Read the diff before you push.</div>{% endif %}
+    {% if job and job.report %}<div class="md d-second">{{ job.report | md | safe }}</div>{% endif %}
+    {% if result.commits %}
+    <section class="d-sec">
+        <h3>{{ 'Rebased onto ' ~ meta.base ~ ', its commits' if not result.ff else 'Its commits' }}</h3>
+        <ul class="d-commits">{% for c in result.commits %}<li class="mono">{{ c }}</li>{% endfor %}</ul>
+    </section>
+    {% endif %}
+    {% if result.diff %}
+    <details class="fold" id="fix-diff-{{ job.id }}" open><summary>{{ 'Range-diff' if not result.ff else 'Diff' }}{% if result.cut %} · cut, the rest in its worktree{% endif %}</summary>
+    <pre class="pr-diff fix-diff">{% for line in result.diff.splitlines() %}<span class="{{ 'l-add' if line.startswith('+') and not line.startswith('+++') else 'l-del' if line.startswith('-') and not line.startswith('---') else 'l-hunk' if line.startswith('@@') else '' }}">{{ line }}</span>{% endfor %}</pre>
+    </details>
+    {% endif %}
+    <div class="bar">
+        {% if ready %}<button type="button" class="btn primary" hx-post="/api/second/{{ job.id }}/push" hx-disabled-elt="this"
+                title="Pushes its commits onto {{ meta.branch }}, leased on {{ meta.head[:12] }}: a push of anyone's since and nothing goes{{ ' — a rebase, so a forced push' if not result.ff }}">Push{% if not result.ff %} (rebased){% endif %}</button>{% endif %}
+        {% if job and console_alive %}<button type="button" class="btn claude" data-session="{{ job.console }}" title="Its session, in Sessions: go on where it stopped">Session</button>{% endif %}
+        <a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open the PR</a>
+        <span class="spacer"></span>
+        {{ triage(v) }}
+    </div>
+    </div>
+    <aside class="d-side">
+        {% call prop('Repository') %}<span class="mono">{{ v.ref }}</span>{% endcall %}
+        {% if meta.branch %}{% call prop('Branch') %}<span class="mono">{{ meta.branch }}</span>{% endcall %}{% endif %}
+        {% if meta.causes %}{% call prop('Waited on') %}{{ meta.causes | join(', ') }}{% endcall %}{% endif %}
+        {% if meta.pushed %}{% call prop('Pushed') %}<span class="mono">{{ meta.pushed[:7] }}</span> · {{ 'by you' if meta.by == 'you' else 'a draft, on its own' }}{% endcall %}
+        {% elif meta.head %}{% call prop('From') %}<span class="mono">{{ meta.head[:7] }}</span>{% endcall %}{% endif %}
+        {% if job and job.story %}{% call prop('Ticket') %}<span class="mono">{{ job.story }}</span>{% endcall %}{% endif %}
+        {% call prop('In Sentinel') %}{{ v.first_seen | age }}{% endcall %}
+    </aside>
+</div>

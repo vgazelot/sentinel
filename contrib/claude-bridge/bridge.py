@@ -60,6 +60,18 @@ rules, hooks, settings or MCP servers), `--permission-mode manual` (what is not 
 (reading runs on its own, anything else asks — SECOND_SSH_HOSTS / SECOND_CURL_HOSTS name the hosts it may read), the
 context advisor and the MCP configs BRIDGE_SECOND_MCP names, Opus at medium effort. A job that needs more waits for you,
 as any session asking a permission.
+
+A fix (the Second on a pull request of yours) works in a worktree of its own, never in your clones:
+    POST /second/fix {"name", "repo": "owner/repo", "branch", "head": "<sha>", "base"} → {"path"}: a checkout of the
+         branch at that head (a blobless bare clone per repo under BRIDGE_SECOND_ROOT, fetched first; refused if the
+         branch moved on)
+    GET  /second/fix?name=…               → where it stands: its commits, a diff, uncommitted changes, a rebase under way
+    POST /second/fix/push {"name", "expect": "<sha>", "force"} → pushes HEAD to the branch, leased on the head it
+         started from; a rewritten history (a rebase) only with "force"
+    POST /second/fix/remove {"name"}      → the worktree and its local branch gone
+`POST /console` with `second.fix` starts BRIDGE_SECOND_FIX_COMMAND in that worktree: the same session, plus the file
+tools — --restricted confines them to the working directory — and SECOND_WORKTREE for the guard (edits and commits
+there, never a push: that stays here, asked by Sentinel).
 """
 import base64
 import fcntl
@@ -219,21 +231,39 @@ LOOKOUT_MODES = ("scout", "assess", "dig")
 MATERIAL_MODES = ("precheck", "followup", "brief", "whyred", "asks") + LOOKOUT_MODES
 TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
             **{mode: ("", [], []) for mode in MATERIAL_MODES}}
-API = 7  # what /healthz reports: Sentinel refuses an older bridge
+API = 8  # what /healthz reports: Sentinel refuses an older bridge
 
 TMUX = os.environ.get("TMUX_BIN") or shutil.which("tmux") or "tmux"
 TMUX_CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmux.conf")
 CONSOLE_COMMAND = os.environ.get("BRIDGE_CONSOLE_COMMAND", "claude")
 CONTRIB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SECOND_COMMAND = os.environ.get("BRIDGE_SECOND_COMMAND") or " ".join([
-    CONSOLE_COMMAND, "--restricted",
-    # --restricted loads no MCP server of yours: BRIDGE_SECOND_MCP names the configs it gets (comma-separated paths).
-    # --mcp-config takes every word up to the next option: never last, or it swallows the prompt
-    *(f"--mcp-config {shlex.quote(p.strip())}" for p in os.environ.get("BRIDGE_SECOND_MCP", "").split(",") if p.strip()),
-    "--tools", "Bash,Read,Grep,Glob,WebSearch,Agent,Skill,TodoWrite,ToolSearch,AskUserQuestion",
-    "--permission-mode", "manual", "--model", "opus", "--effort", "medium",
-    "--plugin-dir", shlex.quote(os.path.join(CONTRIB, "claude-second-guard")),
-    "--plugin-dir", shlex.quote(os.path.join(CONTRIB, "claude-code-context"))])
+SECOND_TOOLS = "Bash,Read,Grep,Glob,WebSearch,Agent,Skill,TodoWrite,ToolSearch,AskUserQuestion"
+
+
+def _second_command(tools: str) -> str:
+    return " ".join([
+        CONSOLE_COMMAND, "--restricted",
+        # --restricted loads no MCP server of yours: BRIDGE_SECOND_MCP names the configs it gets (comma-separated paths).
+        # --mcp-config takes every word up to the next option: never last, or it swallows the prompt
+        *(f"--mcp-config {shlex.quote(p.strip())}" for p in os.environ.get("BRIDGE_SECOND_MCP", "").split(",") if p.strip()),
+        "--tools", tools,
+        # your attribution settings are not read (--restricted): no co-author trailer on its commits
+        "--settings", shlex.quote('{"attribution": {"commit": "", "pr": ""}}'),
+        "--permission-mode", "manual", "--model", "opus", "--effort", "medium",
+        "--plugin-dir", shlex.quote(os.path.join(CONTRIB, "claude-second-guard")),
+        "--plugin-dir", shlex.quote(os.path.join(CONTRIB, "claude-code-context"))])
+
+
+SECOND_COMMAND = os.environ.get("BRIDGE_SECOND_COMMAND") or _second_command(SECOND_TOOLS)
+SECOND_FIX_COMMAND = os.environ.get("BRIDGE_SECOND_FIX_COMMAND") or _second_command(SECOND_TOOLS + ",Edit,Write,NotebookEdit")
+SECOND_ROOT = os.path.expanduser(os.environ.get("BRIDGE_SECOND_ROOT") or "~/.cache/sentinel-second")
+SECOND_GIT_URL = os.environ.get("BRIDGE_SECOND_GIT_URL", "git@github.com:{repo}.git")
+REPO = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
+SHA = re.compile(r"[0-9a-f]{40}")
+MAX_DIFF = 60000
+# Claude Code's global config: where a folder's trust is recorded
+CLAUDE_JSON = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") \
+    else os.path.expanduser("~/.claude.json")
 HOST_PATTERN = re.compile(r"[A-Za-z0-9*._-]{1,100}")
 ORIGINS = {o.strip() for o in os.environ.get("BRIDGE_ORIGINS", "http://localhost:8300,http://127.0.0.1:8300").split(",") if o.strip()}
 CONSOLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
@@ -334,9 +364,17 @@ def open_console(name: str, prompt: str, story: str = "", second: dict | None = 
         arg for key in ("ssh_hosts", "curl_hosts")
         for arg in ("-e", f"SECOND_{key.upper()}=" + ",".join(
             h for h in second.get(key) or [] if isinstance(h, str) and HOST_PATTERN.fullmatch(h)))]
-    command = CONSOLE_COMMAND if second is None else SECOND_COMMAND
+    command, cwd = (CONSOLE_COMMAND, CWD) if second is None else (SECOND_COMMAND, CWD)
+    if second is not None and second.get("fix"):
+        meta = fix_meta(name)
+        if not meta:
+            raise LookupError(f"no worktree for {name}: POST /second/fix first")
+        command, cwd = SECOND_FIX_COMMAND, meta["path"]
+        # the guard's worktree; no editor to wait on (a rebase going on, a commit without -m); Bash back in the
+        # worktree after every command, so a `cd` never carries a commit elsewhere
+        guarded += ["-e", f"SECOND_WORKTREE={cwd}", "-e", "GIT_EDITOR=true", "-e", "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1"]
     # the prompt travels in the environment: the shell expands "$SENTINEL_PROMPT", it never parses it
-    started = _tmux("new-session", "-d", "-s", name, "-x", "120", "-y", "32", "-c", CWD, "-e", f"SENTINEL_PROMPT={prompt}",
+    started = _tmux("new-session", "-d", "-s", name, "-x", "120", "-y", "32", "-c", cwd, "-e", f"SENTINEL_PROMPT={prompt}",
                     *linked, *guarded, shell, "-lic", f'{command} "$SENTINEL_PROMPT"')
     if started.returncode:
         raise RuntimeError(started.stderr.strip() or f"tmux exited {started.returncode}")
@@ -601,6 +639,196 @@ def end_session(session_id: str):
         time.sleep(0.2)
 
 
+# --- A fix's worktree ----------------------------------------------------------------------------
+_repo_locks: dict[str, threading.Lock] = {}
+_repo_locks_guard = threading.Lock()
+
+
+def _git(*args: str, cwd: str, timeout: int = 120) -> str:
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                          env={**_console_env(), "GIT_TERMINAL_PROMPT": "0"})
+    if proc.returncode:
+        raise RuntimeError(f"git {args[0]}: {(proc.stderr or proc.stdout).strip()[-600:]}")
+    return proc.stdout
+
+
+def _repo_lock(repo: str) -> threading.Lock:
+    with _repo_locks_guard:
+        return _repo_locks.setdefault(repo, threading.Lock())
+
+
+def _fix_files(name: str) -> tuple[str, str]:
+    work = os.path.join(SECOND_ROOT, "work")
+    return os.path.join(work, name), os.path.join(work, f"{name}.json")
+
+
+def fix_meta(name: str) -> dict | None:
+    try:
+        with open(_fix_files(name)[1]) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _branch_ok(branch: str) -> bool:
+    return 0 < len(branch) < 200 and subprocess.run(["git", "check-ref-format", "--branch", branch], capture_output=True).returncode == 0 \
+        and not branch.startswith("-")
+
+
+def _trust(repo_dir: str):
+    """Claude Code asks once whether a folder is trusted, and nobody is there to answer for a fix: the bridge's own clone
+    is recorded as trusted, as the dialog would — its worktrees share their repository's answer. Claude Code takes no
+    lock this side can share: the file is replaced whole only if nobody saved it since it was read, then read back."""
+    key = os.path.realpath(repo_dir)
+    target = os.path.realpath(CLAUDE_JSON)  # a linked file stays linked
+    for _ in range(5):
+        try:
+            before = os.stat(target).st_mtime_ns
+            with open(target) as f:
+                config = json.load(f)
+        except FileNotFoundError:
+            before, config = None, {}
+        except (OSError, ValueError):  # caught mid-write
+            time.sleep(0.3)
+            continue
+        if ((config.get("projects") or {}).get(key) or {}).get("hasTrustDialogAccepted") is True:
+            return
+        config.setdefault("projects", {}).setdefault(key, {})["hasTrustDialogAccepted"] = True
+        tmp = f"{target}.bridge-{os.getpid()}"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            json.dump(config, f, indent=2)
+        try:  # a session saved meanwhile: its write wins, start over from it
+            changed = (os.stat(target).st_mtime_ns if before is not None else None) != before
+        except FileNotFoundError:
+            changed = before is not None
+        if changed:
+            os.remove(tmp)
+            continue
+        os.replace(tmp, target)
+        time.sleep(0.5)
+    raise RuntimeError(f"could not record {key} as trusted in {CLAUDE_JSON}")
+
+
+def prepare_fix(name: str, fix: dict) -> dict:
+    """A checkout of the pull request's branch at the head Sentinel saw, in a worktree of a bare clone kept per repo:
+    your own clones, their stashes and hooks are never touched."""
+    repo, branch, head, base = (str(fix.get(k) or "") for k in ("repo", "branch", "head", "base"))
+    if not REPO.fullmatch(repo) or ".." in repo or not SHA.fullmatch(head) or not _branch_ok(branch) or not _branch_ok(base):
+        raise ValueError("repo owner/name, branch and base names, head a full sha")
+    mirror = os.path.join(SECOND_ROOT, "repos", f"{repo}.git")
+    path, meta_path = _fix_files(name)
+    with _repo_lock(repo):
+        if not os.path.isdir(mirror):
+            os.makedirs(os.path.dirname(mirror), exist_ok=True)
+            _git("clone", "--bare", "--filter=blob:none", SECOND_GIT_URL.format(repo=repo), mirror, cwd=SECOND_ROOT, timeout=600)
+            # origin/<branch> as in any clone: what a rebase goes onto
+            _git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*", cwd=mirror)
+        _git("fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", f"+refs/heads/{base}:refs/remotes/origin/{base}",
+             cwd=mirror, timeout=300)
+        _trust(mirror)
+        at = _git("rev-parse", f"refs/remotes/origin/{branch}", cwd=mirror).strip()
+        if at != head:
+            raise ValueError(f"{branch} moved on: at {at[:12]}, not {head[:12]}")
+        remove_fix(name, locked=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _git("worktree", "add", "-f", "-B", name, path, head, cwd=mirror, timeout=300)
+        with open(meta_path, "w") as f:
+            json.dump({"repo": repo, "branch": branch, "base": base, "head": head, "mirror": mirror, "path": path}, f)
+        links = _links_out(path)
+        if links:
+            remove_fix(name, locked=True)
+            raise ValueError(f"{', '.join(links[:3])} link outside the repository: its guard reads paths, not where links lead")
+    return {"path": path}
+
+
+def _links_out(path: str) -> list[str]:
+    """The symbolic links of the checkout that lead outside it. The guard judges a path by its letters (it cannot
+    resolve one): inside the worktree it reads every name, so a link to ~/.aws would be read through."""
+    root = os.path.realpath(path)
+    out = []
+    for entry in _git("ls-files", "-s", "-z", cwd=path).split("\0"):
+        if entry.startswith("120000 ") and "\t" in entry:
+            name = entry.split("\t", 1)[1]
+            target = os.path.realpath(os.path.join(path, name))
+            if target != root and not target.startswith(root + os.sep):
+                out.append(name)
+    return out
+
+
+def remove_fix(name: str, locked: bool = False) -> bool:
+    meta = fix_meta(name)
+    path, meta_path = _fix_files(name)
+    if not meta:
+        return False
+    lock = _repo_lock(meta["repo"])
+    if not locked:
+        lock.acquire()
+    try:
+        try:
+            _git("worktree", "remove", "--force", path, cwd=meta["mirror"])
+        except RuntimeError:
+            shutil.rmtree(path, ignore_errors=True)
+            _git("worktree", "prune", cwd=meta["mirror"])
+        subprocess.run(["git", "branch", "-D", name], cwd=meta["mirror"], capture_output=True, timeout=30)
+        os.remove(meta_path)
+    finally:
+        if not locked:
+            lock.release()
+    return True
+
+
+def fix_state(name: str) -> dict:
+    """Where the fix stands: its commits since the head it started from (or, rebased, the branch's commits on the new
+    base), the diff to read before a push — a range-diff for a rebase —, what is left uncommitted."""
+    meta = fix_meta(name)
+    if not meta:
+        raise LookupError(f"no worktree for {name}")
+    path, head, base = meta["path"], meta["head"], f"refs/remotes/origin/{meta['base']}"
+    now = _git("rev-parse", "HEAD", cwd=path).strip()
+    gitdir = _git("rev-parse", "--absolute-git-dir", cwd=path).strip()
+    busy = any(os.path.exists(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"))
+    ff = subprocess.run(["git", "merge-base", "--is-ancestor", head, now], cwd=path, capture_output=True).returncode == 0
+    if ff:
+        span = f"{head}..{now}"
+        diff = _git("diff", "--stat", "--patch", span, cwd=path)
+    else:  # rebased: the branch's commits as they now stand on the base, and what changed in them
+        fork = _git("merge-base", head, base, cwd=path).strip()
+        span = f"{base}..{now}"
+        diff = _git("range-diff", "--no-color", f"{fork}..{head}", span, cwd=path)
+    commits = _git("log", "--format=%h %s", span, cwd=path)
+    messages = _git("log", "--format=%B", span, cwd=path)
+    return {"repo": meta["repo"], "branch": meta["branch"], "base": meta["base"], "from": head, "head": now,
+            "moved": now != head, "ff": ff, "busy": busy, "dirty": _git("status", "--porcelain", cwd=path).strip(),
+            "commits": commits.strip().splitlines(), "messages": messages[:MAX_DIFF], "diff": diff[:MAX_DIFF],
+            "cut": len(diff) > MAX_DIFF or len(messages) > MAX_DIFF, "links_out": _links_out(path), "pushed": meta.get("pushed", "")}
+
+
+def push_fix(name: str, expect: str, force: bool) -> dict:
+    """HEAD onto the branch, leased on the head the fix started from — the one Sentinel just saw on GitHub: a push of
+    yours meanwhile and nothing goes. A rebase rewrote the history: only with `force`."""
+    meta = fix_meta(name)
+    if not meta:
+        raise LookupError(f"no worktree for {name}")
+    if expect != meta["head"]:
+        raise ValueError(f"the branch Sentinel saw ({expect[:12]}) is not the one this fix started from ({meta['head'][:12]})")
+    state = fix_state(name)
+    if state["busy"] or state["dirty"]:
+        raise ValueError("a rebase under way or uncommitted changes: nothing pushed")
+    if not state["moved"]:
+        raise ValueError("no commit to push")
+    if not state["ff"] and not force:
+        raise ValueError("a rewritten history (a rebase): it needs a forced push")
+    if state["links_out"]:
+        raise ValueError(f"{', '.join(state['links_out'][:3])} link outside the repository: push it yourself after a look")
+    with _repo_lock(meta["repo"]):
+        _git("push", "--porcelain", f"--force-with-lease=refs/heads/{meta['branch']}:{meta['head']}", "origin",
+             f"HEAD:refs/heads/{meta['branch']}", cwd=meta["path"], timeout=180)
+    meta["pushed"] = state["head"]
+    with open(_fix_files(name)[1], "w") as f:
+        json.dump(meta, f)
+    return {"pushed": state["head"], "forced": not state["ff"]}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, payload: dict):
         body = json.dumps(payload).encode()
@@ -641,6 +869,16 @@ class Handler(BaseHTTPRequestHandler):
             if not SESSION_ID.fullmatch(sid):
                 return self._json(400, {"error": "id: a session id"})
             return self._json(200, {"answer": last_answer(sid)})
+        if path == "/second/fix":
+            name = parse_qs(query).get("name", [""])[0]
+            if not CONSOLE_NAME.fullmatch(name):
+                return self._json(400, {"error": "name: lowercase letters, digits and dashes"})
+            try:
+                return self._json(200, fix_state(name))
+            except LookupError as e:
+                return self._json(404, {"error": str(e)})
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+                return self._json(500, {"error": str(e)})
         self._json(404, {"error": "not found"})
 
     def _console_ws(self, query: str):
@@ -677,6 +915,26 @@ class Handler(BaseHTTPRequestHandler):
         self.log_message("console %s %s", name, "started" if started else "reopened")
         self._json(200, {"name": name, "ticket": ticket(name), "started": started})
 
+    def _fix(self, data: dict):
+        name = str(data.get("name") or "")
+        if not CONSOLE_NAME.fullmatch(name):
+            return self._json(400, {"error": "name: lowercase letters, digits and dashes"})
+        try:
+            if self.path == "/second/fix":
+                out = prepare_fix(name, data)
+            elif self.path == "/second/fix/push":
+                out = push_fix(name, str(data.get("expect") or ""), data.get("force") is True)
+            else:
+                out = {"removed": remove_fix(name)}
+        except LookupError as e:
+            return self._json(404, {"error": str(e)})
+        except ValueError as e:
+            return self._json(409, {"error": str(e)})
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            return self._json(500, {"error": str(e)})
+        self.log_message("fix %s: %s", name, self.path.rsplit("/", 1)[-1])
+        self._json(200, out)
+
     def _end_session(self, data: dict):
         sid = str(data.get("id") or "")
         if not SESSION_ID.fullmatch(sid):
@@ -693,7 +951,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not TOKEN:
             return self._json(503, {"error": "set BRIDGE_TOKEN on the bridge and the same CLAUDE_BRIDGE_TOKEN in Sentinel"})
-        if self.path not in ("/run", "/review", "/console", "/console/end", "/sessions/end"):
+        if self.path not in ("/run", "/review", "/console", "/console/end", "/sessions/end", "/second/fix", "/second/fix/push",
+                             "/second/fix/remove"):
             return self._json(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length") or 0)
         try:
@@ -704,6 +963,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._console(data if isinstance(data, dict) else {})
         if self.path == "/sessions/end":
             return self._end_session(data if isinstance(data, dict) else {})
+        if self.path.startswith("/second/fix"):
+            return self._fix(data if isinstance(data, dict) else {})
         mode = str(data.get("mode") or "deep")
         url = str(data.get("url") or "")
         urls = [str(u) for u in (data.get("urls") or [])][:8]

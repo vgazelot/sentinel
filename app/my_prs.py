@@ -22,12 +22,13 @@ query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
     nodes { ... on PullRequest {
       id number title url isDraft createdAt updatedAt reviewDecision mergeable additions deletions headRefName headRefOid
+      baseRefName isCrossRepository
       repository { nameWithOwner }
       labels(first: 6) { nodes { name } }
       reviewRequests(first: 10) { nodes { requestedReviewer {
         __typename ... on User { login } ... on Team { slug } } } }
-      latestReviews(first: 10) { nodes { state author { login } } }
-      reviewThreads(first: 50) { nodes { isResolved } }
+      latestReviews(first: 10) { nodes { id state author { login } } }
+      reviewThreads(first: 50) { nodes { id isResolved } }
       comments { totalCount }
       commits(last: 1) { nodes { commit { statusCheckRollup {
         state
@@ -96,6 +97,8 @@ def _normalize(pr: dict, stale_days: int) -> dict:
         "title": pr["title"],
         "url": pr["url"],
         "branch": pr["headRefName"],
+        "base": pr.get("baseRefName") or "",
+        "cross": bool(pr.get("isCrossRepository")),
         "head_sha": pr.get("headRefOid") or "",
         "draft": pr["isDraft"],
         "created_at": pr["createdAt"],
@@ -111,6 +114,9 @@ def _normalize(pr: dict, stale_days: int) -> dict:
         "changes_by": [r["author"]["login"] for r in pr["latestReviews"]["nodes"]
                        if r["state"] == "CHANGES_REQUESTED" and r.get("author")],
         "unresolved": sum(1 for t in pr["reviewThreads"]["nodes"] if not t["isResolved"]),
+        # what the Second's fixes are keyed on: a thread or a review it has not taken up yet
+        "open_threads": [t["id"] for t in pr["reviewThreads"]["nodes"] if not t["isResolved"] and t.get("id")],
+        "change_reviews": [r["id"] for r in pr["latestReviews"]["nodes"] if r["state"] == "CHANGES_REQUESTED" and r.get("id")],
         "comments": pr["comments"]["totalCount"],
         "ci": checks.rollup(rollup.get("state")),
         "ci_failed": failed[:8],

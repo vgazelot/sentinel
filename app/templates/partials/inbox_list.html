@@ -23,6 +23,10 @@
     <div class="grp">Monitoring <span>{{ watch | length }}</span></div>
     {% for v in watch %}{{ l.item(v, tag=l.second_tag(seconds.get(v.id))) }}{% endfor %}
     {% endif %}
+    {% if fixes %}
+    <div class="grp">The Second <span>{{ fixes | length }}</span></div>
+    {% for v in fixes %}{{ l.item(v) }}{% endfor %}
+    {% endif %}
     {% if for_you %}
     <div class="grp">For you <span>{{ for_you | length }}</span></div>
     {% for v in for_you %}{{ l.item(v, tag=l.claude_tag((runs.get(v.subject) or {}).get('brief'))) }}{% endfor %}
@@ -38,7 +42,7 @@
     {% endcall %}
     {% endfor %}
     {% endif %}
-    {% if not today and not sessions and not watch and not for_you and not mine %}
+    {% if not today and not sessions and not watch and not fixes and not for_you and not mine %}
     <div class="zero">
         <svg class="zero-mark" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><path d="M15 24.5l6 6 12-13"/></svg>
         <p class="zero-title">Nothing waits on you</p>

@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS second_jobs (
     error TEXT,
     posted_at TEXT,
     ended_at TEXT,
+    meta TEXT,
     UNIQUE(kind, subject, fingerprint)
 );
 """
@@ -136,6 +137,7 @@ def init():
         _migrate_items(conn)
         conn.executescript(SCHEMA)
         _add_columns(conn, "agent_runs", (("attempts", "INTEGER NOT NULL DEFAULT 1"),))
+        _add_columns(conn, "second_jobs", (("meta", "TEXT"),))
         _migrate_reviews(conn)
 
 

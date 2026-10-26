@@ -70,6 +70,12 @@ SECOND_DEFAULTS = {
     "who": "",                  # who it works for, by name: its prompts say "the person" otherwise
     "ssh_hosts": [],            # host patterns (`*` within a name) its guard lets ssh read
     "curl_hosts": [],           # host patterns curl may read (localhost always)
+    "fix_minutes": 5,           # a PR of yours waiting this long on a fix (conflicts, a review's asks, red CI): the
+                                # Second makes it in a worktree; a draft is pushed, one under review waits for your
+                                # click; 0 = never
+    "fix_per_pr": 3,            # fixes started per PR per day: a check that stays red is not chased all day
+    "fix_review": "",           # how it reads its own diff before answering (e.g. "run /avocat on your diff");
+                                # empty = a devil's advocate read in its own words
 }
 
 

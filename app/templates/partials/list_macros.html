@@ -26,6 +26,7 @@ data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'w
 {%- elif v.lane == 'mine' -%}{{ MINE_ICON.get(v.p.action, 'i-pr') }}
 {%- elif v.lane == 'session' -%}i-chat
 {%- elif v.lane == 'plan' -%}i-target
+{%- elif v.lane == 'fix' -%}{{ 'i-merge' if v.p.step == 'pushed' else 'i-pr' }}
 {%- else -%}{{ {'you': 'i-eye', 'team': 'i-eye', 'incident': 'i-cloud', 'watch': 'i-pulse', 'health': 'i-warn', 'cycle': 'i-target'}.get(v.lane, 'i-dot') }}
 {%- endif -%}
 {%- endmacro %}
