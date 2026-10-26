@@ -161,10 +161,46 @@ function redirect(src: string, from: number): { target: string; next: number } |
 
 const MAX_DEPTH = 3
 
+/** `for NAME in <literal words>; do …; done` unrolled: each command of the body once per value, `$NAME` replaced — the
+ *  host of an ssh in it is then a name the list checks. Null for a loop it does not read (nested, while, until, a list
+ *  that expands). */
+export function unroll(segments: Segment[]): Segment[] | null {
+  const out: Segment[] = []
+  for (let k = 0; k < segments.length; k++) {
+    const head = segments[k]
+    if (head.words[0] !== 'for') {
+      if (/^(do|done|while|until|if|then|elif|else|fi|case|esac|select|function)$/.test(head.words[0] ?? '')) return null
+      out.push(head)
+      continue
+    }
+    const [, name, keyword, ...values] = head.words
+    if (!/^[A-Za-z_]\w*$/.test(name ?? '') || keyword !== 'in' || head.expands.length || head.redirects.length) return null
+    const body: Segment[] = []
+    let k2 = k + 1
+    for (; k2 < segments.length && segments[k2].words[0] !== 'done'; k2++) {
+      const s = segments[k2]
+      if (s.words[0] === 'for') return null
+      body.push(k2 === k + 1 ? (s.words[0] === 'do' ? { ...s, words: s.words.slice(1) } : { ...s, words: ['do?'] }) : s)
+    }
+    const done = segments[k2]
+    if (!done || done.words.length !== 1 || !body.length || body[0].words[0] === 'do?') return null
+    const own = new RegExp(String.raw`\$(?:\{${name}\}|${name}(?![A-Za-z0-9_]))`, 'g')
+    for (const value of values)
+      for (const s of body)
+        out.push({ words: s.words.map(w => w.replace(own, value)), redirects: s.redirects.map(r => ({ ...r, target: r.target.replace(own, value) })),
+                   expands: s.expands.filter(v => v !== name) })
+    if (done.redirects.length) out.push({ words: [], redirects: done.redirects, expands: [] })
+    k = k2
+  }
+  return out
+}
+
 function shell(src: string, cfg: Config, depth: number): Verdict {
   if (depth > MAX_DEPTH) return ask('commands nested too deep')
-  const segments = parse(src)
-  if (!segments) return ask('a command substitution, subshell, heredoc or unclosed quote: read by you')
+  const parsed = parse(src)
+  if (!parsed) return ask('a command substitution, subshell, heredoc or unclosed quote: read by you')
+  const segments = unroll(parsed)
+  if (!segments) return ask('a loop it does not read: nested, while, if, or a list that expands')
   if (!segments.length) return allow('nothing to run')
   for (const s of segments) {
     const variable = s.expands.find(v => v && !SAFE_VARS.has(v))

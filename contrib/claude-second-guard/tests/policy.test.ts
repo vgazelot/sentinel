@@ -140,6 +140,21 @@ describe('what the review found', () => {
   })
 })
 
+describe('loops', () => {
+  test('a for over literal words is read once per value', async () => {
+    expect(bash(`for h in web-1 web-2; do ssh -o BatchMode=yes $h 'df -h /data; uptime' 2>&1 | head -8; done`)).toBe('allow')
+    expect(bash('for n in 1673 1669; do gh pr view $n -R o/r --json title; done')).toBe('allow')
+    expect(bash('for f in a.log b.log; do tail -n 5 "$f"; done')).toBe('allow')
+  })
+
+  test('a loop that would write, reach another host or expand its list asks', async () => {
+    for (const c of [`for h in web-1 evil.example.com; do ssh $h uptime; done`, 'for f in a b; do rm $f; done',
+      'for h in $HOSTS; do ssh $h uptime; done', 'while true; do uptime; done', 'for i in 1 2; do for j in 3; do echo $i$j; done; done',
+      'for h in web-1; do ssh $h uptime; done > /tmp/out', 'if true; then uptime; fi', 'for x in a; do echo $OTHER; done'])
+      expect([c, bash(c)]).toEqual([c, 'ask'])
+  })
+})
+
 describe('ssh', () => {
   test('a reading command on a host it may read', async () => {
     expect(bash("ssh web-1.example.net 'df -h; uptime'")).toBe('allow')
