@@ -1,13 +1,13 @@
-/** What an unattended session may run on its own: reading. The lists name what reads, never what writes — an unknown
- *  tool, command, subcommand or flag asks the person, and so does anything this reader does not parse (command
- *  substitution, a heredoc, a subshell). It narrows what runs without you; it is not a sandbox. */
+/** What an unattended session may run: reading. The lists name what reads, never what writes — an unknown tool,
+ *  command, subcommand or flag is refused, and so is anything this reader does not parse (command substitution, a
+ *  heredoc, a subshell). It narrows what runs without you; it is not a sandbox. */
 
-export type Verdict = { decision: 'allow' | 'ask'; reason: string }
+export type Verdict = { decision: 'allow' | 'refuse'; reason: string }
 /** Host patterns (`*` within a name) ssh and curl may reach; localhost is always readable by curl. */
 export type Config = { sshHosts: string[]; curlHosts: string[] }
 
 const allow = (reason: string): Verdict => ({ decision: 'allow', reason })
-const ask = (reason: string): Verdict => ({ decision: 'ask', reason })
+const refuse = (reason: string): Verdict => ({ decision: 'refuse', reason })
 
 const READ_TOOLS = new Set([
   'Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebSearch', 'ToolSearch', 'Skill', 'Agent', 'Task', 'TodoWrite',
@@ -35,11 +35,11 @@ export function check(tool: string, input: unknown, cfg: Config): Verdict {
   if (READ_TOOLS.has(tool)) {
     const path = [args.file_path, args.path].find(v => typeof v === 'string' && secretPath(v))
       ?? (typeof args.pattern === 'string' && tool === 'Glob' && secretPath(args.pattern) ? args.pattern : undefined)
-    return path ? ask(`${tool} on ${path}: secrets are read with you`) : allow(`${tool} reads`)
+    return path ? refuse(`${tool} on ${path}: secrets are read with you`) : allow(`${tool} reads`)
   }
-  if (tool === 'Bash') return typeof args.command === 'string' ? shell(args.command, cfg, 0) : ask('Bash without a command')
+  if (tool === 'Bash') return typeof args.command === 'string' ? shell(args.command, cfg, 0) : refuse('Bash without a command')
   if (tool.startsWith('mcp__')) return mcp(tool)
-  return ask(`${tool} is not a reading tool`)
+  return refuse(`${tool} is not a reading tool`)
 }
 
 // --- MCP: by the verbs in the tool's name ------------------------------------------------------------------------
@@ -50,8 +50,8 @@ const WRITE_VERB = /^(create|update|delete|add|remove|set|send|post|reply|merge|
 function mcp(tool: string): Verdict {
   const name = tool.split('__').slice(2).join('_')
   const verbs = name.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase().split(/[-_]+/)
-  if (verbs.some(v => WRITE_VERB.test(v))) return ask(`${tool} may change something`)
-  return verbs.some(v => READ_VERB.test(v)) ? allow(`${tool} reads`) : ask(`${tool} is not a reading tool`)
+  if (verbs.some(v => WRITE_VERB.test(v))) return refuse(`${tool} may change something`)
+  return verbs.some(v => READ_VERB.test(v)) ? allow(`${tool} reads`) : refuse(`${tool} is not a reading tool`)
 }
 
 // --- Shell: a small reader, then each command against the list --------------------------------------------------
@@ -196,24 +196,24 @@ export function unroll(segments: Segment[]): Segment[] | null {
 }
 
 function shell(src: string, cfg: Config, depth: number): Verdict {
-  if (depth > MAX_DEPTH) return ask('commands nested too deep')
+  if (depth > MAX_DEPTH) return refuse('commands nested too deep')
   const parsed = parse(src)
-  if (!parsed) return ask('a command substitution, subshell, heredoc or unclosed quote: read by you')
+  if (!parsed) return refuse('a command substitution, subshell, heredoc or unclosed quote: read by you')
   const segments = unroll(parsed)
-  if (!segments) return ask('a loop it does not read: nested, while, if, or a list that expands')
+  if (!segments) return refuse('a loop it does not read: nested, while, if, or a list that expands')
   if (!segments.length) return allow('nothing to run')
   for (const s of segments) {
     const variable = s.expands.find(v => v && !SAFE_VARS.has(v))
-    if (variable) return ask(`expands $${variable}: a variable may hold a token`)
+    if (variable) return refuse(`expands $${variable}: a variable may hold a token`)
     for (const r of s.redirects) {
       const out = r.op.replace(/^\d/, '')
       if (out === '<' && !secretPath(r.target)) continue
       if (out === '>&' && /^(\d|-)$/.test(r.target)) continue
       if (['>', '>>', '&>', '&>>', '>|'].includes(out) && r.target === '/dev/null') continue
-      return ask(`writes to ${r.target}`)
+      return refuse(`writes to ${r.target}`)
     }
     const v = command(s.words, cfg, depth)
-    if (v.decision === 'ask') return v
+    if (v.decision === 'refuse') return v
   }
   return allow(`reads: ${src.length > 80 ? `${src.slice(0, 77)}…` : src}`)
 }
@@ -229,7 +229,7 @@ const PLAIN = new Set([
 
 function command(words: string[], cfg: Config, depth: number): Verdict {
   if (!words.length) return allow('nothing to run')
-  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return ask(`sets ${words[0].split('=')[0]} for the command`)
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return refuse(`sets ${words[0].split('=')[0]} for the command`)
   const name = words[0].split('/').pop() ?? ''
   const rest = words.slice(1)
   // curl's client certificate and key are used, never printed (mutual TLS to a monitoring front)
@@ -237,8 +237,8 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
   // a path starting at ~, . or a variable, or through a hidden directory, with a glob or a brace in it
   const dodges = (w: string) => DODGE.test(w) && /^[~$]|(^|\/)\.[^/]*\/|\/[.$]/.test(w) && !readable(w)
   const secret = rest.find((w, k) => (secretPath(w) || dodges(w)) && !cert(w, k))
-  if (secret) return ask(`reads ${secret}: secrets are read with you`)
-  const no = (why: string) => ask(`${name}: ${why}`)
+  if (secret) return refuse(`reads ${secret}: secrets are read with you`)
+  const no = (why: string) => refuse(`${name}: ${why}`)
   const yes = () => allow(name)
   const has = (...flags: string[]) => rest.some(w => flags.some(f => w === f || w.startsWith(`${f}=`)))
   const positional = rest.filter(w => !w.startsWith('-'))
@@ -344,7 +344,7 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
     case 'ssh':
       return ssh(rest, cfg, depth)
     default:
-      return ask(`${name} is not on the read-only list`)
+      return refuse(`${name} is not on the read-only list`)
   }
 }
 
@@ -364,13 +364,13 @@ function docker(args: string[]): boolean {
 function git(args: string[]): Verdict {
   let k = 0
   while (k < args.length && args[k].startsWith('-')) {
-    if (args[k] === '-c' || args[k].startsWith('--config') || args[k].startsWith('--exec-path')) return ask('git: -c can run any command')
+    if (args[k] === '-c' || args[k].startsWith('--config') || args[k].startsWith('--exec-path')) return refuse('git: -c can run any command')
     k += args[k] === '-C' ? 2 : 1
   }
   const [sub, ...rest] = args.slice(k)
   const has = (...flags: string[]) => rest.some(w => flags.some(f => w === f || w.startsWith(`${f}=`)))
   if (rest.some(w => w.startsWith('--output') || w === '-O' || w.startsWith('--open-files-in-pager') || w.startsWith('--upload-pack') || w.startsWith('--ext-diff')))
-    return ask(`git ${sub}: writes a file or runs a command`)
+    return refuse(`git ${sub}: writes a file or runs a command`)
   const read = /^(log|show|diff|status|rev-parse|describe|blame|ls-files|ls-tree|cat-file|grep|shortlog|rev-list|merge-base|name-rev|whatchanged|count-objects|fetch|version|help)$/
   if (read.test(sub ?? '')) return allow(`git ${sub}`)
   const positional = rest.filter(w => !w.startsWith('-'))
@@ -380,7 +380,7 @@ function git(args: string[]): Verdict {
     || (sub === 'config' && has('--get', '--get-all', '--get-regexp', '--list', '-l'))
     || (/^(worktree|stash|notes)$/.test(sub ?? '') && /^(list|show)$/.test(positional[0] ?? ''))
     || (sub === 'reflog' && (!positional.length || positional[0] === 'show'))
-  return ok ? allow(`git ${sub}`) : ask(`git ${sub ?? ''}: not a reading subcommand`)
+  return ok ? allow(`git ${sub}`) : refuse(`git ${sub ?? ''}: not a reading subcommand`)
 }
 
 function gh(args: string[]): Verdict {
@@ -388,21 +388,21 @@ function gh(args: string[]): Verdict {
   const [group, sub] = words.filter(w => !w.startsWith('-'))
   if (group === 'api') {
     const rest = words.slice(words.indexOf('api') + 1)
-    if (rest.some(w => /^(-f|-F|--field|--raw-field|--input)(=|$)/.test(w) || /^-[a-zA-Z]*[fF]$/.test(w))) return ask('gh api with fields posts')
+    if (rest.some(w => /^(-f|-F|--field|--raw-field|--input)(=|$)/.test(w) || /^-[a-zA-Z]*[fF]$/.test(w))) return refuse('gh api with fields posts')
     const method = rest.find((w, k) => rest[k - 1] === '-X' || rest[k - 1] === '--method') ?? rest.find(w => w.startsWith('--method='))?.split('=')[1]
-    if (method && !/^(GET|HEAD)$/i.test(method)) return ask(`gh api ${method}`)
-    return sub === 'graphql' ? ask('gh api graphql posts (a mutation is a query too)') : allow('gh api GET')
+    if (method && !/^(GET|HEAD)$/i.test(method)) return refuse(`gh api ${method}`)
+    return sub === 'graphql' ? refuse('gh api graphql posts (a mutation is a query too)') : allow('gh api GET')
   }
   if (group === 'search') return allow('gh search')
   const reads: Record<string, RegExp> = {
     pr: /^(view|list|diff|checks|status)$/, issue: /^(view|list|status)$/, run: /^(view|list)$/,
     workflow: /^(view|list)$/, repo: /^(view|list)$/, release: /^(view|list)$/,
   }
-  return reads[group ?? '']?.test(sub ?? '') ? allow(`gh ${group} ${sub}`) : ask(`gh ${group ?? ''} ${sub ?? ''}: not a reading subcommand`)
+  return reads[group ?? '']?.test(sub ?? '') ? allow(`gh ${group} ${sub}`) : refuse(`gh ${group ?? ''} ${sub ?? ''}: not a reading subcommand`)
 }
 
 // sed scripts that only print: line or pattern ranges with p, d, q, =, n, N, P, D, l, and substitutions whose flags
-// neither write (w) nor run (e) — anything else (r, R, w, W, e, y, a labelled branch…) asks
+// neither write (w) nor run (e) — anything else (r, R, w, W, e, y, a labelled branch…) is refused
 const SED_ADDR = String.raw`(?:\d+|\$|/(?:\\.|[^/\\\n])*/)`
 const SED_CMD = String.raw`(?:${SED_ADDR}(?:,${SED_ADDR})?)?!?\s*(?:[pdqnNPDl=]|s(.)(?:\\.|(?!\1)[^\n])*\1(?:\\.|(?!\1)[^\n])*\1[gpiImM0-9]*)`
 const SED_SAFE = new RegExp(String.raw`^\s*${SED_CMD}(?:\s*[;\n]\s*${SED_CMD.replace(/\\1/g, '\\2')})*\s*;?\s*$`)
@@ -416,7 +416,7 @@ function curl(args: string[], cfg: Config): Verdict {
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
     if (w === '-X' || w === '--request') {
-      if (!/^(GET|HEAD)$/i.test(args[k + 1] ?? '')) return ask(`curl ${args[k + 1] ?? ''}`)
+      if (!/^(GET|HEAD)$/i.test(args[k + 1] ?? '')) return refuse(`curl ${args[k + 1] ?? ''}`)
       k += 1
     } else if (w === '--url') {
       urls.push(args[++k] ?? '')
@@ -427,16 +427,16 @@ function curl(args: string[], cfg: Config): Verdict {
     } else if (CURL_FLAGS.test(w) || CURL_LONG.test(w)) {
       continue
     } else if (w.startsWith('-')) {
-      return ask(`curl ${w}: sends, writes a file or is not known here`)
+      return refuse(`curl ${w}: sends, writes a file or is not known here`)
     } else {
       urls.push(w)
     }
   }
-  if (!urls.length) return ask('curl without an address')
+  if (!urls.length) return refuse('curl without an address')
   for (const url of urls) {
     const host = /^(?:https?:\/\/)?(?:[^@/]*@)?(\[[^\]]+\]|[^:/?#]+)/i.exec(url)?.[1]?.toLowerCase() ?? ''
-    if (!/^https?:\/\//i.test(url) && url.includes('://')) return ask(`curl ${url}: not http(s)`)
-    if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(host) && !matches(host, cfg.curlHosts)) return ask(`curl to ${host || url}: not a host it may read`)
+    if (!/^https?:\/\//i.test(url) && url.includes('://')) return refuse(`curl ${url}: not http(s)`)
+    if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(host) && !matches(host, cfg.curlHosts)) return refuse(`curl to ${host || url}: not a host it may read`)
   }
   return allow('curl GET')
 }
@@ -449,26 +449,26 @@ function ssh(args: string[], cfg: Config, depth: number): Verdict {
   for (; k < args.length && args[k].startsWith('-'); k++) {
     const w = args[k]
     if (w === '-o') {
-      if (!SSH_OPTION.test(args[k + 1] ?? '')) return ask(`ssh -o ${args[k + 1] ?? ''}`)
+      if (!SSH_OPTION.test(args[k + 1] ?? '')) return refuse(`ssh -o ${args[k + 1] ?? ''}`)
       k += 1
     } else if (w === '-J') {
       // through a bastion: every hop must be a host it may read
       const hops = (args[k + 1] ?? '').split(',').map(h => h.split('@').pop()?.split(':')[0] ?? '')
-      if (!hops.every(h => h && matches(h, cfg.sshHosts))) return ask(`ssh -J ${args[k + 1] ?? ''}: not a host it may read`)
+      if (!hops.every(h => h && matches(h, cfg.sshHosts))) return refuse(`ssh -J ${args[k + 1] ?? ''}: not a host it may read`)
       k += 1
     } else if (SSH_FLAG_ARG.test(w)) {
       k += 1
     } else if (!/^-[46AaCfGgKkMNnqsTtVvXxYy]+$/.test(w)) {
-      return ask(`ssh ${w}: a tunnel, a proxy or a file`)
+      return refuse(`ssh ${w}: a tunnel, a proxy or a file`)
     }
   }
   const host = (args[k] ?? '').split('@').pop() ?? ''
-  if (!host) return ask('ssh without a host')
-  if (!matches(host, cfg.sshHosts)) return ask(`ssh to ${host}: not a host it may read`)
+  if (!host) return refuse('ssh without a host')
+  if (!matches(host, cfg.sshHosts)) return refuse(`ssh to ${host}: not a host it may read`)
   const remote = args.slice(k + 1).join(' ').trim()
-  if (!remote) return ask(`ssh ${host}: an interactive shell`)
+  if (!remote) return refuse(`ssh ${host}: an interactive shell`)
   const v = shell(remote, cfg, depth + 1)
-  return v.decision === 'allow' ? allow(`ssh ${host}: ${v.reason}`) : ask(`on ${host}: ${v.reason}`)
+  return v.decision === 'allow' ? allow(`ssh ${host}: ${v.reason}`) : refuse(`on ${host}: ${v.reason}`)
 }
 
 function matches(host: string, patterns: string[]): boolean {

@@ -9,15 +9,15 @@ describe('tools', () => {
   test('reading tools run, the others ask', async () => {
     expect(check('Read', { file_path: '/repo/main.tf' }, cfg).decision).toBe('allow')
     expect(check('Grep', { pattern: 'x', path: '/repo' }, cfg).decision).toBe('allow')
-    for (const tool of ['Edit', 'Write', 'NotebookEdit', 'WebFetch', 'SomethingNew']) expect(check(tool, {}, cfg).decision).toBe('ask')
+    for (const tool of ['Edit', 'Write', 'NotebookEdit', 'WebFetch', 'SomethingNew']) expect(check(tool, {}, cfg).decision).toBe('refuse')
   })
 
   test('secrets are read with you', async () => {
     for (const file_path of ['/repo/.env', '/repo/.env.local', '/home/me/.ssh/id_rsa', '/repo/tls.key', '/home/me/.aws/credentials'])
-      expect(check('Read', { file_path }, cfg).decision).toBe('ask')
-    expect(bash('cat .env')).toBe('ask')
+      expect(check('Read', { file_path }, cfg).decision).toBe('refuse')
+    expect(bash('cat .env')).toBe('refuse')
     expect(bash('curl -s --cert c.pem --key c.key https://api.example.net/x')).toBe('allow')
-    expect(bash('cat c.key')).toBe('ask')
+    expect(bash('cat c.key')).toBe('refuse')
   })
 
   test('MCP tools by their verbs', async () => {
@@ -28,7 +28,7 @@ describe('tools', () => {
       'mcp__claude_ai_Slack__slack_send_message_draft', 'mcp__github__merge_pull_request', 'mcp__n8n__execute_workflow',
       'mcp__playwright__browser_click', 'mcp__claude_ai_Shortcut__authenticate', 'mcp__sentry__analyze_issue_with_seer',
       'mcp__github__get_or_create_thing', 'mcp__unknown__frobnicate'])
-      expect(check(tool, {}, cfg).decision).toBe('ask')
+      expect(check(tool, {}, cfg).decision).toBe('refuse')
   })
 })
 
@@ -69,56 +69,56 @@ describe('commands', () => {
       'uniq in out', "awk '{system(\"rm x\")}' f", 'kafka-topics.sh --delete --topic t', 'nomad job stop app', 'terraform apply',
       'FOO=1 ls', 'hostname evil', 'date -s 2020-01-01', 'top', 'ping host', 'ip route add 1.2.3.0/24 dev eth0', 'mount /dev/x /mnt',
       'sudo -i', 'kill 1', 'chmod 777 x', 'mise exec -- pulse tf apply'])
-      expect([c, bash(c)]).toEqual([c, 'ask'])
+      expect([c, bash(c)]).toEqual([c, 'refuse'])
   })
 
   test('sudo and timeout wrap a command, they do not widen it', async () => {
     expect(bash('sudo journalctl -u app -n 50')).toBe('allow')
     expect(bash('sudo -u postgres cat /var/log/x')).toBe('allow')
-    expect(bash('sudo systemctl restart app')).toBe('ask')
-    expect(bash('timeout 5 rm x')).toBe('ask')
+    expect(bash('sudo systemctl restart app')).toBe('refuse')
+    expect(bash('timeout 5 rm x')).toBe('refuse')
   })
 })
 
 describe('what the review found', () => {
   test('awk runs nothing, whichever fragment says so', async () => {
-    expect(bash(`awk -e 'BEGIN{}' -e 'system("id")' /dev/null`)).toBe('ask')
-    expect(bash(`awk '{print $1 > "/tmp/x"}' f`)).toBe('ask')
-    expect(bash(`awk 'BEGIN{print ENVIRON["GITHUB_TOKEN"]}'`)).toBe('ask')
-    expect(bash('awk -l filefuncs 1 f')).toBe('ask')
+    expect(bash(`awk -e 'BEGIN{}' -e 'system("id")' /dev/null`)).toBe('refuse')
+    expect(bash(`awk '{print $1 > "/tmp/x"}' f`)).toBe('refuse')
+    expect(bash(`awk 'BEGIN{print ENVIRON["GITHUB_TOKEN"]}'`)).toBe('refuse')
+    expect(bash('awk -l filefuncs 1 f')).toBe('refuse')
   })
 
   test('sed only prints', async () => {
     for (const c of ["sed -n '1,20p' f", "sed 's/a/b/g' f", "sed 's|a|b|;s/c/d/' f", "sed -E 's/(a)/\\1/' f", "sed -e 's/a/b/' -e '/x/d' f", "sed -n '/start/,/end/p' f", "sed '$!N' f"])
       expect([c, bash(c)]).toEqual([c, 'allow'])
     for (const c of ["sed 'w/tmp/x' f", "sed 'r /etc/passwd' /dev/null", "sed 's/a/b/w out' f", "sed '1e date' f", 'sed y/ab/cd/ f', "sed -f script f", "sed -i '' 's/a/b/' f"])
-      expect([c, bash(c)]).toEqual([c, 'ask'])
+      expect([c, bash(c)]).toEqual([c, 'refuse'])
   })
 
   test('the credential stores of a workstation', async () => {
     for (const c of ['cat ~/.config/scw/config.yaml', 'cat ~/.kube/config', 'cat ~/.docker/config.json', 'cat ~/.pgpass',
       'cat ~/.con*/scw/*', 'cat ~/.{config,x}/scw/config.yaml', 'cat /proc/1/environ', 'cat ~/.zsh_history', 'ssh web-1 "cat ~/.config/scw/config.yaml"'])
-      expect([c, bash(c)]).toEqual([c, 'ask'])
-    expect(check('Read', { file_path: '/Users/me/Dev/.mcp.json' }, cfg).decision).toBe('ask')
-    expect(check('Read', { file_path: '/Users/me/.claude.json' }, cfg).decision).toBe('ask')
+      expect([c, bash(c)]).toEqual([c, 'refuse'])
+    expect(check('Read', { file_path: '/Users/me/Dev/.mcp.json' }, cfg).decision).toBe('refuse')
+    expect(check('Read', { file_path: '/Users/me/.claude.json' }, cfg).decision).toBe('refuse')
     expect(check('Read', { file_path: '/Users/me/.ssh/config' }, cfg).decision).toBe('allow')
     expect(bash("grep -iE '^Host ' ~/.ssh/config")).toBe('allow')
     expect(bash('cat ~/.ssh/known_hosts')).toBe('allow')
-    expect(bash('cat ~/.ssh/id_ed25519')).toBe('ask')
-    expect(bash('cat ~/.ssh/config.d/secret')).toBe('ask')
+    expect(bash('cat ~/.ssh/id_ed25519')).toBe('refuse')
+    expect(bash('cat ~/.ssh/config.d/secret')).toBe('refuse')
     expect(check('Read', { file_path: '/Users/me/.claude/projects/-Users-me-Dev/memory/MEMORY.md' }, cfg).decision).toBe('allow')
     expect(bash('grep -n kafka /Users/me/.claude/projects/-Users-me-Dev/memory/MEMORY.md')).toBe('allow')
-    expect(check('Read', { file_path: '/Users/me/.claude/projects/-Users-me-Dev/3f2477e8.jsonl' }, cfg).decision).toBe('ask')
-    expect(check('Read', { file_path: '/Users/me/.claude/settings.json' }, cfg).decision).toBe('ask')
+    expect(check('Read', { file_path: '/Users/me/.claude/projects/-Users-me-Dev/3f2477e8.jsonl' }, cfg).decision).toBe('refuse')
+    expect(check('Read', { file_path: '/Users/me/.claude/settings.json' }, cfg).decision).toBe('refuse')
     expect(bash("grep -rliE 'consumer|7200 seconds' ~/.claude/projects/*/memory ~/.claude/CLAUDE.md")).toBe('allow')
     expect(bash('ls ~/.claude/projects/*/memory')).toBe('allow')
-    expect(bash('grep -r AKIA ~/.claude/projects/*/memory ~/Dev')).toBe('ask')
-    expect(bash('cat ~/.claude/projects/*/*.jsonl')).toBe('ask')
+    expect(bash('grep -r AKIA ~/.claude/projects/*/memory ~/Dev')).toBe('refuse')
+    expect(bash('cat ~/.claude/projects/*/*.jsonl')).toBe('refuse')
   })
 
   test('variables that may hold a token are not expanded', async () => {
     for (const c of ['echo $GITHUB_TOKEN', 'echo "$DD_API_KEY"', 'echo ${AWS_SECRET_ACCESS_KEY}', "ssh web-1 'echo $DB_PASSWORD'"])
-      expect([c, bash(c)]).toEqual([c, 'ask'])
+      expect([c, bash(c)]).toEqual([c, 'refuse'])
     for (const c of ["echo '$SOMETHING'", 'ls $HOME', 'cd "$HOME/repo" && git status'])
       expect([c, bash(c)]).toEqual([c, 'allow'])
   })
@@ -127,16 +127,16 @@ describe('what the review found', () => {
     for (const c of ["cat $'\\x7e\\x2f\\x2e\\x73\\x73\\x68\\x2f\\x69\\x64\\x5f\\x72\\x73\\x61'", 'jq -rn env', "jq -n 'env.DD_API_KEY'",
       'jq -n \'$ENV.X\'', 'jq --rawfile k ~/x .', 'base64 -i /etc/hostname -o /Users/me/.zshenv', 'sort --compress-program=sh f',
       'grep -r AKIA .', 'grep -rn token src', 'rg --hidden KEY', 'rg -uu KEY', 'rg AKIA ~', 'rg AKIA /Users/me'])
-      expect([c, bash(c)]).toEqual([c, 'ask'])
+      expect([c, bash(c)]).toEqual([c, 'refuse'])
     for (const c of ["jq '.items[] | .name' f.json", 'base64 -d f', 'grep -n error app.log', 'rg -n "def main" src'])
       expect([c, bash(c)]).toEqual([c, 'allow'])
-    expect(check('mcp__somedb__query', {}, cfg).decision).toBe('ask')
+    expect(check('mcp__somedb__query', {}, cfg).decision).toBe('refuse')
   })
 
   test('ps without the environment', async () => {
     expect(bash('ps aux')).toBe('allow')
-    expect(bash('ps eww')).toBe('ask')
-    expect(bash('ps -E')).toBe('ask')
+    expect(bash('ps eww')).toBe('refuse')
+    expect(bash('ps -E')).toBe('refuse')
   })
 })
 
@@ -151,7 +151,7 @@ describe('loops', () => {
     for (const c of [`for h in web-1 evil.example.com; do ssh $h uptime; done`, 'for f in a b; do rm $f; done',
       'for h in $HOSTS; do ssh $h uptime; done', 'while true; do uptime; done', 'for i in 1 2; do for j in 3; do echo $i$j; done; done',
       'for h in web-1; do ssh $h uptime; done > /tmp/out', 'if true; then uptime; fi', 'for x in a; do echo $OTHER; done'])
-      expect([c, bash(c)]).toEqual([c, 'ask'])
+      expect([c, bash(c)]).toEqual([c, 'refuse'])
   })
 })
 
@@ -162,18 +162,18 @@ describe('ssh', () => {
     expect(bash('ssh -o ConnectTimeout=5 web-2 "cat /etc/hostname | tr a-z A-Z"')).toBe('allow')
     const bastion = { sshHosts: ['bastion-*', '10.20.*'], curlHosts: [] }
     expect(check('Bash', { command: 'ssh -o StrictHostKeyChecking=accept-new -J bastion-1 root@10.20.0.84 uptime' }, bastion).decision).toBe('allow')
-    expect(check('Bash', { command: 'ssh -J evil.example.com root@10.20.0.84 uptime' }, bastion).decision).toBe('ask')
-    expect(check('Bash', { command: 'ssh -o StrictHostKeyChecking=no root@10.20.0.84 uptime' }, bastion).decision).toBe('ask')
+    expect(check('Bash', { command: 'ssh -J evil.example.com root@10.20.0.84 uptime' }, bastion).decision).toBe('refuse')
+    expect(check('Bash', { command: 'ssh -o StrictHostKeyChecking=no root@10.20.0.84 uptime' }, bastion).decision).toBe('refuse')
   })
 
   test('a write, a tunnel, a proxy, a shell or another host asks', async () => {
     for (const c of ["ssh web-1 'sudo systemctl restart app'", "ssh web-1 'rm -rf /data/x'", 'ssh web-1', 'ssh other.host ls',
       'ssh -L 8080:localhost:80 web-1 ls', 'ssh -o ProxyCommand=evil web-1 ls', "ssh web-1 'echo x > /etc/y'",
       "ssh web-1 'ls $(rm x)'", 'ssh -J jump web-1 ls', 'ssh -F ./cfg web-1 ls'])
-      expect([c, bash(c)]).toEqual([c, 'ask'])
+      expect([c, bash(c)]).toEqual([c, 'refuse'])
   })
 
   test('no host configured, no ssh on its own', async () => {
-    expect(check('Bash', { command: 'ssh web-1 uptime' }, { sshHosts: [], curlHosts: [] }).decision).toBe('ask')
+    expect(check('Bash', { command: 'ssh web-1 uptime' }, { sshHosts: [], curlHosts: [] }).decision).toBe('refuse')
   })
 })

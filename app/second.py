@@ -50,8 +50,8 @@ SECRETISH = re.compile(r"xox[abprs]-[\w-]{10,}|gh[opsu]_[A-Za-z0-9]{20,}|github_
                        r"|(?i:(?:api[_-]?key|app[_-]?key|token|secret|password|passwd)[\"']?\s*[:=]\s*[\"']?[^\s\"']{12,})")
 
 READ_ONLY = ("You are the Second, working unattended for {who}: read-only. You may read files, monitoring, tickets and "
-             "pull requests and run read-only commands (ssh included); anything else waits for them to approve, so do "
-             "not attempt it — write it down as a command for them to run. Answer in {lang}, terse, like an on-call "
+             "pull requests and run read-only commands (ssh included); anything else is refused, so do not attempt it "
+             "— write it down as a command for them to run. Answer in {lang}, terse, like an on-call "
              "sysadmin: no intro, no conclusion, one fact per line.")
 
 PROMPTS = {

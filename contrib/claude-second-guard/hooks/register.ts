@@ -4,8 +4,9 @@ import { check } from './policy'
 import type { Config } from './policy'
 
 // Loaded only in the sessions an unattended job starts (`--plugin-dir`), with --restricted and --permission-mode
-// manual: no allow rule or hook of yours widens them, and what this guard leaves to you asks. It has the last word on
-// every tool call — reading runs, the rest waits for you — and never turns the engine's own refusal into a yes.
+// manual. It has the last word on every tool call: reading runs, the rest is refused — never asked, so no answer to a
+// dialog (a switch to auto mode among them) can widen the session — and the engine's own refusal stands. What the
+// session may not run, it writes down for you to run. Without it, the session is still manual: everything asks.
 const list = (value: string | undefined) => (value ?? '').split(',').map(s => s.trim()).filter(Boolean)
 
 export const register: Register = on => {
@@ -14,7 +15,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     cfg.sshHosts = list(await $.env.get('SECOND_SSH_HOSTS'))
     cfg.curlHosts = list(await $.env.get('SECOND_CURL_HOSTS'))
-    $.ui.status('read-only: anything else asks you')
+    $.ui.status('read-only: anything else refused, written down for you')
     return next(e)
   })
 
@@ -22,6 +23,8 @@ export const register: Register = on => {
     const engine = await next(e)
     if (engine.decision === 'deny') return engine
     const verdict = check(e.tool, e.input, cfg)
-    return { decision: verdict.decision, reason: `${$.plugin.name}: ${verdict.reason}` }
-  }).catch(($, e, next) => ({ decision: 'ask', reason: `${$.plugin.name}: its check failed, so it asks` }))
+    return verdict.decision === 'allow'
+      ? { decision: 'allow', reason: `${$.plugin.name}: ${verdict.reason}` }
+      : { decision: 'deny', reason: `${$.plugin.name}: ${verdict.reason}. This session only reads: write it down as a command for the person to run.` }
+  }).catch(($, e, next) => ({ decision: 'deny', reason: `${$.plugin.name}: its check failed, so it refuses` }))
 }
