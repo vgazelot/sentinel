@@ -4,9 +4,10 @@ import { check } from './policy'
 import type { Config } from './policy'
 
 // Loaded only in the sessions an unattended job starts (`--plugin-dir`), with --restricted and --permission-mode
-// manual. It has the last word on every tool call: reading runs, the rest is refused — never asked, so no answer to a
-// dialog (a switch to auto mode among them) can widen the session — and the engine's own refusal stands. What the
-// session may not run, it writes down for you to run. Without it, the session is still manual: everything asks.
+// manual. It has the last word on every tool call: reading runs; the rest is refused while nobody is there — never
+// asked, so no dialog waits for an answer nobody gives (or a click on "switch to auto mode" that hands the asks to a
+// classifier) — and asks you once you wrote in the session: a prompt after the job's own is yours. The engine's own
+// refusal stands. Without the guard, the session is still manual: everything asks.
 const list = (value: string | undefined) => (value ?? '').split(',').map(s => s.trim()).filter(Boolean)
 
 export const register: Register = on => {
@@ -15,7 +16,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     cfg.sshHosts = list(await $.env.get('SECOND_SSH_HOSTS'))
     cfg.curlHosts = list(await $.env.get('SECOND_CURL_HOSTS'))
-    $.ui.status('read-only: anything else refused, written down for you')
+    $.ui.status('reads on its own; anything else refused — asked once you write in it')
     return next(e)
   })
 
@@ -23,8 +24,10 @@ export const register: Register = on => {
     const engine = await next(e)
     if (engine.decision === 'deny') return engine
     const verdict = check(e.tool, e.input, cfg)
-    return verdict.decision === 'allow'
-      ? { decision: 'allow', reason: `${$.plugin.name}: ${verdict.reason}` }
+    if (verdict.decision === 'allow') return { decision: 'allow', reason: `${$.plugin.name}: ${verdict.reason}` }
+    // the job's prompt is the first; one more is the person, there to answer (the engine counts, reloads or not)
+    return (await $.session.turns()) >= 2
+      ? { decision: 'ask', reason: `${$.plugin.name}: ${verdict.reason}` }
       : { decision: 'deny', reason: `${$.plugin.name}: ${verdict.reason}. This session only reads: write it down as a command for the person to run.` }
   }).catch(($, e, next) => ({ decision: 'deny', reason: `${$.plugin.name}: its check failed, so it refuses` }))
 }

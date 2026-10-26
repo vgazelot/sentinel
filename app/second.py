@@ -304,7 +304,8 @@ def _deliver(job: dict):
         except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError) as e:
             _set(job["id"], error=f"not posted on {job['subject']}: {e}")
     elif job["kind"] == "plan":
-        lines = [line.strip("-* ").strip() for line in job["report"].splitlines() if line.strip()]
+        # its first line, without the markdown, is the push
+        lines = [re.sub(r"\*\*|__|`|^#+\s*", "", line).strip("-* :").strip() for line in job["report"].splitlines() if line.strip()]
         if not db.watcher_states().get(PLAN, {}).get("seeded"):  # a plan is news, the first one too
             db.set_watcher_state(PLAN, "seeded", db.now())
         engine.process(PLAN, [WatchedItem(

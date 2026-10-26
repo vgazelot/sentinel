@@ -155,6 +155,20 @@ describe('loops', () => {
   })
 })
 
+describe('seen live', () => {
+  test('a variable set on its own, then used', async () => {
+    expect(bash(`R=acme/infra; B=fix/sc-1-x
+gh api "repos/$R/git/trees/$B?recursive=1" --jq '.tree[].path | select(startswith("roles/rsyslog/"))'`)).toBe('allow')
+    expect(bash('H=evil.example.com; ssh $H uptime')).toBe('refuse')
+    expect(bash('X=$GITHUB_TOKEN; echo $X')).toBe('refuse')
+    expect(bash('F=~/.ssh/id_rsa; cat $F')).toBe('refuse')
+  })
+
+  test('a jq filter with a slash is not a path', async () => {
+    expect(bash(`gh api repos/o/r/git/trees/main --jq '.tree[].path | select(startswith("roles/x/"))'`)).toBe('allow')
+  })
+})
+
 describe('ssh', () => {
   test('a reading command on a host it may read', async () => {
     expect(bash("ssh web-1.example.net 'df -h; uptime'")).toBe('allow')

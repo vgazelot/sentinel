@@ -166,8 +166,20 @@ const MAX_DEPTH = 3
  *  that expands). */
 export function unroll(segments: Segment[]): Segment[] | null {
   const out: Segment[] = []
+  // `R=owner/repo; gh pr view 1 -R $R`: a variable set to a literal word on its own is read like a loop of one value
+  const local: Record<string, string> = {}
+  const own = (name: string) => new RegExp(String.raw`\$(?:\{${name}\}|${name}(?![A-Za-z0-9_]))`, 'g')
+  const known = (s: Segment): Segment => Object.entries(local).reduce((seg, [name, value]) => ({
+    words: seg.words.map(w => w.replace(own(name), value)), redirects: seg.redirects.map(r => ({ ...r, target: r.target.replace(own(name), value) })),
+    expands: seg.expands.filter(v => v !== name),
+  }), s)
   for (let k = 0; k < segments.length; k++) {
-    const head = segments[k]
+    const head = known(segments[k])
+    if (head.words.length && !head.redirects.length && head.words.every(w => /^[A-Za-z_]\w*=/.test(w))) {
+      if (head.expands.length) return null  // a value that expands is not a literal
+      for (const w of head.words) local[w.slice(0, w.indexOf('='))] = w.slice(w.indexOf('=') + 1)
+      continue
+    }
     if (head.words[0] !== 'for') {
       if (/^(do|done|while|until|if|then|elif|else|fi|case|esac|select|function)$/.test(head.words[0] ?? '')) return null
       out.push(head)
@@ -178,16 +190,15 @@ export function unroll(segments: Segment[]): Segment[] | null {
     const body: Segment[] = []
     let k2 = k + 1
     for (; k2 < segments.length && segments[k2].words[0] !== 'done'; k2++) {
-      const s = segments[k2]
+      const s = known(segments[k2])
       if (s.words[0] === 'for') return null
       body.push(k2 === k + 1 ? (s.words[0] === 'do' ? { ...s, words: s.words.slice(1) } : { ...s, words: ['do?'] }) : s)
     }
     const done = segments[k2]
     if (!done || done.words.length !== 1 || !body.length || body[0].words[0] === 'do?') return null
-    const own = new RegExp(String.raw`\$(?:\{${name}\}|${name}(?![A-Za-z0-9_]))`, 'g')
     for (const value of values)
       for (const s of body)
-        out.push({ words: s.words.map(w => w.replace(own, value)), redirects: s.redirects.map(r => ({ ...r, target: r.target.replace(own, value) })),
+        out.push({ words: s.words.map(w => w.replace(own(name), value)), redirects: s.redirects.map(r => ({ ...r, target: r.target.replace(own(name), value) })),
                    expands: s.expands.filter(v => v !== name) })
     if (done.redirects.length) out.push({ words: [], redirects: done.redirects, expands: [] })
     k = k2
@@ -235,7 +246,7 @@ function command(words: string[], cfg: Config, depth: number): Verdict {
   // curl's client certificate and key are used, never printed (mutual TLS to a monitoring front)
   const cert = (w: string, k: number) => name === 'curl' && (/^(-E|--cert|--key|--cacert)$/.test(rest[k - 1] ?? '') || /^--(cert|key|cacert)=/.test(w))
   // a path starting at ~, . or a variable, or through a hidden directory, with a glob or a brace in it
-  const dodges = (w: string) => DODGE.test(w) && /^[~$]|(^|\/)\.[^/]*\/|\/[.$]/.test(w) && !readable(w)
+  const dodges = (w: string) => DODGE.test(w) && !/\s/.test(w) && /^[~$]|(^|\/)\.[^/]*\/|\/[.$]/.test(w) && !readable(w)
   const secret = rest.find((w, k) => (secretPath(w) || dodges(w)) && !cert(w, k))
   if (secret) return refuse(`reads ${secret}: secrets are read with you`)
   const no = (why: string) => refuse(`${name}: ${why}`)
