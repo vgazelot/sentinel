@@ -1,8 +1,8 @@
 // Consoles: live Claude Code sessions — the real CLI in xterm.js, run by the bridge on the host — in two places.
 // The window over any page: a button `data-console="<url>"` asks Sentinel to start (or reopen) the session; closing
-// the window detaches, the session goes on, and the window comes back after a page change until you close it.
-// The Sessions pane: a `data-attach="<url>"` element in #detail attaches when the pane shows it, detaches when the
-// pane moves on. Either way the answer to a POST on the url is a WebSocket address with a one-time ticket.
+// the window detaches, the session goes on, and the window comes back after a page change, where you dragged it,
+// until you close it. Sessions' board (static/board.js) makes one `Term` per terminal it shows. Either way the answer
+// to a POST on the url is a WebSocket address with a one-time ticket.
 (() => {
     const XTERM = [
         ['link', 'https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css', 'sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD'],
@@ -27,7 +27,7 @@
     }
 
     // one terminal in `host`, on the background `bg`; `report(text, bad)` hears its state until it is disposed. `focus`:
-    // the keyboard goes to the session once it attaches — not for the pane, whose list keeps the keys until you click in
+    // the keyboard goes to the session once it attaches — not for a board brought back, whose list keeps the keys
     function Term(host, bg, report, focus) {
         let term = null, fit = null, ws = null, sizer = null, gone = false;
         const say = (text, bad) => { if (!gone) report(text, bad); };
@@ -103,8 +103,9 @@
             term.focus();
         }
 
-        return { attach, detach, dispose, type };
+        return { attach, detach, dispose, type, focus: () => { if (term) term.focus(); } };
     }
+    window.Term = Term;
 
     // --- The window over the page ------------------------------------------------------------
     const box = document.getElementById('console');
@@ -124,6 +125,7 @@
 
         const open = async (url, title) => {
             box.hidden = false;
+            inside();
             titleEl.textContent = title || titleEl.textContent;
             try {
                 const answer = await win.attach(url);
@@ -148,6 +150,33 @@
             close();
         };
 
+        // its head drags it anywhere in the page, kept inside; a page change finds it there again
+        const AT = 'sentinel.console.at';
+        const head = box.querySelector('.console-head');
+        const inside = () => {
+            if (box.hidden || !box.style.left) return;
+            const r = box.getBoundingClientRect();
+            box.style.left = `${Math.max(8, Math.min(r.left, innerWidth - r.width - 8))}px`;
+            box.style.top = `${Math.max(8, Math.min(r.top, innerHeight - r.height - 8))}px`;
+        };
+        const moveTo = (x, y) => {
+            Object.assign(box.style, { left: `${x}px`, top: `${y}px`, right: 'auto', bottom: 'auto' });
+            inside();
+        };
+        head.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || e.target.closest('button')) return;
+            const r = box.getBoundingClientRect();
+            const follow = (ev) => moveTo(ev.clientX - (e.clientX - r.left), ev.clientY - (e.clientY - r.top));
+            head.setPointerCapture(e.pointerId);
+            head.addEventListener('pointermove', follow);
+            head.addEventListener('lostpointercapture', () => {
+                head.removeEventListener('pointermove', follow);
+                try { sessionStorage.setItem(AT, JSON.stringify([parseFloat(box.style.left), parseFloat(box.style.top)])); } catch (err) { /* private mode */ }
+            }, { once: true });
+        });
+        window.addEventListener('resize', inside);
+        try { const at = JSON.parse(sessionStorage.getItem(AT) || 'null'); if (at) moveTo(...at); } catch (e) { /* private mode */ }
+
         document.addEventListener('click', (e) => {
             const start = e.target.closest('[data-console]');
             if (start) { e.preventDefault(); open(start.dataset.console); return; }
@@ -155,37 +184,10 @@
             if (!act) return;
             if (act.dataset.consoleDo === 'close') close();
             else if (act.dataset.consoleDo === 'end') end();
-            else act.textContent = box.classList.toggle('big') ? 'Shrink' : 'Expand';
+            else { act.textContent = box.classList.toggle('big') ? 'Shrink' : 'Expand'; inside(); }
         });
 
         const last = remembered();
         if (last) open(`/api/console/${last.name}/attach`, last.title);
     }
-
-    // --- The Sessions pane -------------------------------------------------------------------
-    const detail = document.getElementById('detail');
-    if (!detail) return;
-    let pane = null;
-    const paneState = (text, bad) => {
-        const el = detail.querySelector('.console-state');
-        if (!el) return;
-        el.textContent = text ? `· ${text === 'disconnected' ? 'disconnected — select the row again' : text}` : '';
-        el.classList.toggle('bad', !!bad);
-    };
-
-    document.addEventListener('htmx:afterSwap', (e) => {
-        if (e.detail.target !== detail) return;
-        if (pane) { pane.dispose(); pane = null; }
-        const host = detail.querySelector('[data-attach]');
-        if (!host) return;
-        const term = pane = Term(host, '--pane', paneState, false);
-        term.attach(host.dataset.attach).catch((err) => {
-            if (pane === term) paneState(err.status === 404 ? 'this session has ended' : err.message, true);
-        });
-    });
-
-    document.addEventListener('click', (e) => {
-        const typed = e.target.closest('[data-term-type]');
-        if (typed && pane) pane.type(typed.dataset.termType);
-    });
 })();

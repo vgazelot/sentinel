@@ -328,7 +328,8 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .console { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column; width: min(780px, calc(100vw - 32px)); height: min(500px, calc(100vh - 32px)); background: var(--pane-2); border-radius: 12px; box-shadow: var(--window); overflow: hidden; }
 .console[hidden] { display: none; }
 .console.big { width: min(1280px, calc(100vw - 32px)); height: calc(100vh - 32px); }
-.console-head { display: flex; align-items: center; gap: 6px; height: 40px; flex: none; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line); }
+.console-head { display: flex; align-items: center; gap: 6px; height: 40px; flex: none; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line); cursor: grab; user-select: none; touch-action: none; }
+.console-head:active { cursor: grabbing; }
 .console-title { font: 12.5px var(--mono); color: var(--claude); }
 .console-state { font-size: 12px; color: var(--text-3); }
 .console-state.bad { color: var(--red); }
@@ -347,7 +348,7 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .seg button { border: 0; background: none; padding: 3px 10px; border-radius: 6px; font: inherit; font-size: 12px; font-weight: 500; color: var(--text-3); white-space: nowrap; cursor: pointer; }
 .seg button:hover { color: var(--text); }
 #list:not(.s-live) [data-filter="all"], #list.s-live [data-filter="live"] { background: var(--pane-3); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
-.list-head [data-tabs] { margin-left: auto; }
+.list-head [data-dock] { margin-left: auto; }
 
 /* a big rock is one block, its header stays in view while you scroll through it */
 .proj { margin-bottom: 10px; background: var(--pane-2); border-radius: 10px; box-shadow: 0 0 0 1px var(--line); }
@@ -385,50 +386,42 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 #rows.s-glide .it.sel { background: transparent; box-shadow: none; }
 .s-hl { position: absolute; left: 0; top: 0; z-index: 1; border-radius: 8px; background: var(--sel); box-shadow: inset 0 0 0 1px rgba(87, 193, 255, 0.25); pointer-events: none; opacity: 0; transition: transform 0.22s var(--ease), width 0.22s var(--ease), height 0.22s var(--ease), opacity 0.15s; }
 
-/* the live sessions as tabs over the pane, grouped by big rock like a browser's tab groups */
-.tabs { display: flex; align-items: center; gap: 4px; height: 0; padding: 0 8px; flex: none; overflow: hidden; opacity: 0; visibility: hidden; border-bottom: 1px solid transparent; transition: height 0.34s var(--ease), opacity 0.2s, visibility 0.2s, border-color 0.2s; }
-.tabs-scroll { position: relative; display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
-.tabs-scroll::-webkit-scrollbar { display: none; }
-.tg { display: contents; }   /* every tab narrows alike before the strip scrolls */
-.tg ~ .tg > .tg-l { margin-left: 6px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--line-2); }
-.tg-l { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px 0 2px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-3); }
-.tab { position: relative; z-index: 2; display: flex; align-items: center; flex: 0 1 auto; min-width: 64px; height: 30px; max-width: 210px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; cursor: pointer; transition: opacity 0.2s; }
-.tab-b { display: flex; align-items: center; gap: 7px; min-width: 0; height: 100%; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
-.tab span { overflow: hidden; text-overflow: ellipsis; }
-.tab svg { width: 13px; height: 13px; }
-.tab:hover, .tab.on { color: var(--text); }
-/* a live session's ×: in place of the age while its row is hovered, over the end of its tab's title */
+/* a live session's ×: in place of the age while its row is hovered */
 .x { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); cursor: pointer; }
 .x:hover { background: var(--line-2); color: var(--text); }
-.x svg, .tab .x svg { width: 12px; height: 12px; }
+.x svg { width: 12px; height: 12px; }
 .end { display: inline-grid; justify-items: end; align-items: center; }
 .end > * { grid-area: 1 / 1; }
-.it .x, .tab .x { visibility: hidden; }
-.it:hover .x, .tab:is(:hover, .on) .x, .x:focus-visible { visibility: visible; }
+.it .x { visibility: hidden; }
+.it:hover .x, .x:focus-visible { visibility: visible; }
 .it:hover .age { visibility: hidden; }
-.tab .x { position: absolute; right: 6px; top: 7px; }
-.tab:is(:hover, .on) .tab-b span { mask-image: linear-gradient(to left, transparent 12px, #000 24px); }
-:is(.it, .tab).closing { opacity: 0.35; pointer-events: none; }
-.tab-ind { position: absolute; left: 0; top: 0; z-index: 1; border-radius: 8px; background: var(--pane-3); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px var(--line); pointer-events: none; opacity: 0; transition: transform 0.24s var(--ease), width 0.24s var(--ease), opacity 0.15s; }
+:is(.it, .b-slot).closing { opacity: 0.35; pointer-events: none; }
 
-/* focus: the sidebar folds into a rail (open over the list while hovered), the list keeps the live sessions or
-   makes way for the tabs; the columns glide */
+/* focus: the sidebar folds into a rail (open over the list while hovered), the list keeps the live sessions — or
+   folds into a column of their icons; the columns glide */
 @media (max-width: 900px) { .s-focus-only { display: none; } }
 @media (min-width: 901px) {
     .app:not(.s-focus) .s-focus-only, .app.s-focus .s-overview-only { display: none; }
     .app:has(> .s-work) { --s-side: 200px; --s-list: clamp(340px, 30vw, 460px); grid-template-columns: var(--s-side) var(--s-list) minmax(0, 1fr); transition: grid-template-columns 0.34s var(--ease); }
     .app.s-focus { --s-side: 56px; --s-list: 292px; }
-    .app.s-focus.s-tabs { --s-list: 0px; }
+    .app.s-focus.s-dock { --s-list: 48px; }
     .app:has(> .s-work) > .list { min-width: 0; transition: opacity 0.2s, visibility 0.2s; }
     .app:has(> .s-work) > .s-work { transition: margin 0.34s var(--ease); }
     .app.s-focus > .list > * { min-width: 284px; }
-    .app.s-focus.s-tabs > .list { opacity: 0; visibility: hidden; }
-    .app.s-focus.s-tabs > .s-work { margin-left: -8px; }
-    .app.s-focus.s-tabs .tabs { height: 44px; opacity: 1; visibility: visible; border-bottom-color: var(--line); }
     .app.s-focus #list :is(.it.tk, .split, .s-later, .pt, .pl, .s-none), .app.s-focus #list .proj:not(.has-live) { display: none; }
     .app.s-focus #list .it { grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; padding: 6px 10px; }
     .app.s-focus #list .it .ic { grid-row: auto; margin: 0; }
     .app.s-focus #list .it .m { display: none; }
+    .app.s-focus.s-dock > .list > * { min-width: 0; }
+    .app.s-focus.s-dock #list :is(.list-head h1, .list-head [data-overview], .hints, .proj-head, .it .t, .it .tm) { display: none; }
+    .app.s-focus.s-dock #list .list-head { justify-content: center; padding: 12px 0 10px; }
+    .app.s-focus.s-dock #list .scroll { padding: 0 6px 12px; }
+    .app.s-focus.s-dock #list .proj { background: none; box-shadow: none; border-radius: 0; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+    .app.s-focus.s-dock #list .proj-in { padding: 0; }
+    .app.s-focus.s-dock .proj.folded .proj-body { grid-template-rows: 1fr; }
+    .app.s-focus.s-dock #list .it { grid-template-columns: 16px; justify-content: center; padding: 8px 0; }
+    .app.s-focus.s-dock #list .it.on-board { background: var(--pane-3); }
+    .app.s-focus.s-dock #list .it.on-active { box-shadow: inset 0 0 0 1px rgba(87, 193, 255, 0.45); }
     .side .l, .side .light span, .side .nav .n { transition: opacity 0.2s; }
     .side .brand, .side .nav { position: relative; white-space: nowrap; }
     .app.s-focus > .side { position: relative; z-index: 30; width: 100%; border-radius: 12px; overflow: hidden; transition: width 0.34s var(--ease), background-color 0.2s, box-shadow 0.2s; }
@@ -436,9 +429,51 @@ details > summary.card-head::-webkit-details-marker { display: none; }
     .app.s-focus > .side:not(:hover, :focus-within) :is(.l, .light span, .nav .n:not(.hot)) { opacity: 0; }
     .app.s-focus > .side:not(:hover, :focus-within) .nav .n.hot { position: absolute; left: 20px; top: 2px; min-width: 15px; height: 14px; padding: 0 4px; font-size: 10px; border-radius: 7px; box-shadow: 0 0 0 2px var(--bg); }
 }
-.s-live { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.s-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
-.s-advice { display: flex; align-items: center; gap: 12px; padding: 9px 20px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--text-2); }
-.s-advice > span { flex: 1; min-width: 0; }
-.s-notice { margin: 10px 20px 0; }
-.s-term { flex: 1; min-height: 0; padding: 10px 6px 6px 16px; }
+/* the board: up to four consoles in the pane's place, each a pane of its own (static/board.js); a ticket shows #detail */
+.s-work.s-board { background: none; box-shadow: none; overflow: visible; }
+.s-work:not(.s-board) > .board, .s-work.s-board > .s-detail { display: none; }
+.board { position: relative; flex: 1; min-height: 0; }
+.b-empty { position: absolute; inset: 0; display: none; place-content: center; justify-items: center; gap: 6px; border-radius: 12px; background: var(--pane); box-shadow: var(--window); color: var(--text-2); text-align: center; }
+.b-empty p { margin: 0; }
+.b-empty svg { width: 26px; height: 26px; color: var(--text-3); margin-bottom: 6px; }
+.board.empty .b-empty { display: grid; }
+.b-slot { position: absolute; container-type: inline-size; display: flex; flex-direction: column; background: var(--pane); border-radius: 12px; box-shadow: var(--window); overflow: hidden;
+          transition: left 0.3s var(--ease), top 0.3s var(--ease), width 0.3s var(--ease), height 0.3s var(--ease), opacity 0.2s, transform 0.2s, box-shadow 0.15s; }
+.board.still .b-slot { transition: opacity 0.2s, transform 0.2s, box-shadow 0.15s; }
+.b-slot.on { box-shadow: 0 0 0 1px rgba(87, 193, 255, 0.45), 0 20px 50px rgba(0, 0, 0, 0.45); }
+.b-slot:is(.entering, .leaving) { opacity: 0; transform: scale(0.985); }
+.b-slot.leaving { pointer-events: none; }
+.b-head { display: flex; align-items: center; gap: 8px; height: 40px; flex: none; padding: 0 6px 0 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--text-3); user-select: none; touch-action: none; cursor: grab; }
+.b-info { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.b-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-2); }
+.b-slot.on .b-title { color: var(--text); }
+.b-meta { flex: none; white-space: nowrap; }
+.b-meta .mono { color: var(--text-2); }
+.b-meta .hot { color: var(--blue); }
+.b-state { flex: none; white-space: nowrap; }
+.b-state.bad { color: var(--red); }
+.b-acts { display: flex; align-items: center; gap: 2px; flex: none; }
+.b-acts .tag { margin-right: 4px; }
+@container (max-width: 560px) { .b-word, .b-tk { display: none; } }
+.b-term { flex: 1; min-height: 0; padding: 10px 6px 6px 16px; }
+.s-dragging .b-term { pointer-events: none; }
+.lifted { opacity: 0.45; }
+/* where a dragged session lands: the box glides from place to place, its words say what happens */
+.b-drop { position: absolute; z-index: 20; display: grid; place-items: center; border-radius: 12px; background: rgba(87, 193, 255, 0.07); box-shadow: inset 0 0 0 1.5px rgba(87, 193, 255, 0.55); pointer-events: none;
+          transition: left 0.16s var(--ease), top 0.16s var(--ease), width 0.16s var(--ease), height 0.16s var(--ease); }
+.b-drop.fresh { transition: none; }
+.b-drop[hidden] { display: none; }
+.b-drop span { padding: 6px 12px; border-radius: 8px; background: var(--pane-3); box-shadow: var(--window); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.b-chip { position: fixed; left: 0; top: 0; z-index: 60; display: flex; align-items: center; gap: 7px; max-width: 260px; padding: 6px 10px; border-radius: 8px; background: var(--pane-3); box-shadow: var(--window); font-size: 12.5px; font-weight: 500; pointer-events: none; }
+.b-chip[hidden] { display: none; }
+.b-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.s-dragging, body.s-dragging * { cursor: grabbing !important; }
+/* a terminal dragged back onto the list leaves the board */
+.app:has(> .s-work) > .list { position: relative; }
+.app:has(> .s-work) > .list::after { content: "Off the board"; position: absolute; inset: 6px; z-index: 40; display: grid; place-items: center; border-radius: 9px; background: rgba(8, 9, 11, 0.72); box-shadow: inset 0 0 0 1.5px rgba(87, 193, 255, 0.55); font-size: 12.5px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+.list.b-off-target::after { opacity: 1; }
+/* where a session is on the board, on its row */
+.where { display: contents; }
+.where svg { width: 15px; height: 15px; stroke: var(--text-3); stroke-width: 1; }
+.where .f { fill: var(--text-2); stroke: none; }
+.where .on .f { fill: var(--blue); }

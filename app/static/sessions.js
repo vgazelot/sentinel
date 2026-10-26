@@ -1,6 +1,7 @@
-// Sessions: every ticket by big rock to choose, one live session to work in. Clicking a session (or ⏎ on it) is focus:
-// the sidebar folds into a rail, the list keeps the live sessions or makes way for tabs over the pane (⌥0); Esc or the
-// grid button goes back. The layout is classes on .app and #list; the list, polled, is re-dressed after each swap.
+// Sessions: every ticket by big rock to choose, live sessions to work in — on the board (static/board.js). Clicking a
+// session (or ⏎ on it) is focus: the sidebar folds into a rail, the list keeps the live sessions or folds into a column
+// of icons (⌥0); Esc or the grid button goes back. The layout is classes on .app and #list; the list, polled, is
+// re-dressed after each swap.
 (() => {
     const app = document.querySelector('.app');
     const list = document.getElementById('list');
@@ -19,7 +20,7 @@
     let settled = null;
 
     function dress() {
-        app.classList.toggle('s-tabs', !!load('tabs', false));
+        app.classList.toggle('s-dock', !!load('dock', false));
         list.classList.toggle('s-live', load('filter', 'all') === 'live');
         list.querySelectorAll('.proj').forEach((p) => {
             p.classList.toggle('folded', folded.has(p.id.slice(5)));
@@ -52,14 +53,9 @@
         const hl = rows && rows.querySelector('.s-hl');
         const key = selectedKey && CSS.escape(selectedKey);
         if (hl) rows.classList.toggle('s-glide', glide(hl, key && rows.querySelector(`.it[data-key="${key}"]`), rows, animate));
-        const strip = document.querySelector('#tabs .tabs-scroll');
-        if (!strip) return;
-        let on = null;
-        strip.querySelectorAll('.tab').forEach((t) => { t.classList.toggle('on', t.dataset.key === selectedKey); if (t.dataset.key === selectedKey) on = t; });
-        if (glide(strip.querySelector('.tab-ind'), on, strip, animate) && app.classList.contains('s-tabs')) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
 
-    // the columns glide for a third of a second: the marks wait for them to land
+    // the columns glide for a third of a second: the mark waits for them to land
     function relayout() {
         moving = true;
         mark();
@@ -73,9 +69,9 @@
         relayout();
     }
 
-    function toggleTabs() {
+    function toggleDock() {
         if (!app.classList.contains('s-focus')) return;
-        save('tabs', !load('tabs', false));
+        save('dock', !load('dock', false));
         dress();
         relayout();
     }
@@ -92,12 +88,6 @@
 
     document.addEventListener('click', (e) => {
         const t = e.target;
-        const tab = t.closest('#tabs .tab');
-        if (tab) {  // a tab is its row: app.js selects it
-            const row = [...document.querySelectorAll('#rows .it')].find((r) => r.dataset.key === tab.dataset.key);
-            if (row) row.click();
-            return;
-        }
         const row = t.closest('#rows .it');
         if (row && live(row.dataset.key)) { wantFocus = row.dataset.key; return; }
         const fold = t.closest('[data-fold]');
@@ -113,36 +103,35 @@
         if (filter) { save('filter', filter.dataset.filter); dress(); mark(false); return; }
         if (t.closest('[data-unselect]')) selectedKey = null;  // the pane is New's now: a × on the old one must not take it
         if (t.closest('[data-overview], [data-unselect]')) { focus(false); return; }
-        if (t.closest('[data-tabs]')) toggleTabs();
+        if (t.closest('[data-dock]')) toggleDock();
     });
 
-    // a session's ×, before its row or tab sees the click: the session in the pane ends there, like its End button,
-    // another one without a word; the list, fetched again, drops it — or, if it failed, gives it back
+    // a session's × or its End on the board, before its row sees the click: a session of another terminal shown in the
+    // pane ends there, like its End button; a console or another session without a word — the list, fetched again,
+    // drops it from the list and the board, or, if it failed, gives it back
     document.addEventListener('click', (e) => {
         const x = e.target.closest('[data-close]');
         if (!x) return;
         e.stopPropagation();
         const key = x.dataset.close;
         if (x.hasAttribute('data-ask') && !confirm(`End this Claude session (${x.dataset.word})? Its transcript stays.`)) return;
-        const closing = (on) => document.querySelectorAll(`:is(.it, .tab)[data-key="${CSS.escape(key)}"]`).forEach((el) => el.classList.toggle('closing', on));
+        const closing = (on) => document.querySelectorAll(`:is(.it, .b-slot)[data-key="${CSS.escape(key)}"]`).forEach((el) => el.classList.toggle('closing', on));
         closing(true);
-        const here = key === selectedKey;
+        const here = key === selectedKey && !key.startsWith('console:');
         // from the × itself: htmx.ajax wants a source or a target, and no other request queues this one
         htmx.ajax('POST', '/api/sessions/end', here ? { source: x, values: { key }, target: '#detail', swap: 'innerHTML' } : { source: x, values: { key, quiet: 1 }, swap: 'none' })
             .then(() => htmx.ajax('GET', '/partials/sessions', { source: x, target: list, swap: 'innerHTML' }))
             .finally(() => closing(false));
     }, true);
 
-    // ⌥1…9 and ⌥0 work in the terminal too: taken before xterm sees them
+    // ⌥0 works in a terminal too: taken before xterm sees it (⌥1–4 are the board's)
     document.addEventListener('keydown', (e) => {
         if (e.target.closest('#console')) return;
         const typing = e.target.closest('input, textarea, select') && !e.target.closest('.console-term');
-        if (e.altKey && !e.metaKey && !e.ctrlKey && !typing && /^Digit\d$/.test(e.code)) {
+        if (e.altKey && !e.metaKey && !e.ctrlKey && !typing && e.code === 'Digit0') {
             e.preventDefault();
             e.stopPropagation();
-            if (e.code === 'Digit0') { toggleTabs(); return; }
-            const tab = document.querySelectorAll('#tabs .tab')[Number(e.code.slice(5)) - 1];
-            if (tab) tab.click();
+            toggleDock();
             return;
         }
         if (typing || e.target.closest('.console-term') || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -155,7 +144,7 @@
         }
     }, true);
 
-    // htmx swaps the tabs (out of band) before the list: both are in place here, re-dressed before the next paint
+    // re-dressed before the next paint
     document.addEventListener('htmx:afterSwap', (e) => { if (e.detail.target === list) { dress(); mark(false); } });
     document.addEventListener('htmx:afterSettle', (e) => {
         if (e.detail.target !== list) return;

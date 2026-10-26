@@ -1,10 +1,10 @@
-"""Sessions: the cycle's tickets by big rock, the Claude Code session working on each, and that session — the real
-CLI — in the detail pane.
+"""Sessions: the cycle's tickets by big rock, the Claude Code session working on each, and those sessions — the real
+CLI — side by side on the board.
 
 The bridge lists the sessions running on the host (`GET /sessions`); what each works on and how heavy it got comes
 from the context advisor (contrib/claude-code-context), shown as it says it; the Cycle tab's data says which ticket
-belongs to which big rock. A session started here runs in a console shown in the pane; one started in another
-terminal is listed, read-only. A ticket without a session is picked up by a fresh one that reads the ticket first:
+belongs to which big rock. A session started here runs in a console the board shows (up to four, placed by the page);
+one started in another terminal is listed, read-only. A ticket without a session is picked up by a fresh one that reads the ticket first:
 the ticket is the memory, a session a worker you replace when its context grows.
 """
 import json
@@ -243,8 +243,7 @@ def sessions_page():
 
 @bp.get("/partials/sessions")
 def partial_sessions():
-    # the tabs over the pane list the same sessions: they come along, swapped in place
-    return render_template("partials/sessions_list.html", tabs_oob=True, **board())
+    return render_template("partials/sessions_list.html", **board())
 
 
 @bp.get("/partials/session")
@@ -280,8 +279,8 @@ def api_new():
 
 @bp.post("/api/sessions/end")
 def api_end():
-    """A console closes, a session in another terminal stops there; `quiet` (a tab's ×, the pane showing another one)
-    answers nothing, the list says it on its next poll."""
+    """A console closes, a session in another terminal stops there; `quiet` (a console's ×, End on the board, the pane
+    showing another one) answers nothing, the list says it on its next poll."""
     key = request.form.get("key", "")
     kind, _, ref = key.partition(":")
     if not (kind == "console" and console.NAME.fullmatch(ref) or kind == "session" and SESSION_ID.fullmatch(ref)):

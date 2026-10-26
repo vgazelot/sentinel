@@ -3,10 +3,26 @@
 {% macro size(r) -%}{% if r.advice %}<span class="tag warn">{{ r.tokens // 1000 }}k</span>{% endif %}{%- endmacro %}
 {# the age, and in its place while the row is hovered, the × #}
 {% macro trail(r) -%}{{ size(r) }}<span class="end"><span class="age">{{ r.at | age if r.at }}</span>{{ l.close(r) }}</span>{%- endmacro %}
+{# a live session: a console of the bridge goes on the board (static/board.js), one in another terminal opens in the pane #}
 {% macro session_row(r) -%}
-{% call l.row(r.key, (r.title | subject).text, r.tone, r.icon, '/partials/session?key=' ~ (r.key | urlencode), r.url, '', trail(r)) %}
-{% if r.story %}<span class="mono">{{ r.story }}</span> · {% endif %}{{ r.word }}{% if r.where %} · {{ r.where }}{% endif %}
-{% endcall %}
+{% set term = r.session.console %}
+<div class="it" data-key="{{ r.key }}"{% if term %} data-term="{{ term }}"{% else %} data-detail="/partials/session?key={{ r.key | urlencode }}"{% endif %}{% if r.url %} data-url="{{ r.url }}"{% endif %} title="{{ (r.title | subject).text }} · {{ r.word }}">
+    <svg class="ic {{ r.tone }}"><use href="#{{ r.icon }}"/></svg>
+    <span class="t">{{ (r.title | subject).text }}</span>
+    <span class="tm">{% if term %}<span class="where"></span>{% endif %}{{ trail(r) }}</span>
+    <span class="m">{% if r.story %}<span class="mono">{{ r.story }}</span> · {% endif %}{{ r.word }}{% if r.where %} · {{ r.where }}{% endif %}</span>
+</div>
+{%- endmacro %}
+{# a console's head on the board, copied there after every poll: what it works on, its state, its ticket, End #}
+{% macro head(r) -%}
+<template data-key="{{ r.key }}">
+<span class="b-info"><svg class="ic {{ r.tone }}"><use href="#{{ r.icon }}"/></svg><span class="b-title">{{ (r.title | subject).text }}</span><span class="b-meta">{% if r.story %}<span class="mono">{{ r.story }}</span><span class="b-word"> · {% else %}<span class="b-word">{% endif %}<span class="{{ r.tone }}">{{ r.word }}</span></span></span></span>
+<span class="b-acts">
+    {%- if r.advice %}<span class="tag warn" title="{{ r.advice }}">{{ r.tokens // 1000 }}k</span>{% if r.fresh %}<button type="button" class="btn small primary" data-term-type="{{ r.fresh }}" title="Types {{ r.fresh }}: the session writes where it stands into its ticket, then a fresh one picks up from there. Enter to confirm.">Start fresh</button>{% endif %}{% endif %}
+    {%- if r.url %}<a class="btn small ghost b-tk" href="{{ r.url }}" target="_blank" rel="noopener">Ticket</a>{% endif -%}
+    <button type="button" class="btn small ghost" data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'working', 'starting') %} data-ask{% endif %} title="Stops Claude Code — its transcript stays">End</button>
+</span>
+</template>
 {%- endmacro %}
 {# a ticket without a session: one line, its state drawn by the icon #}
 {% macro ticket_row(r) -%}
@@ -25,7 +41,7 @@
         <button type="button" data-filter="live">Live<b>{{ n.live }}</b></button>
         <button type="button" data-filter="all">All<b>{{ n.all }}</b></button>
     </div>
-    <button type="button" class="icon-btn s-focus-only" data-tabs title="Tabs on top (⌥0)"><svg><use href="#i-tabs"/></svg></button>
+    <button type="button" class="icon-btn s-focus-only" data-dock title="Fold the list (⌥0)"><svg><use href="#i-panel"/></svg></button>
     <button type="button" class="btn small s-overview-only" data-unselect hx-get="/partials/session?key=new" hx-target="#detail" title="Claude Code on a new task, in a console here">New</button>
 </header>
 {% if error %}<div class="notice bad s-error">{{ error }}</div>{% endif %}
@@ -63,6 +79,6 @@
 </div>
 <footer class="hints">
     <span class="s-overview-only"><kbd>↑</kbd><kbd>↓</kbd> move</span><span class="s-overview-only"><kbd>⏎</kbd> open</span>
-    <span><kbd>⌥</kbd><kbd>1</kbd>…<kbd>9</kbd> a session</span><span class="s-focus-only"><kbd>⌥</kbd><kbd>0</kbd> tabs</span><span class="s-focus-only"><kbd>esc</kbd> every ticket</span>
+    <span>drag a session onto the board</span><span><kbd>⌥</kbd><kbd>1</kbd>–<kbd>4</kbd> a terminal</span><span class="s-focus-only"><kbd>⌥</kbd><kbd>0</kbd> fold</span><span class="s-focus-only"><kbd>esc</kbd> every ticket</span>
 </footer>
-{% if tabs_oob %}{% include "partials/session_tabs.html" %}{% endif %}
+<div id="heads" hidden>{% for g in groups %}{% for r in g.rows if r.session and r.session.console %}{{ head(r) }}{% endfor %}{% endfor %}</div>

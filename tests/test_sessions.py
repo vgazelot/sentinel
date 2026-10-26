@@ -254,15 +254,18 @@ class SessionsTest(SentinelTest):
         self.assertRegex(page, r'id="nav-sessions"\s*>1<')
         self.assertIn('<section class="proj has-live" id="proj-Mesh">', page, "a big rock is one block, its sessions say so")
         self.assertIn('href="#s-started"', page, "a started ticket without a session is drawn half full")
-        tabs = page[page.index('<nav class="tabs" id="tabs"'):page.index("</nav>", page.index('<nav class="tabs"'))]
-        self.assertNotIn("hx-swap-oob", tabs, "the page draws the tabs in place")
-        self.assertEqual(tabs.count('class="tab"'), 4, "every live session has its tab, no ticket does")
-        self.assertEqual(tabs.count("data-close="), 4, "each with its ×")
-        self.assertIn('data-close="session:d" data-word="working" data-ask', tabs, "a session at work asks first")
+        self.assertIn('<div class="board" id="board"', page, "the consoles' board, in the pane's place")
+        self.assertIn('data-key="console:sc-1002" data-term="sc-1002"', page, "a console's row puts it on the board")
+        self.assertNotIn("/partials/session?key=console", page, "a console never opens in the pane")
+        self.assertIn('data-detail="/partials/session?key=session%3Ad"', page, "a session of another terminal does")
+        self.assertEqual(page.count("<template data-key="), 1, "a head for each console, none for another terminal")
+        head = page[page.index('<template data-key="console:sc-1002">'):page.index("</template>")]
+        self.assertIn('data-close="console:sc-1002" data-word="starting" data-ask', head, "End on the board, asking first")
+        self.assertIn("Upgrade", head, "titled after its ticket until Claude names it")
+        self.assertIn('data-close="session:d" data-word="working" data-ask', page, "a session at work asks first")
         self.assertIn('data-close="session:c" data-word="idle" title=', page, "an idle one ends at once")
         polled = self.client.get("/partials/sessions").get_data(as_text=True)
-        self.assertIn('<nav class="tabs" id="tabs" aria-label="Live sessions" hx-swap-oob="true">', polled,
-                      "the polled list brings the tabs along")
+        self.assertIn('<template data-key="console:sc-1002">', polled, "every poll brings the heads along")
         facts = {"id": 1001, "name": "Runbook", "url": "https://app.shortcut.com/acme/story/1001", "state": "In Development",
                  "prs": [{"url": "https://github.com/acme/infra/pull/7", "ref": "infra#7", "title": "feat: [sc-1001] runbook", "draft": True}],
                  "note": {"text": "## Handoff\n- **Left**: the alerts", "at": "2026-10-15T08:00:00Z", "handoff": True}}
@@ -274,7 +277,8 @@ class SessionsTest(SentinelTest):
         self.assertIn("Last handoff", ticket)
         self.assertIn("<strong>Left</strong>", ticket)
         self.assertIn("infra#7", ticket)
-        self.assertIn('data-attach="/api/console/sc-1002/attach"', live)
+        self.assertIn("Opening on the board", live, "a start lands in the pane, the board takes it from the list")
+        self.assertNotIn("/attach", live)
         self.assertIn("another terminal", elsewhere)
         self.assertIn('hx-vals=\'{"key": "session:c"}\'', elsewhere, "it ends from here too")
         self.assertIn("/handoff", elsewhere)

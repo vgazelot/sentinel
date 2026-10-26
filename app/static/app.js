@@ -97,7 +97,7 @@ document.addEventListener('click', (e) => {
     }
     const row = e.target.closest('#rows .it');
     if (!row) return;
-    if (row.dataset.detail) select(row);
+    if (row.dataset.detail || row.dataset.term) select(row);  // a console (Sessions) is shown by its board, not the pane
     else if (row.dataset.url) window.open(row.dataset.url, '_blank', 'noopener');
 });
 
@@ -188,7 +188,8 @@ document.addEventListener('DOMContentLoaded', () => {
     updateBadges();
     renderLight();
     const all = rows();
-    const first = all.find((r) => r.dataset.detail);
+    // a row the page marked already (the board's active terminal), else the first one that opens
+    const first = all.find((r) => r.classList.contains('sel')) || all.find((r) => r.dataset.detail || r.dataset.term);
     if (first) select(first);
 });
 
