@@ -15,6 +15,7 @@
     const LAYOUTS = new Set(['F', 'L R', 'BR L TR', 'BL R TL', 'BL BR TL TR']);
     const READING = { F: 0, L: 0, TL: 0, TR: 1, R: 1, BL: 2, BR: 3 };  // ⌥1–4
     const GAP = 8;
+    const ENDED = 'this session has ended';
     const drop = board.querySelector('.b-drop');
     const shown = new Map();  // key → {el, term, head, down}
     let slots = [];
@@ -22,6 +23,7 @@
     let keyboard = null;  // the terminal a drop opens takes the keys
     let last = null;
     let asked = null;
+    let stored = null;
 
     const row = (key) => list.querySelector(`#rows .it[data-term][data-key="${CSS.escape(key)}"]`);
     const slotOf = (key) => slots.find((s) => s.key === key);
@@ -41,7 +43,7 @@
 
     function attach(key, t) {
         t.term.attach(`/api/console/${key.slice('console:'.length)}/attach`)
-            .catch((err) => t.say(err.status === 404 ? 'this session has ended' : err.message, true));
+            .catch((err) => t.say(err.status === 404 ? ENDED : err.message, true));
     }
 
     function make(key) {
@@ -51,11 +53,14 @@
         el.innerHTML = '<header class="b-head"><span class="b-info"></span><span class="console-state b-state"></span><span class="spacer"></span><span class="b-acts"></span>'
             + '<button type="button" class="icon-btn b-off" title="Off the board — the session goes on"><svg><use href="#i-close"/></svg></button></header>'
             + '<div class="console-term b-term"></div>';
+        // its name until the list brings its head (none while the bridge is away)
+        const name = Object.assign(document.createElement('span'), { className: 'b-title', textContent: key.slice('console:'.length) });
+        el.querySelector('.b-info').appendChild(name);
         const state = el.querySelector('.b-state');
         const t = { el, head: '', down: false };
         t.say = (text, bad) => {
-            t.down = text === 'disconnected';
-            state.textContent = text ? `· ${t.down ? 'disconnected — click to reconnect' : text}` : '';
+            t.down = !!bad && text !== ENDED;  // a click on it tries again; an ended session leaves on the next poll
+            state.textContent = state.title = text ? `· ${text}${t.down ? ' — click to reconnect' : ''}` : '';
             state.classList.toggle('bad', !!bad);
         };
         t.term = Term(el.querySelector('.b-term'), '--pane', t.say, keyboard === key);
@@ -111,7 +116,11 @@
         board.classList.toggle('empty', !slots.length);
         heads();
         wheres();
-        try { localStorage.setItem(STORE, JSON.stringify({ slots, active })); } catch (e) { /* private mode */ }
+        const now = JSON.stringify({ slots, active });
+        if (now !== stored) {
+            stored = now;
+            try { localStorage.setItem(STORE, now); } catch (e) { /* private mode */ }
+        }
     }
 
     // a terminal leaves: the one above or below takes its column; a column gone gives its room to the other
@@ -305,9 +314,12 @@
     // the list is not polled under a drag: its rows are what the pointer holds
     document.addEventListener('htmx:beforeRequest', (e) => { if (drag && drag.started && e.detail.elt === list) e.preventDefault(); });
 
-    // ⌥1–4: that terminal, keys included — taken before xterm sees them. Esc drops a drag where it started.
+    // Esc calls a drag off — on window, before sessions.js leaves focus with it
+    window.addEventListener('keydown', (e) => {
+        if (drag && drag.started && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); end(null); }
+    }, true);
+    // ⌥1–4: that terminal, keys included — taken before xterm sees them
     document.addEventListener('keydown', (e) => {
-        if (drag && drag.started && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); end(null); return; }
         if (!e.altKey || e.metaKey || e.ctrlKey || !/^Digit[1-4]$/.test(e.code) || e.target.closest('#console')) return;
         if (e.target.closest('input, textarea, select') && !e.target.closest('.console-term')) return;
         e.preventDefault();
@@ -326,7 +338,11 @@
         const before = active;
         if (!list.querySelector('.s-error')) slots.filter((s) => !row(s.key)).forEach((s) => remove(s.key));
         render();
-        if (active !== before) follow(active);
+        if (active !== before && work.classList.contains('s-board')) follow(active);
+    });
+    // End on the board failed: the pane has its answer, shown
+    document.addEventListener('htmx:afterSwap', (e) => {
+        if (e.detail.target.id === 'detail' && e.detail.requestConfig.path === '/api/sessions/end') work.classList.remove('s-board');
     });
 
     // the board follows its pane — the columns glide into focus — without gliding itself
@@ -346,12 +362,13 @@
         if (LAYOUTS.has(kept.map((s) => s.r).sort().join(' ')) && new Set(kept.map((s) => s.key)).size === kept.length) {
             slots = kept.map((s) => ({ key: s.key, r: s.r }));
             active = slotOf(saved.active) ? saved.active : null;
-            slots.filter((s) => !row(s.key)).forEach((s) => remove(s.key));
+            stored = JSON.stringify({ slots, active });
+            if (!list.querySelector('.s-error')) slots.filter((s) => !row(s.key)).forEach((s) => remove(s.key));
         }
         if (!slotOf(active)) active = slots.length ? ordered()[0].key : null;
         if (active) {
             work.classList.add('s-board');
-            row(active).classList.add('sel');
+            row(active)?.classList.add('sel');
         }
         render();
     });

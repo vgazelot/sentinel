@@ -450,7 +450,7 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .b-meta { flex: none; white-space: nowrap; }
 .b-meta .mono { color: var(--text-2); }
 .b-meta .hot { color: var(--blue); }
-.b-state { flex: none; white-space: nowrap; }
+.b-state { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .b-state.bad { color: var(--red); }
 .b-acts { display: flex; align-items: center; gap: 2px; flex: none; }
 .b-acts .tag { margin-right: 4px; }

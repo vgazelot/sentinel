@@ -1,6 +1,6 @@
 {% import "partials/list_macros.html" as l with context %}
 {# the context size, on a session that would rather start fresh #}
-{% macro size(r) -%}{% if r.advice %}<span class="tag warn">{{ r.tokens // 1000 }}k</span>{% endif %}{%- endmacro %}
+{% macro size(r) -%}{% if r.advice %}<span class="tag warn" title="{{ r.advice }}">{{ r.tokens // 1000 }}k</span>{% endif %}{%- endmacro %}
 {# the age, and in its place while the row is hovered, the × #}
 {% macro trail(r) -%}{{ size(r) }}<span class="end"><span class="age">{{ r.at | age if r.at }}</span>{{ l.close(r) }}</span>{%- endmacro %}
 {# a live session: a console of the bridge goes on the board (static/board.js), one in another terminal opens in the pane #}
@@ -18,9 +18,9 @@
 <template data-key="{{ r.key }}">
 <span class="b-info"><svg class="ic {{ r.tone }}"><use href="#{{ r.icon }}"/></svg><span class="b-title">{{ (r.title | subject).text }}</span><span class="b-meta">{% if r.story %}<span class="mono">{{ r.story }}</span><span class="b-word"> · {% else %}<span class="b-word">{% endif %}<span class="{{ r.tone }}">{{ r.word }}</span></span></span></span>
 <span class="b-acts">
-    {%- if r.advice %}<span class="tag warn" title="{{ r.advice }}">{{ r.tokens // 1000 }}k</span>{% if r.fresh %}<button type="button" class="btn small primary" data-term-type="{{ r.fresh }}" title="Types {{ r.fresh }}: the session writes where it stands into its ticket, then a fresh one picks up from there. Enter to confirm.">Start fresh</button>{% endif %}{% endif %}
+    {%- if r.advice %}{{ size(r) }}{% if r.fresh %}<button type="button" class="btn small primary" data-term-type="{{ r.fresh }}" title="Types {{ r.fresh }}: the session writes where it stands into its ticket, then a fresh one picks up from there. Enter to confirm.">Start fresh</button>{% endif %}{% endif %}
     {%- if r.url %}<a class="btn small ghost b-tk" href="{{ r.url }}" target="_blank" rel="noopener">Ticket</a>{% endif -%}
-    <button type="button" class="btn small ghost" data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'working', 'starting') %} data-ask{% endif %} title="Stops Claude Code — its transcript stays">End</button>
+    <button type="button" class="btn small ghost" {{ l.ends(r) }} title="Stops Claude Code — its transcript stays">End</button>
 </span>
 </template>
 {%- endmacro %}

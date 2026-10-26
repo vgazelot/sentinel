@@ -344,7 +344,7 @@ class SessionsTest(SentinelTest):
         self.sessions.append(session(SID, "idle"))
         with mock.patch("console.stop", side_effect=stop):
             quiet = self.client.post("/api/sessions/end", data={"key": f"session:{SID}", "quiet": "1"})
-        self.assertEqual((quiet.status_code, quiet.get_data()), (204, b""), "a tab's ×: the pane shows another one")
+        self.assertEqual((quiet.status_code, quiet.get_data()), (204, b""), "a row's ×: the pane shows another one")
         with mock.patch("console.stop", side_effect=RuntimeError("Claude (pid 4) still runs 10 s after SIGTERM")):
             self.sessions.append(session(SID, "idle"))
             failed = self.client.post("/api/sessions/end", data={"key": f"session:{SID}", "quiet": "1"}).get_data(as_text=True)

@@ -171,11 +171,15 @@
             head.addEventListener('pointermove', follow);
             head.addEventListener('lostpointercapture', () => {
                 head.removeEventListener('pointermove', follow);
+                if (!box.style.left) return;  // clicked, not moved
                 try { sessionStorage.setItem(AT, JSON.stringify([parseFloat(box.style.left), parseFloat(box.style.top)])); } catch (err) { /* private mode */ }
             }, { once: true });
         });
         window.addEventListener('resize', inside);
-        try { const at = JSON.parse(sessionStorage.getItem(AT) || 'null'); if (at) moveTo(...at); } catch (e) { /* private mode */ }
+        try {
+            const at = JSON.parse(sessionStorage.getItem(AT) || 'null');
+            if (Array.isArray(at) && at.length === 2 && at.every(Number.isFinite)) moveTo(...at);
+        } catch (e) { /* private mode */ }
 
         document.addEventListener('click', (e) => {
             const start = e.target.closest('[data-console]');

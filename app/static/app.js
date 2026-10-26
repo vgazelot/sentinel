@@ -83,8 +83,9 @@ function move(step) {
 }
 
 function openSelected() {
-    const link = document.querySelector('#detail [data-open]');
     const row = rows().find((r) => r.dataset.key === selected.key);
+    // the pane shows the selected row only when it has a detail (Sessions' consoles are on the board)
+    const link = (!row || row.dataset.detail) && document.querySelector('#detail [data-open]');
     const url = (link && link.href) || (row && row.dataset.url);
     if (url) window.open(url, '_blank', 'noopener');
 }
@@ -128,10 +129,12 @@ function toast(text, bad) {
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 8000 : 3500);
 }
-// a session just started: its row shows on the list's next poll, selected
+// a session just started: selected now if a poll listed it already, else when the list shows it
 document.addEventListener('select-key', (e) => {
     selected = { key: e.detail.key, index: selected.index };
-    htmx.trigger('#list', 'refresh');
+    const row = rows().find((r) => r.dataset.key === e.detail.key);
+    if (row) select(row, { load: false });
+    else htmx.trigger('#list', 'refresh');
 });
 document.addEventListener('acted', (e) => {
     toast(e.detail.error || e.detail.notice || (rows().length ? '' : 'Inbox zero'), !!e.detail.error);
@@ -189,7 +192,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderLight();
     const all = rows();
     // a row the page marked already (the board's active terminal), else the first one that opens
-    const first = all.find((r) => r.classList.contains('sel')) || all.find((r) => r.dataset.detail || r.dataset.term);
+    const first = document.querySelector('#rows .it.sel') || all.find((r) => r.dataset.detail || r.dataset.term);
     if (first) select(first);
 });
 

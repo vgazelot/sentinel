@@ -11,9 +11,14 @@
 </div>
 {%- endmacro %}
 
-{# a live session's ×: static/sessions.js ends it, asking first when it works or waits on you #}
+{# what ends a live session (static/sessions.js): asking first when it works or waits on you #}
+{% macro ends(r) -%}
+data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'working', 'starting') %} data-ask{% endif %}
+{%- endmacro %}
+
+{# a live session's × #}
 {% macro close(r) -%}
-<button type="button" class="x" data-close="{{ r.key }}" data-word="{{ r.word }}"{% if r.state in ('waiting', 'working', 'starting') %} data-ask{% endif %} title="End this session — its transcript stays (claude --resume)"><svg><use href="#i-close"/></svg></button>
+<button type="button" class="x" {{ ends(r) }} title="End this session — its transcript stays (claude --resume)"><svg><use href="#i-close"/></svg></button>
 {%- endmacro %}
 
 {% macro icon_of(v) -%}
