@@ -8,6 +8,7 @@
         ['link', 'https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css', 'sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD'],
         ['script', 'https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js', 'sha384-f/1U6Z9wM4D71a5eRXEZnyOTMOvjqxr2XLwh+Go1OvIl3L3tOcvUrzudnhbECwl4'],
         ['script', 'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.js', 'sha384-txoiwu4RR2GD3qySbaj+BbzibkLbSJRcfqGYMu6z1EqHil4A2dyBiBW5dlacG6OR'],
+        ['script', 'https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.12.0/lib/addon-web-links.js', 'sha384-0IIwkXq0LAkIxEVKxlOxWbje2g/VT+5CzVTZiEukyiZ02pOl/O+M0fkpEKAYqto9'],
     ];
     const encoder = new TextEncoder();
     let loading = null;
@@ -35,13 +36,18 @@
             if (term) return term;
             const css = getComputedStyle(document.documentElement);
             const v = (name) => css.getPropertyValue(name).trim();
+            // a left click opens a link in a new tab, http(s) only: Claude's own (OSC 8 — its text is not its address,
+            // the address shows on hover, in place of xterm's confirm box) and the bare addresses in the output
+            const visit = (e, uri) => { if (e.button === 0) window.open(uri, '_blank', 'noopener'); };
             term = new Terminal({
                 fontFamily: v('--mono'), fontSize: 12.5, lineHeight: 1.15, cursorBlink: true,
                 macOptionClickForcesSelection: true,  // ⌥-drag selects text even while tmux takes the mouse
                 theme: { background: v(bg), foreground: v('--text'), cursor: v('--claude'), selectionBackground: 'rgba(87, 193, 255, 0.25)' },
+                linkHandler: { activate: visit, hover: (e, uri) => { host.title = uri; }, leave: () => host.removeAttribute('title') },
             });
             fit = new FitAddon.FitAddon();
             term.loadAddon(fit);
+            term.loadAddon(new WebLinksAddon.WebLinksAddon(visit));
             term.open(host);
             term.onData((d) => { if (ws && ws.readyState === 1) ws.send(encoder.encode(d)); });
             term.onResize(({ cols, rows }) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ cols, rows })); });
