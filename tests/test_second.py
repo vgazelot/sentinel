@@ -216,6 +216,19 @@ class SecondTest(SentinelTest):
         comment.assert_not_called()
         self.assertIn("looks like it holds a secret", self.jobs()[0]["error"])
 
+    def test_an_answer_quoting_a_private_message_is_not_posted(self):
+        import db
+        import second
+
+        db.set_watcher_state("cycle", "data", json.dumps({"big_rocks": [], "run": {"label": "RUN", "epics": [{"stories": [
+            story(1234, "2026-10-20T08:00:00Z")]}]}}))
+        second.tick()
+        self.answered("second-sc-1234", "Attend Alex : https://acme.slack.com/archives/D0123ABCDEF/p1700000000000100")
+        with mock.patch("shortcut.comment") as comment:
+            second.tick()
+        comment.assert_not_called()
+        self.assertIn("quotes a private message", self.jobs()[0]["error"])
+
     def test_a_backlog_of_stalled_tickets_goes_over_days_the_oldest_first(self):
         import db
         import second

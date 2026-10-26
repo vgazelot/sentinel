@@ -43,6 +43,8 @@ DONE_KEEP_MINUTES = 60  # a console answered this long ago, nobody in it: ended
 MAX_MATERIAL = 8000
 # what a token looks like: an answer holding one is not posted — a ticket comment is read by others, and a comment
 # planted in a ticket could have asked for it
+# a private message — a Slack direct message or group, an email — has no place in a comment the team reads
+PRIVATE = re.compile(r"slack\.com/archives/[DG][A-Z0-9]{6,}|mail\.google\.com|\bmailto:")
 SECRETISH = re.compile(r"xox[abprs]-[\w-]{10,}|gh[opsu]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|sk-ant-[\w-]{20,}"
                        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bSCW[A-Z0-9]{17}\b"
                        r"|(?i:(?:api[_-]?key|app[_-]?key|token|secret|password|passwd)[\"']?\s*[:=]\s*[\"']?[^\s\"']{12,})")
@@ -68,10 +70,11 @@ its recent history, the host, its logs, what changed lately (deploys, configurat
 
 {story} is theirs, started, and nobody touched it for {days} days: find what blocks it. Read the story and its
 comments (the latest "Handoff" first), its branch and pull requests, what they link. Your answer is posted on the
-story as a comment, as is:
+story as a comment, as is, for the whole team to read — so never quote or link a private message (a direct message,
+an email): say "a conversation with <name>" instead. Ten lines at most:
 - first line: what blocks it, in one sentence (waiting on someone, a review, a decision, a failing check, nothing
   visible)
-- the facts, with links
+- the facts that matter, with links
 - the next step, and who takes it
 - if someone has to be nudged: a two-line draft message for them, in their language
 
@@ -288,9 +291,11 @@ def _follow(cfg: dict, live: list[dict]):
 
 def _deliver(job: dict):
     if job["kind"] == "stuck":
-        if SECRETISH.search(job["report"]):
-            _set(job["id"], error=f"held back from {job['subject']}: the answer looks like it holds a secret")
-            log.warning("second: %s answer held back, it looks like it holds a secret", job["subject"])
+        held = ("looks like it holds a secret" if SECRETISH.search(job["report"])
+                else "quotes a private message" if PRIVATE.search(job["report"]) else "")
+        if held:
+            _set(job["id"], error=f"held back from {job['subject']}: the answer {held}")
+            log.warning("second: %s answer held back, it %s", job["subject"], held)
             return
         try:
             owner = shortcut.member_id((config.load().get("cycle") or {}).get("shortcut_member", ""))
