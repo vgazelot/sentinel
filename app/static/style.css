@@ -217,7 +217,7 @@ a.fileref:hover { color: var(--blue); }
 .agent-verdict > summary .muted { flex: none; font-size: 12px; }
 .spinner { width: 11px; height: 11px; border: 1.5px solid var(--line-2); border-top-color: var(--claude); border-radius: 50%; animation: spin 0.9s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.md { margin-top: 10px; font-size: 13.5px; line-height: 1.6; color: var(--text-2); max-height: 560px; overflow: auto; }
+.md { margin-top: 10px; font-size: 13.5px; line-height: 1.6; color: var(--text-2); max-height: 560px; overflow: auto; overflow-wrap: anywhere; }
 .md strong { color: var(--text); font-weight: 600; }
 .md h1, .md h2, .md h3 { font-size: 14px; color: var(--text); margin: 14px 0 6px; }
 .md p, .md ul, .md ol { margin: 0 0 8px; }
@@ -354,7 +354,7 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 /* --- Sessions: every ticket by big rock to choose, one live session to work in ------------------------------ */
 .icon-btn { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border: 0; border-radius: 7px; background: none; color: var(--text-2); cursor: pointer; transition: background-color 0.12s, color 0.12s; }
 .icon-btn:hover { background: var(--pane-3); color: var(--text); }
-.s-work { min-width: 0; }
+.s-work { min-width: 0; position: relative; }
 .s-detail { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
 .s-error { margin: 0 16px 8px; }
 .seg button { border: 0; background: none; padding: 3px 10px; border-radius: 6px; font: inherit; font-size: 12px; font-weight: 500; color: var(--text-3); white-space: nowrap; cursor: pointer; }
@@ -462,9 +462,11 @@ details > summary.card-head::-webkit-details-marker { display: none; }
     .app.s-focus > .side:not(:hover, :focus-within) :is(.l, .light span, .nav .n:not(.hot)) { opacity: 0; }
     .app.s-focus > .side:not(:hover, :focus-within) .nav .n.hot { position: absolute; left: 20px; top: 2px; min-width: 15px; height: 14px; padding: 0 4px; font-size: 10px; border-radius: 7px; box-shadow: 0 0 0 2px var(--bg); }
 }
-/* the board: up to four consoles in the pane's place, each a pane of its own (static/board.js); a ticket shows #detail */
+/* the board: up to four consoles in the pane's place, each a pane of its own (static/board.js); a ticket shows #detail,
+   in the active terminal's place while the board has some (.s-pane) */
 .s-work.s-board { background: none; box-shadow: none; overflow: visible; }
-.s-work:not(.s-board) > .board, .s-work.s-board > .s-detail { display: none; }
+.s-work:not(.s-board) > .board, .s-work.s-board:not(.s-pane) > .s-detail { display: none; }
+.s-work.s-pane > .s-detail { position: absolute; z-index: 10; background: var(--pane); border-radius: 12px; box-shadow: var(--window); }
 .board { position: relative; flex: 1; min-height: 0; }
 .b-empty { position: absolute; inset: 0; display: none; place-content: center; justify-items: center; gap: 6px; border-radius: 12px; background: var(--pane); box-shadow: var(--window); color: var(--text-2); text-align: center; }
 .b-empty p { margin: 0; }

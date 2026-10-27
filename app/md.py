@@ -28,13 +28,56 @@ def _separate_lists(text: str) -> str:
 
 def render(text: str) -> str:
     html = markdown.markdown(_separate_lists(text or ""), extensions=["fenced_code", "tables", "sane_lists"])
-    return nh3.clean(html, tags=TAGS, attributes={"a": {"href", "title"}}, url_schemes={"http", "https", "mailto"})
+    # the addresses are linked before the cleaning: what that makes goes through the allowlist too
+    return nh3.clean(_texts(html, _link_url), tags=TAGS, attributes={"a": {"href", "title"}},
+                     url_schemes={"http", "https", "mailto"}, set_tag_attribute_values={"a": {"target": "_blank"}})
+
+
+# Rendered HTML is walked tag by tag to leave markup untouched; each text run knows the link it sits in.
+_TAG = re.compile(r"<[^>]+>")
+_HREF = re.compile(r'\bhref="([^"]*)"')
+
+
+def _texts(html: str, sub) -> str:
+    """Each run of text through sub(text, href) — href: the link it sits in, else None."""
+    out, pos, href = [], 0, None
+    for tag in _TAG.finditer(html):
+        out += [sub(html[pos:tag.start()], href), tag.group()]
+        lowered = tag.group().lower()
+        if lowered.startswith("<a ") or lowered == "<a>":
+            m = _HREF.search(tag.group())
+            href = m.group(1) if m else ""
+        elif lowered.startswith("</a"):
+            href = None
+        pos = tag.end()
+    out.append(sub(html[pos:], href))
+    return "".join(out)
+
+
+# A bare address becomes a link; one shown as itself (bare, <url>, [url](url)) reads short when it is a pull request
+# (repo#N) or a story (sc-N), the whole address behind it. The text is HTML-escaped: `&amp;` is the one entity an
+# address keeps, and closing punctuation is not part of it.
+_URL = re.compile(r"https?://(?:[^\s<>\"'&]|&amp;)*[^\s<>\"'&.,;:!?)\]]")
+_SHORT = ((re.compile(r"https://github\.com/[\w.-]+/([\w.-]+)/pull/(\d+)(?!\w)"), r"\1#\2"),
+          (re.compile(r"https://app\.shortcut\.com/[\w-]+/story/(\d+)(?!\w)"), r"sc-\1"))
+
+
+def _short(url: str) -> str:
+    for pattern, label in _SHORT:
+        m = pattern.match(url)
+        if m:
+            return m.expand(label)
+    return url
+
+
+def _link_url(text: str, href: str | None) -> str:
+    if href is None:
+        return _URL.sub(lambda m: f'<a href="{m.group()}">{_short(m.group())}</a>', text)
+    return _short(text) if text == href else text
 
 
 # `path/to/file.ext:42` (optionally `:42-50`) written by Claude or a reviewer: the panel resolves it
-# to the diff line below, so it becomes a link. Rendered HTML is walked tag by tag to leave markup —
-# and anything already inside an <a> — untouched; refs inside <code> are the common case.
-_TAG = re.compile(r"<[^>]+>")
+# to the diff line below, so it becomes a link — not inside another link; refs inside <code> are the common case.
 _FILE_REF = re.compile(
     r"(?<![\w/.\-])"                                        # not mid-path, mid-URL or mid-word
     r"((?:[\w.+\-]+/)*[\w+\-]+(?:\.[\w+\-]+)*\.[A-Za-z]\w{0,9})"  # a/b/file.ext (at least one dot, alpha extension)
@@ -50,17 +93,4 @@ def _file_ref_anchor(m: re.Match) -> str:
 
 
 def link_file_refs(html: str) -> str:
-    out, pos, in_link = [], 0, False
-    for tag in _TAG.finditer(html):
-        chunk = html[pos:tag.start()]
-        out.append(chunk if in_link else _FILE_REF.sub(_file_ref_anchor, chunk))
-        out.append(tag.group())
-        lowered = tag.group().lower()
-        if lowered.startswith("<a ") or lowered == "<a>":
-            in_link = True
-        elif lowered.startswith("</a"):
-            in_link = False
-        pos = tag.end()
-    tail = html[pos:]
-    out.append(tail if in_link else _FILE_REF.sub(_file_ref_anchor, tail))
-    return "".join(out)
+    return _texts(html, lambda text, href: text if href is not None else _FILE_REF.sub(_file_ref_anchor, text))
