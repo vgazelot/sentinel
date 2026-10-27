@@ -148,7 +148,7 @@ class GrafanaWatcher(_Grafana):
 # a rule whose query returns nothing, or fails, fires under these names, its own in `rulename`
 NO_RESULT = {"DatasourceNoData": "no data", "DatasourceError": "query failed"}
 # labels every alert carries: the others tell apart the series of one rule firing on several
-SHARED = {"alertname", "rulename", "grafana_folder"}
+SHARED = {"alertname", "rulename", "grafana_folder", "severity", "datasource_uid", "ref_id"}
 
 
 class GrafanaAlertsWatcher(_Grafana):
@@ -170,6 +170,7 @@ class GrafanaAlertsWatcher(_Grafana):
             if base == self.url:
                 self.links.setdefault(uid, link)
         self._dashboards: dict[str, tuple[str, dict[str, str]]] = {}  # uid → title, {panel id: title}
+        self._missed: set[tuple[str, str | None]] = set()  # panels read for and not found: not read again
 
     def fetch(self) -> list[WatchedItem]:
         self._https()
@@ -209,7 +210,7 @@ class GrafanaAlertsWatcher(_Grafana):
         """Its title and panels' titles, read again when an alert names a panel it does not know. Unreadable: the
         alert is still an item, named without them."""
         known = self._dashboards.get(uid)
-        if known and panel_id in known[1]:
+        if known and (panel_id in known[1] or (uid, panel_id) in self._missed):
             return known
         try:
             r = s.get(f"{self.url}/api/dashboards/uid/{uid}", timeout=30)
@@ -219,4 +220,6 @@ class GrafanaAlertsWatcher(_Grafana):
             log.info("grafana alerts: dashboard %s unread: %s", uid, e)
             return known or (uid, {})
         self._dashboards[uid] = (d.get("title", uid), {str(p.get("id")): p.get("title", "") for p in quart.panels(d)})
+        if panel_id not in self._dashboards[uid][1]:
+            self._missed.add((uid, panel_id))
         return self._dashboards[uid]

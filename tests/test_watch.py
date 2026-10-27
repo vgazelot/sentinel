@@ -105,6 +105,11 @@ class ZabbixTest(SentinelTest):
         self.assertEqual(post.bodies[0]["params"]["severities"], [0, 1, 2, 3, 4, 5])
         self.assertEqual([(i.external_id, i.severity) for i in items], [("1", "information")])
         self.assertEqual(sorted(post.bodies[1]["params"]["triggerids"]), ["t1", "t2"], "below min_severity and not named: never read")
+        post = rpc({"problem.get": problems[:1]})
+        post.triggers = [[{"triggerid": "t1"}], [{"triggerid": "t1", "hosts": [{"host": "kafka-1"}]}]]
+        with mock.patch("requests.post", side_effect=post):
+            self.assertEqual(len(self.watcher(quiet=["has no activity"], push_always=["ping has no activity"]).fetch()), 1,
+                             "named both noise and push_always: pushed")
 
     def test_problems_at_push_severity_become_items(self):
         import quart
@@ -379,6 +384,11 @@ class GrafanaAlertsTest(SentinelTest):
             self.w.fetch()
         self.assertEqual(item.title, "Pulled too low — no data")
         self.assertEqual(self.dashboard_reads, 1, "the panels' titles are read once")
+        self.alerts[0]["annotations"]["__panelId__"] = "99"
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            self.w.fetch()
+            self.w.fetch()
+        self.assertEqual(self.dashboard_reads, 2, "a panel it does not have is looked for once")
 
     def test_an_unreadable_dashboard_does_not_hold_the_alert_back(self):
         self.dashboard_down = True

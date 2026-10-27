@@ -73,6 +73,7 @@ def open_story(epic_id: int, name: str, description: str, owner_id: str, label: 
     that comes back lands on the ticket it already has. {id, url}"""
     if not owner_id:
         raise PermissionError("no Shortcut member to own the ticket")
+    name = name[:512]
     types = _states()
     for s in _get(f"/epics/{epic_id}/stories"):
         if (s["name"] == name and owner_id in (s.get("owner_ids") or []) and not s.get("archived")
@@ -82,7 +83,7 @@ def open_story(epic_id: int, name: str, description: str, owner_id: str, label: 
     flow = next(w for w in _get("/workflows") if w["id"] == _get(f"/groups/{team}")["default_workflow_id"])
     started = min((s for s in flow["states"] if s["type"] == "started"), key=lambda s: s["position"])
     r = requests.post(f"{API}/stories", headers={"Shortcut-Token": config.SHORTCUT_API_TOKEN}, timeout=25, json={
-        "name": name[:512], "description": description, "epic_id": epic_id, "group_id": team, "owner_ids": [owner_id],
+        "name": name, "description": description, "epic_id": epic_id, "group_id": team, "owner_ids": [owner_id],
         "workflow_state_id": started["id"], "labels": [{"name": label}] if label else []})
     r.raise_for_status()
     return {"id": r.json()["id"], "url": r.json()["app_url"]}

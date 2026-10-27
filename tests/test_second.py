@@ -189,6 +189,13 @@ class SecondTest(SecondBase):
         self.assertIn("logrotate en échec", comment.call_args.args[1])
         [job] = self.jobs()
         self.assertEqual(job["story"], "sc-4321")
+        import db
+        import second
+
+        db.set_watcher_state("cycle", "data", json.dumps({"label": "Team-2026-C5", "big_rocks": [], "run": {"label": "RUN", "epics": [
+            {"id": 77, "stories": [story(4321, "2026-10-20T08:00:00Z")]}]}}))
+        second.tick()
+        self.assertEqual([r["kind"] for r in self.jobs()], ["watch"], "an alert's ticket is not a stalled ticket")
         detail = self.client.get(f"/partials/item/{job['item_id']}").get_data(as_text=True)
         self.assertIn('href="https://app.shortcut.com/acme/story/4321"', detail)
 

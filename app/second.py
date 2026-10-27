@@ -186,10 +186,12 @@ def _discover(cfg: dict, live: list[dict], now: datetime):
     cutoff = (now - timedelta(days=cfg["stuck_days"])).strftime("%Y-%m-%dT%H:%M:%SZ")
     posted = {r["story"]: r["posted_at"] for r in _jobs("kind = 'stuck' AND posted_at IS NOT NULL ORDER BY id")}
     known = {(r["subject"], r["fingerprint"]) for r in _jobs("kind = 'stuck'")}
+    alert_tickets = {r["story"] for r in _jobs("kind = 'watch' AND story IS NOT NULL")}  # followed by their alerts
     left = int(cfg["stuck_per_day"]) - len(_jobs("kind = 'stuck' AND queued_at >= ?", _day_start(now)))
     for st in sorted(_mine_started(data), key=lambda s: s["updated_at"]):  # the longest stalled first
         key = f"sc-{st['id']}"
-        if key in at_work or st["updated_at"] > cutoff or posted.get(key) == st["updated_at"] or (key, st["updated_at"]) in known:
+        if (key in at_work or key in alert_tickets or st["updated_at"] > cutoff or posted.get(key) == st["updated_at"]
+                or (key, st["updated_at"]) in known):
             continue
         if left <= 0:
             break
@@ -589,8 +591,8 @@ def _file_alert(job: dict):
         owner = shortcut.member_id((config.load().get("cycle") or {}).get("shortcut_member", ""))
         story = shortcut.open_story(epic_id, row["title"], f"{_field(p.get('source')).capitalize()} alert since {since}: {row['url']}",
                                     owner, data.get("label", ""))
-        after = shortcut.comment(story["id"], f"Second — read-only look at this alert:\n\n{job['report']}", owner)
-        _set(job["id"], story=f"sc-{story['id']}", posted_at=after, meta=json.dumps({**_meta(job), "story_url": story["url"]}))
+        _set(job["id"], story=f"sc-{story['id']}", meta=json.dumps({**_meta(job), "story_url": story["url"]}))
+        _set(job["id"], posted_at=shortcut.comment(story["id"], f"Second — read-only look at this alert:\n\n{job['report']}", owner))
     except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError, StopIteration) as e:
         _set(job["id"], error=f"no Run ticket: {e}")
 
@@ -680,7 +682,7 @@ def _comment(job: dict, meta: dict, what: str):
     """On the PR's ticket (`sc-N` in its branch, yours only): what the fix did — pushed, or why it changed nothing."""
     if not job.get("story") or not job.get("report"):
         return
-    held = "looks like it holds a secret" if SECRETISH.search(job["report"]) else "quotes a private message" if PRIVATE.search(job["report"]) else ""
+    held = _unpostable(job["report"])
     if held:
         _set(job["id"], error=f"not commented on {job['story']}: the answer {held}")
         return
