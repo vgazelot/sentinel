@@ -361,6 +361,7 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .seg button:hover { color: var(--text); }
 #list:not(.s-live) [data-filter="all"], #list.s-live [data-filter="live"] { background: var(--pane-3); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
 .list-head [data-dock] { margin-left: auto; }
+.s-new svg { display: none; }
 /* New: where the session goes, a choice of two */
 .s-under { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 12px; font-size: 12.5px; }
 .s-under .seg { margin-left: 0; flex-wrap: wrap; }
@@ -447,7 +448,11 @@ details > summary.card-head::-webkit-details-marker { display: none; }
     .app.s-focus #list .it .m { display: none; }
     .app.s-focus.s-dock > .list > * { min-width: 0; }
     .app.s-focus.s-dock #list :is(.list-head h1, .list-head [data-overview], .hints, .proj-head, .s-secact, .s-hint, .s-addsec, .it .t, .it .tm) { display: none; }
-    .app.s-focus.s-dock #list .list-head { justify-content: center; padding: 12px 0 10px; }
+    .app.s-focus.s-dock #list .list-head { flex-direction: column; gap: 6px; padding: 12px 0 10px; }
+    .app.s-focus.s-dock #list .list-head [data-dock] { margin-left: 0; }
+    .app.s-focus.s-dock .s-new { width: 28px; padding: 0; }
+    .app.s-focus.s-dock .s-new span { display: none; }
+    .app.s-focus.s-dock .s-new svg { display: block; }
     .app.s-focus.s-dock #list .scroll { padding: 0 6px 12px; }
     .app.s-focus.s-dock #list .proj { background: none; box-shadow: none; border-radius: 0; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
     .app.s-focus.s-dock #list .proj-in { padding: 0; }
@@ -478,6 +483,17 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .b-slot.on { box-shadow: 0 0 0 1px rgba(87, 193, 255, 0.45), 0 20px 50px rgba(0, 0, 0, 0.45); }
 .b-slot:is(.entering, .leaving) { opacity: 0; transform: scale(0.985); }
 .b-slot.leaving { pointer-events: none; }
+.b-slot.away { display: none; }
+/* the boards' numbers above it, a dot on one whose session waits for you */
+.b-pages { display: flex; align-items: center; gap: 2px; flex: none; margin-bottom: 8px; }
+.s-work:not(.s-board) > .b-pages { margin: 0; padding: 10px 12px 0; }
+.b-pages[hidden] { display: none; }
+.b-pages button { position: relative; display: grid; place-items: center; min-width: 26px; height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: none; font: inherit; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text-3); cursor: pointer; }
+.b-pages button:hover { background: var(--pane-2); color: var(--text); }
+.b-pages button.on { background: var(--pane-3); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px var(--line); }
+.b-pages button:disabled { background: none; color: var(--text-3); opacity: 0.4; cursor: default; }
+.b-pages svg { width: 12px; height: 12px; }
+.b-pages i { position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue); }
 .b-head { display: flex; align-items: center; gap: 8px; height: 40px; flex: none; padding: 0 6px 0 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--text-3); user-select: none; touch-action: none; cursor: grab; }
 .b-info { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .b-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-2); }
@@ -512,3 +528,5 @@ body.s-dragging, body.s-dragging * { cursor: grabbing !important; }
 .where svg { width: 15px; height: 15px; stroke: var(--text-3); stroke-width: 1; }
 .where .f { fill: var(--text-2); stroke: none; }
 .where .on .f { fill: var(--blue); }
+.where b { font: 600 10.5px var(--mono); color: var(--text-3); }
+.it:not(.on-board) .where svg { opacity: 0.55; }

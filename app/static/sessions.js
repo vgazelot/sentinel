@@ -1,7 +1,7 @@
 // Sessions: every ticket by big rock to choose, live sessions to work in — on the board (static/board.js). Clicking a
-// session (or ⏎ on it) is focus: the sidebar folds into a rail, the list keeps the live sessions or folds into a column
-// of icons (⌥0); Esc or the grid button goes back. The layout is classes on .app and #list; the list, polled, is
-// re-dressed after each swap.
+// session (or ⏎ on it), or in a terminal, is focus: the sidebar folds into a rail, the list keeps the live sessions or
+// folds into a column of icons (⌥0); Esc, the grid button or a ticket goes back — New leaves it as it is. The layout is
+// classes on .app and #list; the list, polled, is re-dressed after each swap.
 (() => {
     const app = document.querySelector('.app');
     const list = document.getElementById('list');
@@ -85,6 +85,7 @@
         mark();
     });
     document.addEventListener('select-key', (e) => { wantFocus = e.detail.key; });
+    document.addEventListener('terminal-chosen', () => focus(true));
 
     document.addEventListener('click', (e) => {
         const t = e.target;
@@ -101,8 +102,8 @@
         }
         const filter = t.closest('[data-filter]');
         if (filter) { save('filter', filter.dataset.filter); dress(); mark(false); return; }
-        if (t.closest('[data-unselect]')) selectedKey = null;  // the pane is New's now: a × on the old one must not take it
-        if (t.closest('[data-overview], [data-unselect]')) { focus(false); return; }
+        if (t.closest('[data-unselect]')) { selectedKey = null; mark(); }  // the pane is New's now: a × on the old one must not take it
+        if (t.closest('[data-overview]')) { focus(false); return; }
         if (t.closest('[data-dock]')) toggleDock();
     });
 
@@ -199,7 +200,7 @@
     document.addEventListener('htmx:afterSettle', (e) => {
         if (e.detail.target !== list) return;
         // the session worked in has ended — not a bridge that failed once, which lists nothing for a poll
-        const gone = !list.querySelector(`#rows .it[data-key="${CSS.escape(selectedKey || '')}"]`);
+        const gone = selectedKey && !list.querySelector(`#rows .it[data-key="${CSS.escape(selectedKey)}"]`);
         if (app.classList.contains('s-focus') && gone && !list.querySelector('.s-error')) focus(false);
     });
     window.addEventListener('resize', () => mark(false));

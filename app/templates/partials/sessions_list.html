@@ -42,7 +42,7 @@
         <button type="button" data-filter="all">All<b>{{ n.all }}</b></button>
     </div>
     <button type="button" class="icon-btn s-focus-only" data-dock title="Fold the list (⌥0)"><svg><use href="#i-panel"/></svg></button>
-    <button type="button" class="btn small s-overview-only" data-unselect hx-get="/partials/session?key=new" hx-target="#detail" title="Claude Code on a new task, in a console here">New</button>
+    <button type="button" class="btn small s-new" data-unselect hx-get="/partials/session?key=new" hx-target="#detail" title="Claude Code on a new task, in a console here"><svg><use href="#i-plus"/></svg><span>New</span></button>
 </header>
 {% if error %}<div class="notice bad s-error">{{ error }}</div>{% endif %}
 <div class="scroll" id="rows">
