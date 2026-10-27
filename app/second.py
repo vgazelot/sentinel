@@ -13,7 +13,11 @@ a push after a few minutes). Sentinel decides what to take up and when, and file
   fix     a PR of yours waiting `fix_minutes` on something it can do — conflicts, a review's asks, red CI — → made in a
           worktree of the branch (the bridge's, never your clones), where its guard lets it edit and commit; once it
           answered, Sentinel checks GitHub still shows the head it started from and pushes: a draft at once, a PR under
-          review on your click (an inbox row, lane fix). A rebase is pushed leased on that head
+          review on your click (an inbox row, lane fix). A rebase is pushed leased on that head. What already waited
+          when fixes were turned on goes `stock_per_day` PRs a weekday, the oldest first
+
+A plan or a fix may end with replies for GitHub — on a review thread, on a pull request's conversation —: each shows
+with a Post button, and nothing is posted without your click.
 
 A job is one console per (kind, subject, fingerprint): an alert occurrence, a ticket at a given update, a day. Its
 answer is the session's last text (bridge `/sessions/answer`), read once the session is idle. At most `concurrency`
@@ -39,6 +43,7 @@ import cycle
 import db
 import engine
 import github
+import github_pr
 import my_prs
 import sessions
 import shortcut
@@ -53,6 +58,7 @@ FIX_RETRY_MINUTES = 30  # a fix that could not start (a clone refused, the bridg
 FIX_SEEN_KEEP_MINUTES = 15  # a PR the search dropped for a poll keeps the clock of what it waits on
 PREPARE_MINUTES = 30  # a worktree still not ready after this (Sentinel restarted meanwhile): the fix failed
 STORY_IN_BRANCH = re.compile(r"(?<![a-z0-9])sc-(\d{3,7})(?![0-9])")
+HHMM = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
 DONE_KEEP_MINUTES = 60  # a console answered this long ago, nobody in it: ended
 MAX_MATERIAL = 8000
 # what a token looks like: an answer holding one is not posted — a ticket comment is read by others, and a comment
@@ -62,6 +68,11 @@ PRIVATE = re.compile(r"slack\.com/archives/[DG][A-Z0-9]{6,}|mail\.google\.com|\b
 SECRETISH = re.compile(r"xox[abprs]-[\w-]{10,}|gh[opsu]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|sk-ant-[\w-]{20,}"
                        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bSCW[A-Z0-9]{17}\b"
                        r"|(?i:(?:api[_-]?key|app[_-]?key|token|secret|password|passwd)[\"']?\s*[:=]\s*[\"']?[^\s\"']{12,})")
+# a reply drafted for GitHub, the link it answers after `reply`: shown with a Post button, posted on your click only
+REPLY = re.compile(r"^(`{3,})reply[ \t]+(\S+)[ \t]*\n(.*?)\n\1[ \t]*$", re.M | re.S)  # closed by as many backticks
+TARGET = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)/?(?:#(?:discussion_r(\d+)|issuecomment-\d+|pullrequestreview-\d+))?")
+MAX_REPLY = 65536  # GitHub's longest comment
+_posting = threading.Lock()  # a double click posts once
 
 FIXING = ("You are the Second, working unattended for {who} in a worktree of their pull request: you may read as anywhere "
           "else, edit the files of this worktree and commit in it; anything else is refused — never push: Sentinel pushes "
@@ -74,6 +85,12 @@ READ_ONLY = ("You are the Second, working unattended for {who}: read-only. You m
              "pull requests and run read-only commands (ssh included); anything else is refused, so do not attempt it "
              "— write it down as a command for them to run. Answer in {lang}, terse, like an on-call "
              "sysadmin: no intro, no conclusion, one fact per line.")
+REPLIES = ("A reply to post on GitHub goes in a block of its own, after the answer, the link it answers after `reply`: "
+           "a review thread's (https://github.com/<owner>/<repo>/pull/<n>#discussion_r<id>, the html_url `gh api "
+           "repos/<owner>/<repo>/pulls/<n>/comments` gives), or the pull request's for its conversation:\n"
+           "```reply <link>\n<the reply>\n```\n"
+           "(four backticks around it when the reply holds a code block). Nothing is posted without their click. Write it in the thread's language, plain words, short sentences, like a "
+           "colleague: no list, no long justification; a change you made names its commit.")
 
 PROMPTS = {
     "watch": """{read_only}
@@ -102,12 +119,20 @@ an email): say "a conversation with <name>" instead. Ten lines at most:
 {data}""",
     "plan": """{read_only}
 
-It is {date}, the start of their day: plan it. Below is what Sentinel knows — what waits on them, their tickets, what
-the Second found on the stuck ones. Read more where it helps (the tickets, the pull requests, their calendar if you
-can). Then answer:
-- the three things to do today, in order, each on one line: what, why now, the link
+It is {date}, the start of their day: plan it, then take each thing as far as you can, up to its last click. Below is
+what Sentinel knows — what waits on them, their tickets, what the Second found on the stuck ones, the fixes it takes
+up today. Read more where it helps: the tickets, the pull requests, their calendar if you can, and their notes
+(Claude's memory, ~/.claude/projects/*/memory/), which hold decisions newer than the tickets.
+For each of the three things to do today, follow it to what really blocks it — a pull request stacked on another one
+(its base is that one's branch), a thread or a question waiting on them, a decision in their notes that changed it —
+then prepare what clears it: a reply for each thread or question waiting on them, the exact commands for anything that
+writes (they run them: one line each, nothing left to fill in), a two-line message for a colleague when someone else
+has to act. A pull request a fix of the Second takes up today is left to it: name the fix.
+Then answer:
+- the three things to do today, in order: what, why now, the link, then what you prepared for it
 - what waits on others, one line each, if anything
 - what can wait, in one line
+{replies}
 
 {data}""",
     "fix": """{read_only}
@@ -118,17 +143,22 @@ do what it waits on, nothing more.
   `git rebase --continue`
 - a review's asks: read them (`gh pr view {number} -R {repo} --comments`, `gh api repos/{repo}/pulls/{number}/comments`)
   and do what each open thread asks — an earlier commit may have done some already, check the code first; one you
-  disagree with: leave it and say why
+  disagree with: leave it and say why; one whose last word is theirs waits on the reviewer: leave it alone. Then a
+  reply for each thread and each review you took up: what changed and in which commit, or the answer to its question,
+  or why not
 - red CI: read the failed jobs (`gh pr checks {number} -R {repo}`, `gh run view <run id> -R {repo} --log-failed`) and
   fix the cause when it is in this pull request; when it comes from elsewhere, change nothing and say where
+- their notes (Claude's memory, ~/.claude/projects/*/memory/) may say this pull request was replaced or dropped: then
+  change nothing and say so
 Edit with the file tools; commit with `git add` and `git commit -m "<type>(<scope>): <what>"` — Conventional Commits,
 the style of the branch's own commits, no co-author or assistant mention —, one commit per thing fixed.
 Before answering, {review}.
-Then answer, ten lines at most:
+Then answer, ten lines at most before the replies:
 - first line: what you fixed, in one sentence — or why you changed nothing
 - each commit, one line
 - what the read of your diff found, and what you changed after it
 - what is left to them, if anything
+{replies}
 
 {data}""",
 }
@@ -147,6 +177,7 @@ def tick():
     if error:  # the bridge away: nothing to start, nothing to read
         return
     now = datetime.now(timezone.utc)
+    _release(cfg, now)  # before the plan: it names what the fixes take up today
     _discover(cfg, live, now)
     _fixes(cfg, live, now)
     _follow(cfg, live)
@@ -198,7 +229,18 @@ def _day_start(now: datetime) -> str:
 
 def _plan_day(cfg: dict, now: datetime) -> str:
     """Today (local) once `plan_at` has passed on a weekday; '' otherwise or when off."""
-    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(cfg["plan_at"]).strip())
+    return _weekday(now, cfg["plan_at"])
+
+
+def _stock_day(cfg: dict, now: datetime) -> str:
+    """Today once the stock may go: weekdays from the plan's hour, 09:00 without a plan."""
+    at = str(cfg["plan_at"]).strip()
+    return _weekday(now, at if HHMM.fullmatch(at) else "09:00")
+
+
+def _weekday(now: datetime, at: str) -> str:
+    """Today (local) once `at` (HH:MM) has passed on a weekday; '' otherwise, or when `at` is no time."""
+    m = HHMM.fullmatch(str(at).strip())
     local = now.astimezone(ZoneInfo(config.TZ))
     if not m or local.weekday() > 4 or (local.hour, local.minute) < (int(m.group(1)), int(m.group(2))):
         return ""
@@ -235,6 +277,32 @@ def _console_name(pr: dict, nth: int) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", pr["repo"].split("/")[-1].lower()).strip("-")
     tail = f"-{pr['number']}-{nth}"
     return f"second-{slug[:48 - len('second-') - len(tail)].strip('-')}{tail}"
+
+
+def _release(cfg: dict, now: datetime):
+    """The stock — what already waited when fixes were turned on — goes `stock_per_day` PRs a weekday from the plan's
+    hour, the oldest first: their tokens leave the baseline, a fix takes them up like any other."""
+    state = db.watcher_states().get("second", {})
+    day = _stock_day(cfg, now)
+    if float(cfg["fix_minutes"] or 0) <= 0 or not state.get("fix_seeded") or not day:
+        return
+    released = json.loads(state.get("stock_released") or "{}")  # subject → the day it went
+    left = int(cfg["stock_per_day"]) - sum(1 for d in released.values() if d == day)
+    baseline = set(json.loads(state.get("fix_baseline") or "[]"))
+    if left <= 0 or not baseline:
+        return
+    stock = []
+    for pr in sorted(my_prs.load()["prs"], key=lambda p: p.get("created_at") or ""):
+        tokens = {t for ts in _asks(pr).values() for t in ts} & baseline
+        if tokens and not pr.get("cross") and pr.get("head_sha") and pr.get("base"):
+            stock.append((f"{pr['repo']}#{pr['number']}", tokens))
+    if not stock:
+        return
+    for subject, tokens in stock[:left]:
+        baseline -= tokens
+        released[subject] = day
+    db.set_watcher_state("second", "fix_baseline", json.dumps(sorted(baseline)))
+    db.set_watcher_state("second", "stock_released", json.dumps(released))
 
 
 def _fixes(cfg: dict, live: list[dict], now: datetime):
@@ -367,9 +435,13 @@ def _plan_prompt(data: dict, cfg: dict, day: str) -> str:
                for e in epics for s in e["stories"] if s["mine"]][:30]
     found = [f"- {r['subject']}: {_field((r['report'] or '').strip().splitlines()[0] if r['report'] else '')}"
              for r in _jobs("kind = 'stuck' AND state = 'done' AND finished_at >= ? ORDER BY id DESC", db.ago(3 * 1440))]
+    released = json.loads(db.watcher_states().get("second", {}).get("stock_released") or "{}")
+    fixes = sorted({r["subject"] for r in _jobs("kind = 'fix' AND queued_at >= ?", db.ago(1440))}
+                   | {s for s, d in released.items() if d == day})
     text = "\n".join(["Waiting on them in Sentinel:", *(waiting or ["- nothing"]), "", "Their tickets:", *(tickets or ["- none"]),
-                      "", "The Second on their stuck tickets:", *(found or ["- nothing"])])
-    return _prompt("plan", cfg, text, date=day)
+                      "", "The Second on their stuck tickets:", *(found or ["- nothing"]),
+                      "", "Pull requests the Second's fixes take up today:", *([f"- {s}" for s in fixes] or ["- none"])])
+    return _prompt("plan", cfg, text, date=day, replies=REPLIES)
 
 
 def _fix_prompt(pr: dict, causes: list[str], cfg: dict) -> str:
@@ -386,7 +458,7 @@ def _fix_prompt(pr: dict, causes: list[str], cfg: dict) -> str:
     fixing = FIXING.format(who=cfg.get("who") or "the person you work for", lang=cfg["lang"])
     return template.format(read_only=fixing, data=_fence(data[:MAX_MATERIAL]), lang=cfg["lang"], pr=f"{pr['repo']}#{pr['number']}",
                            causes=", ".join(said[c] for c in causes), head=head, branch=pr["branch"], base=pr["base"],
-                           number=pr["number"], repo=pr["repo"], review=review)
+                           number=pr["number"], repo=pr["repo"], review=review, replies=REPLIES)
 
 
 # --- Running them -----------------------------------------------------------------------------------------------
@@ -495,15 +567,16 @@ def _deliver(job: dict):
             return
         try:
             owner = shortcut.member_id((config.load().get("cycle") or {}).get("shortcut_member", ""))
-            after = shortcut.comment(int(job["subject"][3:]), f"Second — read-only look at this stalled ticket:\n\n{job['report']}", owner)
+            after = shortcut.comment(int(job["subject"][3:]), f"Second — read-only look at this stalled ticket:\n\n{text(job['report'])}", owner)
             _set(job["id"], posted_at=after)
         except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError) as e:
             _set(job["id"], error=f"not posted on {job['subject']}: {e}")
     elif job["kind"] == "fix":
         _fix_done(job)
     elif job["kind"] == "plan":
+        _set(job["id"], meta=json.dumps(_meta(job) | {"replies": _replies(job["report"], _answerable())}))
         # its first line, without the markdown, is the push
-        lines = [re.sub(r"\*\*|__|`|^#+\s*", "", line).strip("-* :").strip() for line in job["report"].splitlines() if line.strip()]
+        lines = [re.sub(r"\*\*|__|`|^#+\s*", "", line).strip("-* :").strip() for line in text(job["report"]).splitlines() if line.strip()]
         if not db.watcher_states().get(PLAN, {}).get("seeded"):  # a plan is news, the first one too
             db.set_watcher_state(PLAN, "seeded", db.now())
         engine.process(PLAN, [WatchedItem(
@@ -518,11 +591,11 @@ def _meta(job) -> dict:
 
 def _fix_done(job: dict):
     """The fix answered: what its worktree holds, then a draft pushed at once; a PR under review waits for your click."""
-    meta = _meta(job)
+    meta = _meta(job) | {"replies": _replies(job["report"], {job["subject"].lower()})}
     try:
         state = console.fix_state(job["console"])
     except (requests.RequestException, RuntimeError, LookupError, ValueError) as e:
-        _set(job["id"], error=f"its worktree could not be read: {e}")
+        _set(job["id"], error=f"its worktree could not be read: {e}", meta=json.dumps(meta))
         return
     meta["result"] = _result(state)
     _set(job["id"], meta=json.dumps(meta))
@@ -606,7 +679,7 @@ def _comment(job: dict, meta: dict, what: str):
             else f"Second — looked at {pr}, changed nothing:")
     try:
         owner = shortcut.member_id((config.load().get("cycle") or {}).get("shortcut_member", ""))
-        shortcut.comment(int(job["story"][3:]), f"{head}\n\n{job['report']}\n\n{meta['url']}", owner)
+        shortcut.comment(int(job["story"][3:]), f"{head}\n\n{text(job['report'])}\n\n{meta['url']}", owner)
     except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError) as e:
         _set(job["id"], error=f"not commented on {job['story']}: {e}")
 
@@ -624,7 +697,8 @@ def _fix_rows():
         result = meta.get("result") or {}
         if not pr or pr.get("head_sha") not in (meta.get("head"), meta.get("pushed")) or (meta.get("removed") and not meta.get("pushed")):
             continue  # gone, overtaken, or kept past FIX_KEEP_DAYS without a push: nothing left to push
-        first = next((line.strip("-* ").strip() for line in (j["report"] or "").splitlines() if line.strip()), "")
+        first = next((line.strip("-* ").strip() for line in text(j["report"]).splitlines() if line.strip()), "")
+        unposted = sum(1 for r in meta.get("replies") or [] if not r.get("posted_url"))
         if meta.get("pushed"):
             step, why = "pushed", f"pushed{' (rebased)' if meta.get('forced') else ''} · {first}"
         elif not result:
@@ -635,7 +709,9 @@ def _fix_rows():
             step, why = "refused", f"not pushed · {j['error'] or first}"
         else:
             step, why = "nothing", f"changed nothing · {first}"
-        urgency = "now" if step == "ready" else "quiet"
+        if unposted and step in ("pushed", "nothing"):  # its code is on GitHub, or there was none: its words wait on you
+            step, why = "reply", f"{unposted} repl{'ies' if unposted > 1 else 'y'} to post · {first}"
+        urgency = "now" if step in ("ready", "reply") else "quiet"
         items.append(WatchedItem(
             external_id=f"fix:{subject}", title=f"{subject.split('/')[-1]} — {meta.get('title', '')}", url=meta.get("url", ""),
             fingerprint=f"{j['id']}:{step}", lane="fix", urgency=urgency,
@@ -666,7 +742,8 @@ def _prune():
             continue
         except LookupError:
             pass  # a bridge without it: nothing there
-        _set(j["id"], meta=json.dumps(meta | {"removed": db.now()}))
+        with db.connect() as conn:  # in place: a reply posted while the bridge answered stays posted
+            conn.execute("UPDATE second_jobs SET meta = json_set(COALESCE(meta, '{}'), '$.removed', ?) WHERE id = ?", (db.now(), j["id"]))
 
 
 def _tidy(live: list[dict]):
@@ -688,6 +765,81 @@ def _tidy(live: list[dict]):
             _set(job["id"], ended_at=db.now())
         elif s is not None and console.last_answer(s["id"]) != job["report"]:
             _set(job["id"], ended_at="kept")  # you went on in it: yours now
+
+
+# --- Replies ----------------------------------------------------------------------------------------------------
+def text(report: str | None, kept: set[str] | None = None) -> str:
+    """An answer without its replies: what is pushed and commented. With `kept` (the links that got a Post button),
+    what the page shows: a reply left out stays in it, as text."""
+    def left_out(m):
+        return "" if kept is None or m.group(2) in kept else f"A reply for {m.group(2)}, not postable from here:\n\n{m.group(0)}"
+    return REPLY.sub(left_out, report or "").strip()
+
+
+def _replies(report: str, allowed: set[str]) -> list[dict]:
+    """The replies an answer drafted, on the pull requests it may answer on (`allowed`, lowercased: owner/repo#n, or
+    an owner — any of its pull requests)."""
+    out = []
+    for m in REPLY.finditer(report or ""):
+        t, body = TARGET.fullmatch(m.group(2)), m.group(3).strip()
+        if not t or not body or not ({f"{t.group(1)}#{t.group(2)}".lower(), t.group(1).split("/")[0].lower()} & allowed):
+            log.info("second: a reply to %s left out", m.group(2)[:200])
+            continue
+        out.append({"url": m.group(2), "repo": t.group(1), "number": int(t.group(2)),
+                    "thread": int(t.group(3)) if t.group(3) else None, "text": body[:MAX_REPLY]})
+    return out
+
+
+def _answerable() -> set[str]:
+    """Where a plan may draft replies: the organisations Sentinel watches — a thread waits on you on a PR you reviewed
+    already too —, your pull requests, and those whose review was asked of you."""
+    prs = {f"{p['repo']}#{p['number']}" for p in my_prs.load()["prs"]} | set(config.github()["orgs"])
+    for row in db.items("state != 'resolved' AND lane IN ('you', 'team')"):
+        p = json.loads(row["payload"] or "{}")
+        if p.get("repo") and p.get("number"):
+            prs.add(f"{p['repo']}#{p['number']}")
+    return {s.lower() for s in prs}
+
+
+def replies(job: dict | None) -> list[dict]:
+    """A job's replies as the page shows them, each with its index and what it waits on before it can go."""
+    if not job:
+        return []
+    meta = _meta(job)
+    result = meta.get("result")
+    wait = ("" if job["kind"] != "fix" or meta.get("pushed") or (result and not result.get("moved"))
+            else "push the fix first" if result else "its worktree was not read: its commits may not be on GitHub")
+    return [r | {"i": i, "wait": "" if r.get("posted_url") else wait} for i, r in enumerate(meta.get("replies") or [])]
+
+
+def post_reply(job_id: int, index: int, body: str) -> dict:
+    """Your click: the reply as you left it, on its thread or its pull request's conversation — the pull request still
+    open, nothing in it that looks like a token or links a private message, a fix's once its commits are on GitHub.
+    The reply as stored, its GitHub link in `posted_url`; a refusal raises."""
+    body = (body or "").strip()
+    with _posting:
+        rows = _jobs("id = ?", job_id)
+        if not rows:
+            raise LookupError("no such job")
+        r = next((x for x in replies(dict(rows[0])) if x["i"] == index), None)
+        if not r:
+            raise LookupError("no such reply")
+        if r.get("posted_url"):
+            return r
+        if r["wait"]:
+            raise ValueError(r["wait"])
+        if not body or len(body) > MAX_REPLY:
+            raise ValueError("nothing to post" if not body else "longer than GitHub takes")
+        if SECRETISH.search(body) or PRIVATE.search(body):
+            raise ValueError("it looks like it holds a secret" if SECRETISH.search(body) else "it links a private message")
+        if github.rest(f"/repos/{r['repo']}/pulls/{r['number']}").json().get("state") != "open":
+            raise ValueError("the pull request is closed")
+        posted = github_pr.comment(r["repo"], r["number"], body, reply_to=r["thread"])
+        meta = _meta(_jobs("id = ?", job_id)[0])  # as it is now: a push may have written it meanwhile
+        meta["replies"][index] |= {"text": body, "posted_url": posted.get("html_url") or r["url"], "posted_at": db.now()}
+        _set(job_id, meta=json.dumps(meta))
+        log.info("second: a reply posted on %s#%s", r["repo"], r["number"])
+        return meta["replies"][index] | {"i": index, "wait": ""}
 
 
 # --- What the pages read ----------------------------------------------------------------------------------------

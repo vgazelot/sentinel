@@ -1,4 +1,4 @@
-{% from "partials/detail_macros.html" import top, heading, prop, triage %}
+{% from "partials/detail_macros.html" import top, heading, prop, triage, replies_section %}
 {% set p = v.p %}{% set meta = job.meta_dict if job else {} %}{% set result = meta.result or {} %}
 {{ top(v.ref, 'the Second', v.url) }}
 <div class="d-body d-grid">
@@ -8,7 +8,7 @@
     {% if notice %}<div class="notice ok">{{ notice }}</div>{% endif %}
     {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
     {% if meta.held and not meta.pushed %}<div class="notice bad">A draft, yet not pushed on its own: {{ meta.held }}. Read the diff before you push.</div>{% endif %}
-    {% if job and job.report %}<div class="md d-second">{{ job.report | md | safe }}</div>{% endif %}
+    {% if job and job.report %}<div class="md d-second">{{ job | answer | md | safe }}</div>{% endif %}
     {% if result.commits %}
     <section class="d-sec">
         <h3>{{ 'Rebased onto ' ~ meta.base ~ ', its commits' if not result.ff else 'Its commits' }}</h3>
@@ -28,6 +28,7 @@
         <span class="spacer"></span>
         {{ triage(v) }}
     </div>
+    {{ replies_section(job, replies) }}
     </div>
     <aside class="d-side">
         {% call prop('Repository') %}<span class="mono">{{ v.ref }}</span>{% endcall %}

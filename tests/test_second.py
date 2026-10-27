@@ -45,6 +45,7 @@ class SecondBase(SentinelTest):
                   mock.patch("console.sessions", side_effect=lambda: [{"name": n, "attached": int(n in self.attached)} for n in self.alive]),
                   mock.patch("console.end", side_effect=lambda name: self.ended.append(name) or self.alive.discard(name)),
                   mock.patch("second._plan_day", return_value=""),
+                  mock.patch("second._stock_day", return_value=""),
                   mock.patch("second._spawn", side_effect=lambda target, *args: target(*args)),  # a fix's preparation, inline
                   mock.patch("second._bridge_ready", side_effect=lambda: self.bridge_api >= 7)):
             p.start()
@@ -270,6 +271,32 @@ class SecondTest(SecondBase):
         plan = next(i for i in data["items"] if i["lane"] == "plan")
         self.assertIn("Relancer la review", self.client.get(f"/partials/item/{plan['id']}").get_data(as_text=True))
 
+    def test_the_plan_drafts_replies_only_on_prs_it_may_answer_on(self):
+        import db
+        import second
+
+        db.set_watcher_state("my_prs", "data", json.dumps([pr(number=7)]))
+        report = ("- Answer the port question on #7: done below\n"
+                  "````reply https://github.com/acme/infra/pull/7#discussion_r4291985105\nYes, it is fixed:\n```\n-admin-bind 127.0.0.1:19000\n```\n````\n"
+                  "```reply https://github.com/acme/other/pull/3\nA PR you reviewed already: still in your organisation.\n```\n"
+                  "```reply https://github.com/evil/elsewhere/pull/1\nNot from here.\n```")
+        with mock.patch("second._plan_day", return_value="2026-10-26"):
+            second.tick()
+            self.assertIn("```reply", self.started[0]["prompt"])
+            self.answered("second-plan-20261026", report)
+            second.tick()
+        self.assertEqual(self.pushes[0][:2], ("Today's plan", "Answer the port question on #7: done below"))
+        [job] = self.jobs()
+        r, other = second.replies(job)
+        self.assertEqual((r["repo"], r["number"], r["thread"], r["wait"]), ("acme/infra", 7, 4291985105, ""))
+        self.assertTrue(r["text"].endswith("-admin-bind 127.0.0.1:19000\n```"), "a code block in it, whole")
+        self.assertEqual((other["repo"], other["thread"]), ("acme/other", None))
+        plan = next(i for i in self.client.get("/api/summary").get_json()["items"] if i["lane"] == "plan")
+        detail = self.client.get(f"/partials/item/{plan['id']}").get_data(as_text=True)
+        self.assertEqual(detail.count(f'hx-post="/api/second/{job["id"]}/reply/'), 2)
+        self.assertIn("evil/elsewhere/pull/1, not postable from here", detail, "left out, never lost")
+        self.assertEqual(second.text(job["report"]), "- Answer the port question on #7: done below")
+
     def test_plan_time_is_local_and_on_weekdays(self):
         cfg = {"plan_at": "09:00"}
         with mock.patch("config.TZ", "Europe/Paris"):
@@ -366,12 +393,12 @@ class FixTest(SecondBase):
         seen = json.loads(db.watcher_states().get("second", {}).get("fix_seen") or "{}")
         db.set_watcher_state("second", "fix_seen", json.dumps({t: db.ago(minutes) for t in seen}))
 
-    def fixed(self, **state):
+    def fixed(self, report="Fixed the lint: a trailing space.\n- fix(x): trailing space", **state):
         """Its console answers, its worktree as given."""
         import second
 
         self.state.update(state)
-        self.answered(self.started[-1]["name"], "Fixed the lint: a trailing space.\n- fix(x): trailing space")
+        self.answered(self.started[-1]["name"], report)
         with mock.patch("shortcut.comment", return_value="2026-10-26T10:00:00Z") as comment:
             second.tick()
         return comment
@@ -459,6 +486,86 @@ class FixTest(SecondBase):
         self.assertIn("Pushed", answer.get_data(as_text=True))
         self.assertEqual(len(self.git_pushes), 1)
         self.assertEqual(second.push(row["p"]["job"]), "already pushed")
+
+    def test_a_fixs_replies_are_posted_on_your_click_once_its_commits_are_on_github(self):
+        import second
+
+        self.prs([pr(draft=False)])
+        self.github["draft"] = False
+        second.tick()
+        self.wait()
+        second.tick()
+        self.assertIn("```reply", self.started[0]["prompt"])
+        report = ("Done what the thread asked.\n- b1 fix(x): y\n"
+                  "```reply https://github.com/acme/infra/pull/12#discussion_r55\nDone in b1.\n```\n"
+                  "```reply https://github.com/acme/infra/pull/13#discussion_r56\nAnother PR.\n```")
+        self.fixed(report, moved=True, head=PUSHED, commits=["b1 fix(x): y"], diff="+x")
+        [job] = self.jobs()
+        [r] = second.replies(job)
+        self.assertEqual(r["wait"], "push the fix first", "the reply names a commit GitHub has not seen")
+        host = {"Host": "localhost:8300", "Origin": "http://localhost:8300"}
+        posted = {"html_url": "https://github.com/acme/infra/pull/12#discussion_r57"}
+        with mock.patch("github_pr.comment", return_value=posted) as post:
+            answer = self.client.post(f"/api/second/{job['id']}/reply/0", data={"body": "Done in b1."}, headers=host)
+            self.assertIn("Not posted: push the fix first", answer.get_data(as_text=True))
+            post.assert_not_called()
+            with mock.patch("shortcut.comment", return_value="2026-10-26T10:00:00Z") as comment:
+                second.push(job["id"])
+            self.assertNotIn("```reply", comment.call_args.args[1], "the ticket gets the answer, not the replies")
+            second.tick()
+            [row] = self.rows()
+            self.assertEqual((row["urgency"], row["p"]["step"]), ("now", "reply"))
+            answer = self.client.post(f"/api/second/{job['id']}/reply/0", data={"body": "token = ghp_" + "x" * 36}, headers=host)
+            self.assertIn("Not posted: it looks like it holds a secret", answer.get_data(as_text=True))
+            post.assert_not_called()
+            answer = self.client.post(f"/api/second/{job['id']}/reply/0", data={"body": "Done in b1, thanks."}, headers=host)
+            post.assert_called_once_with("acme/infra", 12, "Done in b1, thanks.", reply_to=55)
+            self.assertIn("posted", answer.get_data(as_text=True))
+            self.client.post(f"/api/second/{job['id']}/reply/0", data={"body": "again"}, headers=host)
+            post.assert_called_once()
+        second.tick()
+        [row] = self.rows()
+        self.assertEqual((row["urgency"], row["p"]["step"]), ("quiet", "pushed"))
+
+    def test_a_fixs_reply_waits_while_its_worktree_was_not_read(self):
+        import second
+
+        second.tick()
+        self.wait()
+        second.tick()
+        self.answered(self.started[-1]["name"], "Done.\n```reply https://github.com/acme/infra/pull/12#discussion_r55\nDone in b1.\n```")
+        with mock.patch("console.fix_state", side_effect=RuntimeError("bridge away")):
+            second.tick()
+        [r] = second.replies(self.jobs()[0])
+        self.assertIn("not read", r["wait"])
+        with self.assertRaises(ValueError):
+            second.post_reply(self.jobs()[0]["id"], 0, "Done in b1.")
+
+    def test_the_stock_goes_two_prs_a_weekday_the_oldest_first(self):
+        import db
+        import second
+
+        prs = [pr(number=n, head_sha=str(n) * 40, created_at=at)
+               for n, at in ((1, "2026-10-01T00:00:00Z"), (2, "2026-10-05T00:00:00Z"), (3, "2026-09-20T00:00:00Z"))]
+        self.prs(prs)
+        db.set_watcher_state("second", "fix_baseline", json.dumps([f"ci@{n * 40}" for n in "123"]))
+        for _ in range(2):
+            second.tick()
+            self.wait()
+        self.assertEqual(self.started, [], "the stock waits for its day")
+        with mock.patch("second._stock_day", return_value="2026-10-27"):
+            second.tick()
+            self.wait()
+            second.tick()
+            second.tick()
+        self.assertEqual(sorted(json.loads(self.jobs()[i]["meta"])["number"] for i in range(2)), [1, 3], "the oldest two")
+        self.assertEqual(len(self.jobs()), 2)
+        self.assertEqual(json.loads(db.watcher_states()["second"]["fix_baseline"]), ["ci@" + "2" * 40])
+        with mock.patch("second._stock_day", return_value="2026-10-28"):
+            second.tick()
+            self.wait()
+            second.tick()
+        self.assertEqual(json.loads(self.jobs()[-1]["meta"])["number"], 2, "the next day, the next one")
 
     def test_a_push_of_yours_since_and_nothing_goes(self):
         import second
@@ -687,3 +794,18 @@ class FixTest(SecondBase):
             conn.execute("UPDATE second_jobs SET meta = json_set(meta, '$.preparing_at', ?)", (db.ago(31),))
         second.tick()
         self.assertEqual(self.jobs()[0]["state"], "failed")
+
+
+class GitHubCommentTest(SentinelTest):
+    def test_a_reply_goes_to_its_threads_first_comment_on_that_pull_request_only(self):
+        import github_pr
+
+        got = {"pull_request_url": "https://api.github.com/repos/acme/infra/pulls/12", "in_reply_to_id": 40}
+        with mock.patch("github_pr._get", return_value=got), mock.patch("github_pr._post", return_value={"html_url": "u"}) as post:
+            self.assertEqual(github_pr.comment("acme/infra", 12, "hi", reply_to=41), {"html_url": "u"})
+            post.assert_called_once_with("/repos/acme/infra/pulls/12/comments/40/replies", {"body": "hi"})
+            for repo, number in (("acme/infra", 13), ("acme/infra-old", 12)):
+                with self.assertRaises(RuntimeError):
+                    github_pr.comment(repo, number, "hi", reply_to=41)
+            github_pr.comment("acme/infra", 12, "hi")
+            post.assert_called_with("/repos/acme/infra/issues/12/comments", {"body": "hi"})

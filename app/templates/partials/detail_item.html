@@ -1,5 +1,5 @@
 {% from "partials/agent_macro.html" import agent_block with context %}
-{% from "partials/detail_macros.html" import top, heading, prop, triage %}
+{% from "partials/detail_macros.html" import top, heading, prop, triage, replies_section %}
 {% set p = v.p %}
 {% set what = {'followup': {'failed': 'broke after merge', 'reverted': 'reverted after merge', 'dismissed': 'your approval was dismissed', 'stuck': 'approved, still not merged'}.get(p.kind, 'after your approval'),
                'incident': 'status page', 'watch': 'alert', 'health': 'Sentinel', 'cycle': 'cycle',
@@ -9,7 +9,8 @@
     <div class="d-main">
     {{ heading(v.headline) }}
     {% if v.lane == 'plan' %}
-    {% if job and job.report %}<div class="md d-second">{{ job.report | md | safe }}</div>{% else %}<p class="d-why">{{ p.why }}</p>{% endif %}
+    {% if job and job.report %}<div class="md d-second">{{ job | answer | md | safe }}</div>{% else %}<p class="d-why">{{ p.why }}</p>{% endif %}
+    {{ replies_section(job, replies) }}
     {% else %}
     <p class="d-why">{% if v.cleared %}Claude traced this failure to something else — not this PR.{% else %}{{ p.why or p.status or '' }}{% endif %}</p>
     {% endif %}

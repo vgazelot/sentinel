@@ -26,3 +26,30 @@
 <button type="button" class="btn" data-key="l" hx-post="/api/items/bulk" hx-vals='{"ids": "{{ ids or v.id }}", "action": "snooze"}' title="Back tomorrow at 9:00">Later <kbd>L</kbd></button>
 {% endif %}
 {%- endmacro %}
+
+{# A reply the Second drafted for GitHub: edited here, posted on the click only. #}
+{% macro reply(job_id, r, error='') -%}
+<form class="d-reply" onsubmit="return false">
+    <div class="d-reply-to"><a class="mono" href="{{ r.posted_url or r.url }}" target="_blank" rel="noopener">{{ r.repo.split('/')[-1] }}#{{ r.number }}</a>
+        <span>{{ 'review thread' if r.thread else 'conversation' }}</span>{% if r.posted_url %}<span class="tag ok">posted</span>{% endif %}</div>
+    {% if r.posted_url %}<div class="md">{{ r.text | md | safe }}</div>
+    {% else %}
+    <textarea name="body" class="field" rows="{{ [3, (r.text | length) // 90 + r.text.count('\n') + 1] | max }}">{{ r.text }}</textarea>
+    {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
+    <div class="bar">
+        <button type="button" class="btn primary" hx-post="/api/second/{{ job_id }}/reply/{{ r.i }}" hx-include="closest form"
+                hx-target="closest form" hx-swap="outerHTML" hx-disabled-elt="this"
+                {% if r.wait %}disabled title="{{ r.wait | capitalize }}"{% else %}title="Posted on GitHub as you, as it reads here"{% endif %}>Post</button>
+    </div>
+    {% endif %}
+</form>
+{%- endmacro %}
+
+{% macro replies_section(job, replies) -%}
+{% if replies %}
+<section class="d-sec">
+    <h3>Replies for GitHub</h3>
+    {% for r in replies %}{{ reply(job.id, r) }}{% endfor %}
+</section>
+{% endif %}
+{%- endmacro %}

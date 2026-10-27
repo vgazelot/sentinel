@@ -124,6 +124,12 @@ def md(value: str | None) -> str:
     return agents.render(value or "")
 
 
+@app.template_filter("answer")
+def answer(job: dict) -> str:
+    """The Second's answer without the replies shown with their own Post button."""
+    return second.text(job["report"], {r["url"] for r in second.replies(job)})
+
+
 @app.template_filter("age")
 def age(value: str | None) -> str:
     """Compact age: 35 min, 3 h, 12 d, 4 mo."""
@@ -479,7 +485,7 @@ def partial_item(item_id: int):
     runs = db.runs_for([v["subject"]])
     _clear_by_claude([v], runs)
     job = second.job(v["p"]["job"]) if v["lane"] == "plan" and v["p"].get("job") else second.for_items([v["id"]]).get(v["id"])
-    return _detail("partials/detail_item.html", v=v, runs=runs, job=job)
+    return _detail("partials/detail_item.html", v=v, runs=runs, job=job, replies=second.replies(job) if v["lane"] == "plan" else [])
 
 
 def _fix_detail(v: dict, notice: str = "", error: str = ""):
@@ -489,7 +495,7 @@ def _fix_detail(v: dict, notice: str = "", error: str = ""):
     result = (job or {}).get("meta_dict", {}).get("result") or {}
     ready = bool(job and result.get("moved") and not job["meta_dict"].get("pushed") and not job["meta_dict"].get("removed")
                  and not result.get("busy") and not result.get("dirty"))
-    return _detail("partials/detail_fix.html", v=v, job=job, ready=ready, notice=notice, error=error,
+    return _detail("partials/detail_fix.html", v=v, job=job, ready=ready, notice=notice, error=error, replies=second.replies(job),
                    console_alive=bool(job and job["console"] in console.alive()))
 
 
@@ -507,6 +513,21 @@ def api_second_push(job_id: int):
     if not row:
         return _gone()
     return _fix_detail(_view(row), notice="Pushed: GitHub runs its checks now" if said == "pushed" else said, error=failed)
+
+
+@app.post("/api/second/<int:job_id>/reply/<int:index>")
+def api_second_reply(job_id: int, index: int):
+    """Your click on a reply the Second drafted: posted as you left it, on its thread or its PR's conversation."""
+    body = request.form.get("body", "")
+    try:
+        return render_template("partials/second_reply.html", job_id=job_id, r=second.post_reply(job_id, index, body), error="")
+    except LookupError:
+        return _gone()
+    except (ValueError, RuntimeError, requests.RequestException) as e:
+        r = next((x for x in second.replies(second.job(job_id)) if x["i"] == index), None)
+        if not r:
+            return _gone()
+        return render_template("partials/second_reply.html", job_id=job_id, r=r | {"text": body or r["text"]}, error=f"Not posted: {e}")
 
 
 @app.get("/partials/group")

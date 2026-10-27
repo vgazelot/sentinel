@@ -1,4 +1,4 @@
-"""GitHub PR details (diff with line numbers, checks, reviews) + submitting a review, on demand from the dashboard."""
+"""GitHub PR details (diff with line numbers, checks, reviews) + submitting a review or a comment, on demand from the dashboard."""
 import re
 import time
 
@@ -160,6 +160,20 @@ def submit_review(repo: str, number: int, event: str, body: str = "", commit_id:
         payload["commit_id"] = commit_id
     _post(f"/repos/{repo}/pulls/{number}/reviews", payload)
     _cache.pop((repo, number), None)
+
+
+def comment(repo: str, number: int, body: str, reply_to: int | None = None) -> dict:
+    """In the review thread of comment `reply_to` (GitHub answers a thread on its first comment), else on the PR's
+    conversation. GitHub's comment back (html_url)."""
+    if reply_to is None:
+        out = _post(f"/repos/{repo}/issues/{number}/comments", {"body": body})
+    else:
+        first = _get(f"/repos/{repo}/pulls/comments/{reply_to}")
+        if str(first.get("pull_request_url", "")).lower() != f"{API}/repos/{repo}/pulls/{number}".lower():
+            raise RuntimeError("that thread belongs to another pull request")
+        out = _post(f"/repos/{repo}/pulls/{number}/comments/{first.get('in_reply_to_id') or reply_to}/replies", {"body": body})
+    _cache.pop((repo, number), None)
+    return out
 
 
 def head_sha(repo: str, number: int) -> str:
