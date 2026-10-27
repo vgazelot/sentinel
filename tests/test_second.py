@@ -142,6 +142,62 @@ class SecondTest(SecondBase):
         detail = self.client.get(f"/partials/item/{job['item_id']}").get_data(as_text=True)
         self.assertIn("Logrotate en échec", detail)
 
+    def test_a_grafana_alert_is_taken_up_too(self):
+        import db
+        import engine
+        import second
+        from watchers import WatchedItem
+
+        self.seed("grafana-alerts")
+        engine.process("grafana-alerts", [WatchedItem(
+            external_id="8cddd21bac679294", title="Pulled too low", url="https://grafana.example.net/d/abc/pipeline",
+            fingerprint="firing", severity="firing", lane="watch", urgency="now",
+            payload={"source": "grafana", "name": "Pulled too low", "dashboard": "Pipeline", "panel": "Pulled",
+                     "since": time.time() - 360, "why": "Pipeline · Pulled"})])
+        with db.connect() as conn:
+            conn.execute("UPDATE items SET first_seen = ?", (db.ago(6),))
+        second.tick()
+        [run] = self.started
+        self.assertEqual(run["name"], "grafana-8cddd21bac679294")
+        self.assertIn("Dashboard: Pipeline · Pulled", run["prompt"])
+        self.assertIn("Grafana: https://grafana.example.net/d/abc/pipeline", run["prompt"])
+
+    def answer_alert(self, text):
+        import db
+        import second
+
+        db.set_watcher_state("cycle", "data", json.dumps({"label": "Team-2026-C5", "big_rocks": [],
+                                                           "run": {"label": "RUN", "epics": [{"id": 77, "stories": []}]}}))
+        self.alert()
+        second.tick()
+        self.answered("zabbix-4821", text)
+        with mock.patch("shortcut.member_id", return_value="me-id"), \
+                mock.patch("shortcut.open_story", return_value={"id": 4321, "url": "https://app.shortcut.com/acme/story/4321"}) as open_story, \
+                mock.patch("shortcut.comment", return_value="2026-10-27T10:00:00Z") as comment:
+            second.tick()
+        return open_story, comment
+
+    def test_a_real_alert_goes_on_its_run_ticket(self):
+        open_story, comment = self.answer_alert("**Verdict: real** — logrotate en échec, /data plein.\n\n```\ndf -h /data\n```")
+        epic, name, description, owner, label = open_story.call_args.args
+        self.assertEqual((epic, name, owner, label), (77, "web-30 · /data 92 % 4821", "me-id", "Team-2026-C5"))
+        self.assertIn("Zabbix alert since", description)
+        self.assertEqual(comment.call_args.args[0], 4321)
+        self.assertIn("logrotate en échec", comment.call_args.args[1])
+        [job] = self.jobs()
+        self.assertEqual(job["story"], "sc-4321")
+        detail = self.client.get(f"/partials/item/{job['item_id']}").get_data(as_text=True)
+        self.assertIn('href="https://app.shortcut.com/acme/story/4321"', detail)
+
+    def test_noise_stays_on_the_alert(self):
+        open_story, comment = self.answer_alert("Verdict: noise — le consommateur est arrêté depuis des mois.")
+        open_story.assert_not_called()
+        comment.assert_not_called()
+
+    def test_an_answer_without_a_verdict_counts_as_real(self):
+        open_story, _ = self.answer_alert("/data plein, logrotate en échec.")
+        open_story.assert_called_once()
+
     def test_two_at_work_at_once_the_rest_waits(self):
         import second
 
@@ -687,3 +743,45 @@ class FixTest(SecondBase):
             conn.execute("UPDATE second_jobs SET meta = json_set(meta, '$.preparing_at', ?)", (db.ago(31),))
         second.tick()
         self.assertEqual(self.jobs()[0]["state"], "failed")
+
+
+class RunTicketTest(SentinelTest):
+    def setUp(self):
+        super().setUp()
+        import shortcut
+
+        shortcut._states.cache_clear()
+        self.addCleanup(shortcut._states.cache_clear)
+        self.stories = []
+
+    def get(self, path):
+        return {
+            "/workflows": [{"id": 9, "states": [{"id": 90, "type": "unstarted", "position": 1}, {"id": 92, "type": "started", "position": 3},
+                                               {"id": 91, "type": "started", "position": 2}, {"id": 93, "type": "done", "position": 4}]}],
+            "/epics/77/stories": self.stories,
+            "/epics/77": {"group_id": "team"},
+            "/groups/team": {"default_workflow_id": 9},
+        }[path]
+
+    def open_story(self):
+        import shortcut
+
+        created = mock.Mock(raise_for_status=lambda: None, json=lambda: {"id": 5, "app_url": "https://app.shortcut.com/acme/story/5"})
+        with mock.patch("shortcut._get", side_effect=self.get), mock.patch("requests.post", return_value=created) as post:
+            return shortcut.open_story(77, "web-30 · /data 92 %", "Zabbix alert", "me", "Team-2026-C5"), post
+
+    def test_a_new_ticket_is_started_and_yours_in_its_teams_workflow(self):
+        story, post = self.open_story()
+        self.assertEqual(story, {"id": 5, "url": "https://app.shortcut.com/acme/story/5"})
+        body = post.call_args.kwargs["json"]
+        self.assertEqual((body["workflow_state_id"], body["owner_ids"], body["group_id"], body["labels"]),
+                         (91, ["me"], "team", [{"name": "Team-2026-C5"}]))
+
+    def test_the_alert_back_lands_on_the_ticket_it_already_has(self):
+        def s(sid, state=91, owner="me"):
+            return {"id": sid, "name": "web-30 · /data 92 %", "app_url": f"u/{sid}", "owner_ids": [owner], "workflow_state_id": state}
+
+        self.stories = [s(1, state=93), s(2, owner="someone"), s(3)]
+        story, post = self.open_story()
+        self.assertEqual(story, {"id": 3, "url": "u/3"})
+        post.assert_not_called()

@@ -39,8 +39,8 @@ app/
 ├── lookout_sources.py   # HN, Lobsters, Reddit, GitHub trending (RSS mirror), RSS/Atom feeds, releases; public-only page reads
 ├── lookout_views.py  # Lookout page (blueprint): finds, to try, filtered out, failing sources
 ├── github_pr.py      # review detail data (numbered diff, checks, reviews) + submit_review
-├── second.py         # the Second: alerts left alone, your stalled tickets, the day's plan, reviews → read-only consoles, answers filed; fixes on your PRs in a worktree, pushed by Sentinel
-├── cycle.py · slite.py · shortcut.py   # Cycle tab; stalled big rocks → engine items (lane cycle); shortcut.comment on your stories only
+├── second.py         # the Second: alerts left alone (a real one → its Run ticket), your stalled tickets, the day's plan, reviews → read-only consoles, answers filed; fixes on your PRs in a worktree, pushed by Sentinel
+├── cycle.py · slite.py · shortcut.py   # Cycle tab; stalled big rocks → engine items (lane cycle); shortcut.comment on your stories only, open_story for an alert's Run ticket
 ├── md.py             # markdown → HTML + `path:line` → .fileref links
 └── templates/partials/  inbox_list · list_macros · detail_{review,item,group,dep,gone,fix} · detail_macros · agent_macro · cycle · watchers · watch · lookout · sessions_list · session_{detail,new}
 contrib/claude-bridge/   bridge.py (host, launchd) — modes, prompts, toolsets; consoles (tmux -L sentinel + tmux.conf, tickets, WebSocket); live sessions (claude agents + the advisor's files)

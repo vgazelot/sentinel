@@ -3,9 +3,10 @@ board — read-only: the bridge starts it `--restricted`, with manual permission
 (BRIDGE_SECOND_COMMAND), so anything but reading waits for you, like any session asking a permission (an inbox row,
 a push after a few minutes). Sentinel decides what to take up and when, and files the answer where it belongs.
 
-  watch   a Zabbix alert nobody acknowledged for `watch_minutes` → a diagnosis on the alert. Its console is the one
-          Watch's Claude button opens (`zabbix-<event>`): clicking it lands on the Second's work, and an alert you
-          opened yourself is left to you
+  watch   a monitoring alert (Zabbix, Grafana) nobody acknowledged for `watch_minutes` (0: at once) → a diagnosis on
+          the alert, opening with a verdict; a real one goes on a Run ticket: the open one of that alert, else a new one
+          in the cycle's Run epic, started and yours. A Zabbix alert's console is the one Watch's Claude button opens
+          (`zabbix-<event>`): clicking it lands on the Second's work, and an alert you opened yourself is left to you
   stuck   a started ticket of yours untouched for `stuck_days`, no session on it → what blocks it, commented on the
           ticket (yours only); once per stall: the Second's own comment does not count as activity
   plan    weekdays at `plan_at` → the day's plan: an inbox row (lane plan, source second_plan), pushed once
@@ -75,13 +76,20 @@ READ_ONLY = ("You are the Second, working unattended for {who}: read-only. You m
              "— write it down as a command for them to run. Answer in {lang}, terse, like an on-call "
              "sysadmin: no intro, no conclusion, one fact per line.")
 
+# the sources whose alerts it takes up → their consoles' prefix
+ALERTS = {"zabbix": "zabbix", "grafana-alerts": "grafana"}
+VERDICT = re.compile(r"\W*verdict\W*(real|noise|resolved)\b", re.I)
+
 PROMPTS = {
     "watch": """{read_only}
 
-A monitoring alert has been open for {age}, nobody acknowledged it: find what happens and why. Look at the metric and
-its recent history, the host, its logs, what changed lately (deploys, configuration), and the same alert in the past
-(tickets, notes, memory). Then answer:
-- first line: the verdict in one sentence — the cause, or what you could not establish
+A monitoring alert has been open for {age}: find what happens and why. Look at the metric and its recent history, the
+host, its logs, what changed lately (deploys, maintenance announced, configuration), and the same alert in the past
+(tickets, notes, memory). A real one's answer is posted as is on a ticket the team reads: never quote or link a private
+message (a direct message, an email), say "a conversation with <name>" instead. Then answer:
+- first line: `Verdict: real` (something is broken or breaking), `Verdict: noise` (a false alarm, nothing broke) or
+  `Verdict: resolved` (it recovered by itself, nothing left to do), then the cause in one sentence, or what you could
+  not establish
 - what you saw, each with the command or query that showed it
 - the commands for them to run, in order, each followed by the check that tells it worked
 - what to watch after
@@ -161,9 +169,10 @@ def tick():
 def _discover(cfg: dict, live: list[dict], now: datetime):
     alive = console.alive()
     # the oldest alert first
-    for row in reversed(db.items("state = 'pending' AND lane = 'watch' AND watcher = 'zabbix' AND first_seen <= ? AND first_seen >= ?",
-                                 db.ago(cfg["watch_minutes"]), db.ago(cfg["watch_hours"] * 60))):
-        name = f"zabbix-{row['external_id']}"
+    for row in reversed(db.items(f"state = 'pending' AND lane = 'watch' AND watcher IN ({','.join('?' * len(ALERTS))}) "
+                                 "AND first_seen <= ? AND first_seen >= ?",
+                                 *ALERTS, db.ago(cfg["watch_minutes"]), db.ago(cfg["watch_hours"] * 60))):
+        name = f"{ALERTS[row['watcher']]}-{row['external_id']}"
         if name not in alive:  # one you opened from Watch is yours
             _queue("watch", row["external_id"], row["first_seen"], name, _watch_prompt(row, cfg), item_id=row["id"])
     data = cycle.load() if cycle.enabled() else {}
@@ -341,8 +350,9 @@ def _watch_prompt(row, cfg: dict) -> str:
     since = float(p.get("since") or 0)
     age = duration(time.time() - since) if since else "a while"
     at = datetime.fromtimestamp(since, ZoneInfo(config.TZ)).strftime("%d/%m %H:%M") if since else "?"
-    data = (f"Problem: {_field(p.get('name'))}\nHost: {_field(p.get('host'))}\nSeverity: {_field(p.get('why'))}\n"
-            f"Since: {at}\nZabbix: {_field(row['url'])}")
+    where = f"Host: {_field(p.get('host'))}" if p.get("host") else f"Dashboard: {_field(p.get('why'))}"
+    data = (f"Problem: {_field(p.get('name'))}\n{where}\nSeverity: {_field(row['severity'])}\n"
+            f"Since: {at}\n{_field(p.get('source')).capitalize()}: {_field(row['url'])}")
     return _prompt("watch", cfg, data, age=age)
 
 
@@ -485,10 +495,17 @@ def _follow(cfg: dict, live: list[dict]):
             _set(job["id"], state="late", error=f"no answer after {cfg['timeout_minutes']} min")
 
 
+def _unpostable(text: str) -> str:
+    """Why an answer stays off a ticket the team reads."""
+    return ("looks like it holds a secret" if SECRETISH.search(text)
+            else "quotes a private message" if PRIVATE.search(text) else "")
+
+
 def _deliver(job: dict):
-    if job["kind"] == "stuck":
-        held = ("looks like it holds a secret" if SECRETISH.search(job["report"])
-                else "quotes a private message" if PRIVATE.search(job["report"]) else "")
+    if job["kind"] == "watch":
+        _file_alert(job)
+    elif job["kind"] == "stuck":
+        held = _unpostable(job["report"])
         if held:
             _set(job["id"], error=f"held back from {job['subject']}: the answer {held}")
             log.warning("second: %s answer held back, it %s", job["subject"], held)
@@ -510,6 +527,35 @@ def _deliver(job: dict):
             external_id=f"plan:{job['subject']}", title="Today's plan", fingerprint=job["subject"], lane="plan",
             url=config.BASE_URL.rstrip("/") + "/", urgency="now",
             payload={"source": "Second", "why": (lines[0] if lines else "")[:300], "job": job["id"]})], misses=1)
+
+
+def _file_alert(job: dict):
+    """A real alert's diagnosis goes on its Run ticket. Noise, or over by itself: it stays on the alert. No verdict read
+    counts as real: a ticket too many beats an outage without one."""
+    m = VERDICT.match(job["report"])
+    if m and m.group(1).lower() != "real":
+        return
+    held = _unpostable(job["report"])
+    if held:
+        _set(job["id"], error=f"no Run ticket: the answer {held}")
+        log.warning("second: alert %s answer held back, it %s", job["subject"], held)
+        return
+    rows = db.items("id = ?", job["item_id"])
+    data = cycle.load() if cycle.enabled() else {}
+    epic_id = next((e.get("id") for e in (data.get("run") or {}).get("epics") or []), None)
+    if not rows or not epic_id:
+        _set(job["id"], error="no Run ticket: " + ("the alert is gone" if not rows else "no Run epic in the cycle"))
+        return
+    row, p = rows[0], json.loads(rows[0]["payload"] or "{}")
+    since = datetime.fromtimestamp(float(p.get("since") or 0), ZoneInfo(config.TZ)).strftime("%d/%m %H:%M")
+    try:
+        owner = shortcut.member_id((config.load().get("cycle") or {}).get("shortcut_member", ""))
+        story = shortcut.open_story(epic_id, row["title"], f"{_field(p.get('source')).capitalize()} alert since {since}: {row['url']}",
+                                    owner, data.get("label", ""))
+        after = shortcut.comment(story["id"], f"Second — read-only look at this alert:\n\n{job['report']}", owner)
+        _set(job["id"], story=f"sc-{story['id']}", posted_at=after, meta=json.dumps({**_meta(job), "story_url": story["url"]}))
+    except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError, StopIteration) as e:
+        _set(job["id"], error=f"no Run ticket: {e}")
 
 
 def _meta(job) -> dict:
@@ -696,7 +742,7 @@ def for_items(item_ids: list[int]) -> dict[int, dict]:
     if not item_ids:
         return {}
     marks = ",".join("?" * len(item_ids))
-    return {r["item_id"]: dict(r) for r in _jobs(f"item_id IN ({marks}) ORDER BY id", *item_ids)}
+    return {r["item_id"]: dict(r) | {"story_url": _meta(r).get("story_url", "")} for r in _jobs(f"item_id IN ({marks}) ORDER BY id", *item_ids)}
 
 
 def job(job_id: int) -> dict | None:
