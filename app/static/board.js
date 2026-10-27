@@ -1,7 +1,8 @@
 // Sessions' board: up to four consoles side by side — two columns, either one split in two. A live session dragged
 // from the list lands where the box under the pointer says (dropped on a terminal, it splits it while there is room,
 // else takes its place); a terminal's head dragged onto another swaps them, back onto the list takes it off, like its ×.
-// A session selected in the list takes the active terminal's place; a live row dropped on another group of the list
+// A session selected in the list takes the active terminal's place, and so does the pane (a ticket, New, a session of
+// another terminal) — the other terminals stay in view; a live row dropped on another group of the list
 // goes there (yours, made on the spot by New section, a big rock, the run, off cycle), whatever its ticket says. The board is this browser's (localStorage): the
 // sessions run on the host whatever it shows. Each terminal is a `Term` (static/console.js) attached while the page
 // lives, the board shown or not; the rows say where theirs is. `/sessions?open=<console>` (Watch's Claude button)
@@ -10,7 +11,8 @@
     const work = document.querySelector('.s-work');
     const board = document.getElementById('board');
     const list = document.getElementById('list');
-    if (!work || !board || !list) return;
+    const detail = document.getElementById('detail');
+    if (!work || !board || !list || !detail) return;
     const STORE = 'sentinel.sessions.board';
     // a terminal's place on a 2×2 grid — [column, row, columns, rows]: the whole board, a column or a quarter
     const CELLS = { F: [0, 0, 2, 2], L: [0, 0, 1, 2], R: [1, 0, 1, 2], TL: [0, 0, 1, 1], TR: [1, 0, 1, 1], BL: [0, 1, 1, 1], BR: [1, 1, 1, 1] };
@@ -43,6 +45,17 @@
         const b = box(r);
         Object.assign(el.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.w}px`, height: `${b.h}px` });
     }
+
+    // the terminals, or the pane (a ticket, New, a session of another terminal) in the active one's place: the others
+    // stay in view, and the board is as it was when a terminal is chosen again; with no terminal, the pane has the room
+    function view(terminals) {
+        const over = !terminals && slots.length > 0;
+        work.classList.toggle('s-board', terminals || over);
+        work.classList.toggle('s-pane', over);
+        if (over) place(detail, (slotOf(active) || ordered()[0]).r);
+        else Object.assign(detail.style, { left: '', top: '', width: '', height: '' });
+    }
+    const terminals = () => work.classList.contains('s-board') && !work.classList.contains('s-pane');
 
     function attach(key, t) {
         t.term.attach(`/api/console/${key.slice('console:'.length)}/attach`)
@@ -117,6 +130,7 @@
         }
         keyboard = null;
         board.classList.toggle('empty', !slots.length);
+        if (work.classList.contains('s-pane')) view(false);
         heads();
         wheres();
         const now = JSON.stringify({ slots, active });
@@ -157,7 +171,7 @@
             }
         }
         active = key;
-        work.classList.add('s-board');
+        view(true);
     }
 
     // the list's selection follows the active terminal (app.js `select`, without loading the pane)
@@ -178,7 +192,7 @@
     document.addEventListener('click', (e) => {
         const r = e.target.closest('#rows .it[data-term]');
         if (r) asked = r.dataset.key;
-        if (e.target.closest('[data-unselect]')) work.classList.remove('s-board');
+        if (e.target.closest('[data-unselect]')) view(false);
         if (e.target.closest('#rows .it, [data-unselect]')) opening = null;  // you chose something else meanwhile
     });
     document.addEventListener('row-selected', (e) => {
@@ -186,9 +200,9 @@
         const again = key === last && key !== asked;
         last = key;
         asked = null;
-        if (!row(key)) { work.classList.remove('s-board'); return; }
+        if (!row(key)) { view(false); return; }
         if (again && !slotOf(key)) return;
-        work.classList.add('s-board');
+        view(true);
         if (slotOf(key)) { activate(key); return; }
         if (!slots.length) slots.push({ key, r: 'F' });
         else (slotOf(active) || slots[0]).key = key;
@@ -199,6 +213,7 @@
     board.addEventListener('pointerdown', (e) => {
         const slot = e.target.closest('.b-slot');
         if (slot && !slot.classList.contains('leaving') && !e.target.closest('button, a')) {
+            view(true);
             activate(slot.dataset.key);
             follow(slot.dataset.key);
         }
@@ -291,7 +306,7 @@
             active = key;
             keyboard = key;
         }
-        work.classList.add('s-board');
+        view(true);
         render();
         follow(active);
     }
@@ -307,7 +322,7 @@
         document.body.classList.remove('s-dragging');
         document.querySelectorAll('.lifted').forEach((el) => el.classList.remove('lifted'));
         if (z) land(z, key);
-        if (!z || z.el) work.classList.toggle('s-board', was);  // filed in the list: the pane stays what it was
+        if (!z || z.el) view(was);  // filed in the list: the pane stays what it was
     }
 
     document.addEventListener('pointerdown', (e) => {
@@ -318,7 +333,7 @@
         const key = handle.dataset.key || handle.closest('.b-slot').dataset.key;
         drag = { key, handle, id: e.pointerId, x: e.clientX, y: e.clientY, started: false, z: null,
                  on: !!slotOf(key), head: handle.classList.contains('b-head'), term: !handle.dataset.key?.startsWith('session:'),
-                 board: work.classList.contains('s-board') };
+                 board: terminals() };
     });
 
     document.addEventListener('pointermove', (e) => {
@@ -334,7 +349,7 @@
             chip.hidden = false;
             document.body.classList.add('s-dragging');
             (shown.get(drag.key)?.el || drag.handle).classList.add('lifted');
-            if (drag.term) work.classList.add('s-board');
+            if (drag.term) view(true);
         }
         chip.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 12}px)`;
         drag.z = zone(e.clientX, e.clientY);
@@ -368,7 +383,7 @@
         e.stopPropagation();
         const s = ordered()[Number(e.code.slice(5)) - 1];
         if (!s) return;
-        work.classList.add('s-board');
+        view(true);
         activate(s.key, true);
         follow(s.key);
     }, true);
@@ -381,11 +396,11 @@
         if (!list.querySelector('.s-error')) slots.filter((s) => !row(s.key)).forEach((s) => remove(s.key));
         if (opening && row(opening)) { join(opening); opening = null; }
         render();
-        if (active !== before && work.classList.contains('s-board')) follow(active);
+        if (active !== before && terminals()) follow(active);
     });
     // End on the board failed: the pane has its answer, shown
     document.addEventListener('htmx:afterSwap', (e) => {
-        if (e.detail.target.id === 'detail' && e.detail.requestConfig.path === '/api/sessions/end') work.classList.remove('s-board');
+        if (e.detail.target.id === 'detail' && e.detail.requestConfig.path === '/api/sessions/end') view(false);
     });
 
     // the board follows its pane — the columns glide into focus — without gliding itself
@@ -393,6 +408,7 @@
     new ResizeObserver(() => {
         board.classList.add('still');
         slots.forEach((s) => { const t = shown.get(s.key); if (t) place(t.el, s.r); });
+        if (work.classList.contains('s-pane')) view(false);
         clearTimeout(still);
         still = setTimeout(() => board.classList.remove('still'), 150);
     }).observe(board);
@@ -416,7 +432,7 @@
             else opening = `console:${asked}`;  // just started: the bridge lists it in a moment
         }
         if (active) {
-            work.classList.add('s-board');
+            view(true);
             row(active)?.classList.add('sel');
         }
         render();
