@@ -68,13 +68,25 @@
     {% for c in grafana.cards %}
     <div class="watch-dash">
         <div class="watch-dash-head">
-            <span class="dot {{ 'bad' if c.error else ('warn' if c.anomalies or c.unread else 'ok') }} small"></span>
+            <span class="dot {{ 'bad' if c.error or c.alerts else ('warn' if c.anomalies or c.unread else 'ok') }} small"></span>
             <a class="compact-title" href="{{ c.link }}" target="_blank" rel="noopener">{{ c.title }}</a>
             <span class="compact-meta">
+                {% if c.alerts %}{{ c.alerts | length }} firing · {% endif %}
                 {% if c.error %}unreadable: {{ c.error }}{% elif c.anomalies %}{{ c.anomalies | length }} changed{% else %}nothing changed{% endif %}
                 · {{ c.panels }} panels · {{ c.series }} curves{% if c.unread %} · {{ c.unread }} panel{{ 's' if c.unread > 1 }} unreadable{% endif %}
             </span>
         </div>
+        {% if c.alerts %}
+        <ul class="compact-list">
+            {% for a in c.alerts %}
+            <li class="compact watch-problem">
+                <span class="dot bad small"></span>
+                <div><a class="compact-title" href="{{ a.url }}" target="_blank" rel="noopener">{{ a.name }}</a>
+                    <div class="compact-meta">{% if a.panel %}{{ a.panel }} · {% endif %}firing for {{ a.age }} · in the Inbox</div></div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
         {% if c.anomalies %}
         <ul class="compact-list">
             {% for a in c.anomalies[:8] %}

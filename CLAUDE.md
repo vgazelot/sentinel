@@ -23,7 +23,7 @@ app/
 │   ├── github_reviews.py   # GraphQL: lanes you / team / deps, team+APPROVED dropped, `priority_teams` = team pushed at once, bump bodies cached
 │   ├── statuspage.py       # generic Atlassian Statuspage; every incident quiet (listed in Later, never pushed)
 │   ├── zabbix.py           # open problems as the front shows them (skipDependent, monitored); ≥ push_severity → items (lane watch)
-│   └── grafana.py          # one source per dashboard (grafana:<uid>, token pinned to `url`): confirmed stop / status change → items (lane watch)
+│   └── grafana.py          # one source per dashboard (grafana:<uid>, token pinned to `url`): confirmed stop / status change → items (lane watch); grafana-alerts: what its alertmanager sends for them, not silenced → items
 ├── quart.py          # Watch: stop / state / drift over the last 30 min vs the hours before + the snapshot the page reads
 ├── watch_views.py    # Watch page (blueprint); client certs for an mTLS proxy mounted on /certs (SENTINEL_CERTS); Claude button → POST /api/zabbix/<event>/console (prompt written here), then Sessions' board
 ├── console.py        # Claude consoles (blueprint): bridge client, start/end, attach/end routes, alive() for the buttons; the window is static/console.js, Sessions' board static/board.js (a console.js `Term` per terminal)

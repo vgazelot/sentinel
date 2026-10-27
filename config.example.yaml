@@ -61,6 +61,7 @@ watchers:
   # its own source. Each curve's last 30 min is compared with the hours before: a counter that stops
   # or a whole-number gauge that changes is pushed once seen on two reads in a row, a drift is
   # listed. Paste the links as you open them: their var-… parameters are the template variables used.
+  # The alerts Grafana sends for these dashboards (not silenced) are read every minute and pushed.
   grafana:
     enabled: false
     interval_seconds: 300
@@ -69,6 +70,7 @@ watchers:
     client_cert: /certs/client.crt
     client_key: /certs/client.key
     window_hours: 6
+    alerts: true                     # false on a Grafana without its own alerting (before 9)
     dashboards:
       - https://grafana.example.com/d/abc123/pipeline?var-source=$__all
 

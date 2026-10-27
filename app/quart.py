@@ -23,7 +23,7 @@ VOLUME = re.compile(r"(^|[(,\s])stats_counts\.|\.count\b")
 RECENT_MINUTES = 30
 
 _lock = threading.Lock()
-_snapshot: dict = {"zabbix": None, "grafana": {}}
+_snapshot: dict = {"zabbix": None, "grafana": {}, "alerts": {}}
 
 
 def publish(source: str, data):
