@@ -165,30 +165,56 @@ class SecondTest(SecondBase):
         self.assertIn("Grafana: https://grafana.example.net/d/abc/pipeline", run["prompt"])
         self.assertIn("Rule: https://grafana.example.net/alerting/grafana/r1/view", run["prompt"])
 
-    def answer_alert(self, text):
+    def answer_alert(self, text, eventid="4821"):
         import db
         import second
 
         db.set_watcher_state("cycle", "data", json.dumps({"label": "Team-2026-C5", "big_rocks": [],
                                                            "run": {"label": "RUN", "epics": [{"id": 77, "stories": []}]}}))
-        self.alert()
+        self.alert(eventid)
         second.tick()
-        self.answered("zabbix-4821", text)
+        self.answered(f"zabbix-{eventid}", text)
         with mock.patch("shortcut.member_id", return_value="me-id"), \
                 mock.patch("shortcut.open_story", return_value={"id": 4321, "url": "https://app.shortcut.com/acme/story/4321"}) as open_story, \
                 mock.patch("shortcut.comment", return_value="2026-10-27T10:00:00Z") as comment:
             second.tick()
         return open_story, comment
 
-    def test_a_real_alert_goes_on_its_run_ticket(self):
-        open_story, comment = self.answer_alert("**Verdict: real** — logrotate en échec, /data plein.\n\n```\ndf -h /data\n```")
+    def post(self, job_id, comment_side_effect=None):
+        with mock.patch("shortcut.member_id", return_value="me-id"), \
+                mock.patch("shortcut.comment", return_value="2026-10-27T10:05:00Z", side_effect=comment_side_effect) as comment:
+            page = self.client.post(f"/api/second/{job_id}/post", headers={"Host": "localhost:8300", "Origin": "http://localhost:8300"})
+        return comment, page.get_data(as_text=True)
+
+    def test_a_real_alert_gets_its_run_ticket_and_what_it_saw_goes_on_it_on_your_click(self):
+        open_story, comment = self.answer_alert("**Verdict: real** — logrotate en échec, /data plein.\n\nSeen:\n- `df -h /data` → 100 %"
+                                                "\n\nTo run:\n1. `systemctl restart logrotate`\n\nWatch after:\n- /data")
         epic, name, description, owner, label = open_story.call_args.args
         self.assertEqual((epic, name, owner, label), (77, "web-30 · /data 92 % 4821", "me-id", "Team-2026-C5"))
         self.assertIn("Zabbix alert since", description)
-        self.assertEqual(comment.call_args.args[0], 4321)
-        self.assertIn("logrotate en échec", comment.call_args.args[1])
+        comment.assert_not_called()
         [job] = self.jobs()
-        self.assertEqual(job["story"], "sc-4321")
+        self.assertEqual((job["story"], job["posted_at"]), ("sc-4321", None))
+        self.assertIn("Post on sc-4321", self.client.get(f"/partials/item/{job['item_id']}").get_data(as_text=True))
+        comment, page = self.post(job["id"])
+        self.assertEqual(comment.call_args.args[0], 4321)
+        self.assertIn("df -h /data", comment.call_args.args[1])
+        self.assertNotIn("systemctl", comment.call_args.args[1], "the commands to run stay in Sentinel")
+        self.assertIn("Posted on", page)
+        self.assertEqual(self.post(job["id"])[0].call_count, 0, "posted once")
+
+    def test_without_its_headings_only_the_verdict_is_posted_and_a_private_message_never(self):
+        self.answer_alert("Verdict: real — /data plein, cf https://acme.slack.com/archives/D0123ABCDEF/p1700000000000100")
+        [job] = self.jobs()
+        comment, page = self.post(job["id"])
+        comment.assert_not_called()
+        self.assertIn("not posted: it quotes a private message", page)
+        self.answer_alert("Verdict: real — /data plein.\n\nlogrotate en échec depuis 3 jours", eventid="4822")
+        comment, _ = self.post(self.jobs()[-1]["id"])
+        self.assertEqual(comment.call_args.args[1].splitlines()[-1], "Verdict: real — /data plein.")
+
+    def test_an_alerts_ticket_is_not_a_stalled_ticket(self):
+        self.answer_alert("Verdict: real — /data plein.")
         import db
         import second
 
@@ -196,7 +222,7 @@ class SecondTest(SecondBase):
             {"id": 77, "stories": [story(4321, "2026-10-20T08:00:00Z")]}]}}))
         second.tick()
         self.assertEqual([r["kind"] for r in self.jobs()], ["watch"], "an alert's ticket is not a stalled ticket")
-        detail = self.client.get(f"/partials/item/{job['item_id']}").get_data(as_text=True)
+        detail = self.client.get(f"/partials/item/{self.jobs()[0]['item_id']}").get_data(as_text=True)
         self.assertIn('href="https://app.shortcut.com/acme/story/4321"', detail)
 
     def test_noise_stays_on_the_alert(self):

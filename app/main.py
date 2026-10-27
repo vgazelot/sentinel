@@ -509,6 +509,13 @@ def api_second_push(job_id: int):
     return _fix_detail(_view(row), notice="Pushed: GitHub runs its checks now" if said == "pushed" else said, error=failed)
 
 
+@app.post("/api/second/<int:job_id>/post")
+def api_second_post(job_id: int):
+    """Your click on a real alert's diagnosis: what it saw goes on its Run ticket, its commands stay here."""
+    second.post_alert(job_id)
+    return partial_item((second.job(job_id) or {}).get("item_id") or 0)
+
+
 @app.get("/partials/group")
 def partial_group():
     ids = [int(x) for x in request.args.get("ids", "").split(",") if x.isdigit()]

@@ -4,8 +4,8 @@ board — read-only: the bridge starts it `--restricted`, with manual permission
 a push after a few minutes). Sentinel decides what to take up and when, and files the answer where it belongs.
 
   watch   a monitoring alert (Zabbix, Grafana) nobody acknowledged for `watch_minutes` (0: at once) → a diagnosis on
-          the alert, opening with a verdict; a real one goes on a Run ticket: the open one of that alert, else a new one
-          in the cycle's Run epic, started and yours. At most `watch_per_day`; one closed before its turn is dropped, one
+          the alert, opening with a verdict; a real one gets a Run ticket: the open one of that alert, else a new one in
+          the cycle's Run epic, started and yours; what it saw goes on it on your click (`post_alert`), its commands never. At most `watch_per_day`; one closed before its turn is dropped, one
           called noise is not read again within `watch_hours`. A Zabbix alert's console is the one Watch's Claude button opens
           (`zabbix-<event>`): clicking it lands on the Second's work, and an alert you opened yourself is left to you
   stuck   a started ticket of yours untouched for `stuck_days`, no session on it → what blocks it, commented on the
@@ -80,6 +80,7 @@ READ_ONLY = ("You are the Second, working unattended for {who}: read-only. You m
 # the sources whose alerts it takes up → their consoles' prefix
 ALERTS = {"zabbix": "zabbix", "grafana-alerts": "grafana"}
 VERDICT = re.compile(r"^\W*verdict\W*(real|noise|resolved)\b", re.I | re.M)
+TO_RUN = re.compile(r"^\W*to run\W*$", re.I | re.M)
 
 PROMPTS = {
     "watch": """{read_only}
@@ -87,13 +88,14 @@ PROMPTS = {
 A monitoring alert has been open for {age}: find what happens and why. Look at the metric and its recent history, the
 host, its logs, what changed lately (deploys, maintenance announced, configuration), and the same alert in the past
 (tickets, notes, memory). A real one's answer is posted as is on a ticket the team reads: never quote or link a private
-message (a direct message, an email), say "a conversation with <name>" instead. Then answer:
+message (a direct message, an email), say "a conversation with <name>" instead. Then answer, the verdict and the
+headings in English whatever your language, each heading alone on its line:
 - first line: `Verdict: real` (something is broken or breaking), `Verdict: noise` (a false alarm, nothing broke) or
-  `Verdict: resolved` (it recovered by itself, nothing left to do) — these words in English whatever your language —,
-  then the cause in one sentence, or what you could not establish
-- what you saw, each with the command or query that showed it
-- the commands for them to run, in order, each followed by the check that tells it worked
-- what to watch after
+  `Verdict: resolved` (it recovered by itself, nothing left to do), then the cause in one sentence, or what you could
+  not establish
+- `Seen:` what you saw, each with the command or query that showed it
+- `To run:` the commands for them to run, in order, each followed by the check that tells it worked
+- `Watch after:` what to watch after
 
 {data}""",
     "stuck": """{read_only}
@@ -566,18 +568,13 @@ def _deliver(job: dict):
 
 
 def _file_alert(job: dict):
-    """A real alert's diagnosis goes on its Run ticket. Noise, over by itself, or no verdict read: it stays on the alert,
-    already in your inbox."""
+    """A real alert gets its Run ticket; what the diagnosis saw goes on it on your click. Noise, over by itself, or no
+    verdict read: it stays on the alert, already in your inbox."""
     verdict = _verdict(job["report"])
     if not verdict:
         _set(job["id"], error="no verdict read: no Run ticket")
         return
     if verdict != "real":
-        return
-    held = _unpostable(job["report"])
-    if held:
-        _set(job["id"], error=f"no Run ticket: the answer {held}")
-        log.warning("second: alert %s answer held back, it %s", job["subject"], held)
         return
     rows = db.items("id = ?", job["item_id"])
     data = cycle.load() if cycle.enabled() else {}
@@ -592,9 +589,33 @@ def _file_alert(job: dict):
         story = shortcut.open_story(epic_id, row["title"], f"{_field(p.get('source')).capitalize()} alert since {since}: {row['url']}",
                                     owner, data.get("label", ""))
         _set(job["id"], story=f"sc-{story['id']}", meta=json.dumps({**_meta(job), "story_url": story["url"]}))
-        _set(job["id"], posted_at=shortcut.comment(story["id"], f"Second — read-only look at this alert:\n\n{job['report']}", owner))
     except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError, StopIteration) as e:
         _set(job["id"], error=f"no Run ticket: {e}")
+
+
+def ticket_text(report: str) -> str:
+    """What of a diagnosis goes on the team's ticket: the verdict and what it saw, up to the commands for you to run —
+    nobody on call runs what nobody read. Without that heading, the verdict line alone."""
+    m = TO_RUN.search(report)
+    return (report[:m.start()] if m else report.strip().splitlines()[0]).strip()
+
+
+def post_alert(job_id: int):
+    """Your click on a real alert's diagnosis: `ticket_text` goes on its Run ticket. A refusal is said on the alert."""
+    job = next(iter(_jobs("id = ? AND kind = 'watch' AND story IS NOT NULL AND posted_at IS NULL", job_id)), None)
+    if not job:
+        return
+    text = ticket_text(job["report"])
+    held = _unpostable(text)
+    if held:
+        _set(job_id, error=f"not posted: it {held}")
+        return
+    try:
+        owner = shortcut.member_id((config.load().get("cycle") or {}).get("shortcut_member", ""))
+        _set(job_id, posted_at=shortcut.comment(int(job["story"][3:]), f"Second — read-only look at this alert:\n\n{text}", owner),
+             error=None)
+    except (requests.RequestException, RuntimeError, PermissionError, ValueError, KeyError) as e:
+        _set(job_id, error=f"not posted: {e}")
 
 
 def _meta(job) -> dict:
