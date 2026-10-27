@@ -3,9 +3,11 @@
 <div class="d-body">
     <h2 class="d-title">New session</h2>
     {% if error %}<div class="notice bad">{{ error }}</div>{% endif %}
-    <form hx-post="/api/sessions/new" hx-disabled-elt="find button">
+    <form hx-post="/api/sessions/new" hx-encoding="multipart/form-data" hx-disabled-elt="find .bar button" data-files>
         <textarea class="field" name="prompt" rows="5" autofocus
-                  placeholder="What should Claude work on? Name its ticket (sc-12345) and the session goes under its big rock.">{{ prompt }}</textarea>
+                  placeholder="What should Claude work on? Name its ticket (sc-12345) and the session goes under its big rock. Paste or drop files for it to read.">{{ prompt }}</textarea>
+        <input type="file" name="files" multiple hidden>
+        <div class="s-files"></div>
         {% if groups | length > 1 %}
         <div class="s-under"><span class="muted">Goes under</span>
             <div class="seg" role="radiogroup" aria-label="Goes under">

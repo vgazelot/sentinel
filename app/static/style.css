@@ -363,6 +363,11 @@ details > summary.card-head::-webkit-details-marker { display: none; }
 .list-head [data-dock] { margin-left: auto; }
 .s-new svg { display: none; }
 /* New: where the session goes, a choice of two */
+.s-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.s-files:empty { display: none; }
+.s-file { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; padding: 2px 3px 2px 8px; border-radius: 6px; background: var(--pane-3); font-size: 12px; color: var(--text-2); }
+.s-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-file small { color: var(--text-3); white-space: nowrap; }
 .s-under { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 12px; font-size: 12.5px; }
 .s-under .seg { margin-left: 0; flex-wrap: wrap; }
 .seg label { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }

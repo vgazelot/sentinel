@@ -53,8 +53,8 @@ class AgentsTest(SentinelTest):
         import agents
         import db
 
-        for info, expected in (({"api": 7, "token": True}, "older version"), ({"api": 8, "token": False}, "BRIDGE_TOKEN"),
-                               ({"api": 8, "token": True}, "")):
+        for info, expected in (({"api": 8, "token": True}, "older version"), ({"api": 9, "token": False}, "BRIDGE_TOKEN"),
+                               ({"api": 9, "token": True}, "")):
             with mock.patch("requests.get", return_value=mock.Mock(json=lambda info=info: info, raise_for_status=lambda: None)), \
                     mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
                 agents.check_bridge()
@@ -67,7 +67,7 @@ class AgentsTest(SentinelTest):
         cfg["watchers"]["zabbix"] = {"enabled": True, "url": "https://z", "claude": True}
         with open(self.cfg_path, "w") as f:
             yaml.safe_dump(cfg, f)
-        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 8, "token": True}, raise_for_status=lambda: None)), \
+        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 9, "token": True}, raise_for_status=lambda: None)), \
                 mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
             agents.check_bridge()
         self.assertIn("no console", db.watcher_states()["claude-bridge"]["last_error"], "the Claude button needs a bridge with consoles")

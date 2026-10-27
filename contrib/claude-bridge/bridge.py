@@ -51,7 +51,9 @@ Sessions — every Claude Code session running on this host, in a console or in 
 From `claude agents --json` (Claude Code's own list), the console each one runs in, its title (the end of its
 transcript) and `context`: what contrib/claude-code-context publishes about it (<CLAUDE_CONFIG_DIR>/context-advisor/
 <session id>.json: story, context size, cold cache, advice) — the advisor owns a session's story, read here as is.
-`POST /console` takes an optional `story` (`sc-12345`): the session starts linked to it (CONTEXT_STORY).
+`POST /console` takes an optional `story` (`sc-12345`): the session starts linked to it (CONTEXT_STORY), and optional
+`files` ([{"name", "data": base64}], pasted on New): written in a temporary directory of their own, an @-mention each
+at the end of the prompt — Claude Code attaches them to the first message, an image as an image.
 Ending a session sends its Claude a SIGTERM, as `kill` would: Claude restores the terminal and exits, the shell it ran
 in stays, so does its transcript (`claude --resume`).
 
@@ -90,6 +92,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import tempfile
 import termios
 import threading
 import time
@@ -231,7 +234,7 @@ LOOKOUT_MODES = ("scout", "assess", "dig")
 MATERIAL_MODES = ("precheck", "followup", "brief", "whyred", "asks") + LOOKOUT_MODES
 TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
             **{mode: ("", [], []) for mode in MATERIAL_MODES}}
-API = 8  # what /healthz reports: Sentinel refuses an older bridge
+API = 9  # what /healthz reports: Sentinel refuses an older bridge
 
 TMUX = os.environ.get("TMUX_BIN") or shutil.which("tmux") or "tmux"
 TMUX_CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmux.conf")
@@ -351,13 +354,33 @@ def consoles() -> list[dict]:
     return [{"name": n, "created": int(c), "attached": int(a)} for n, c, a in rows]
 
 
-def open_console(name: str, prompt: str, story: str = "", second: dict | None = None) -> bool:
+def _files(raw) -> list[tuple[str, bytes]]:
+    """[{"name", "data": base64}] → (a name fit for a path and an @-mention, its bytes); a ValueError otherwise."""
+    if not isinstance(raw, list) or not all(isinstance(f, dict) for f in raw):
+        raise ValueError("files: [{name, data}]")
+    return [(re.sub(r"[^\w.-]+", "-", str(f.get("name") or ""), flags=re.ASCII)[-80:] or "file",
+             base64.b64decode(str(f.get("data") or ""), validate=True)) for f in raw]
+
+
+def _mentions(name: str, files: list[tuple[str, bytes]]) -> str:
+    folder = tempfile.mkdtemp(prefix=f"sentinel-{name}-")
+    paths = [os.path.join(folder, f"{i}-{filename}") for i, (filename, _) in enumerate(files, 1)]
+    for path, (_, data) in zip(paths, files):
+        with open(path, "wb") as f:
+            f.write(data)
+    return "\n\n" + " ".join(f"@{path}" for path in paths)
+
+
+def open_console(name: str, prompt: str, story: str = "", second: dict | None = None,
+                 files: list[tuple[str, bytes]] = ()) -> bool:
     """Start the session unless it runs (True when started); without a prompt there is nothing to start. `second`: an
-    unattended job's console, read-only, with the hosts its guard lets it read."""
+    unattended job's console, read-only, with the hosts its guard lets it read; `files`: read with the prompt."""
     if _tmux("has-session", "-t", f"={name}").returncode == 0:
         return False
     if not prompt:
         raise LookupError(f"no console {name}")
+    if files:
+        prompt += _mentions(name, files)
     shell = pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
     linked = ["-e", f"CONTEXT_STORY={story}"] if STORY.fullmatch(story) else []
     guarded = [] if second is None else [
@@ -907,7 +930,11 @@ class Handler(BaseHTTPRequestHandler):
                 end_console(name)
                 return self._json(200, {"ended": name})
             second = data.get("second") if isinstance(data.get("second"), dict) else None
-            started = open_console(name, str(data.get("prompt") or "")[:12000], str(data.get("story") or ""), second)
+            try:
+                files = _files(data.get("files") or [])
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            started = open_console(name, str(data.get("prompt") or "")[:12000], str(data.get("story") or ""), second, files)
         except LookupError as e:
             return self._json(404, {"error": str(e)})
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:

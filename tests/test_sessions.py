@@ -95,6 +95,27 @@ class BridgeSessionsTest(SentinelTest):
         self.assertIn("CONTEXT_STORY=sc-1234", calls[1])
         self.assertFalse(any(a.startswith("CONTEXT_STORY") for a in calls[3]), "only a story id reaches the environment")
 
+    def test_files_pasted_on_new_are_read_with_the_prompt(self):
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=1 if "has-session" in argv else 0, stderr="")
+
+        files = self.b._files([{"name": "Capture d’écran.png", "data": "iVBORw=="}, {"name": "../../.ssh/key", "data": ""}])
+        with mock.patch.object(self.b.subprocess, "run", side_effect=run), mock.patch.object(self.b.tempfile, "tempdir", self.tmp.name):
+            self.b.open_console("look-1", "Regarde ça", "", None, files)
+        prompt = next(a for a in calls[1] if a.startswith("SENTINEL_PROMPT=")).removeprefix("SENTINEL_PROMPT=")
+        text, mentions = prompt.split("\n\n")
+        paths = [m.removeprefix("@") for m in mentions.split(" ")]
+        self.assertEqual(text, "Regarde ça")
+        self.assertEqual([os.path.basename(p) for p in paths], ["1-Capture-d-cran.png", "2-..-..-.ssh-key"], "a name fit for a path and a mention")
+        self.assertEqual({os.path.dirname(os.path.dirname(p)) for p in paths}, {self.tmp.name}, "in a directory of their own")
+        with open(paths[0], "rb") as f:
+            self.assertEqual(f.read(), b"\x89PNG")
+        with self.assertRaises(ValueError):
+            self.b._files([{"name": "x", "data": "not base64!"}])
+
     def test_ending_a_console_waits_for_its_claude_to_leave(self):
         answers = iter([True, True, False])
         with mock.patch.object(self.b, "_console_pids", return_value={"150": "sc-1234", "300": "other"}), \
@@ -328,6 +349,23 @@ class SessionsTest(SentinelTest):
         self.assertEqual(story, "")
         self.assertEqual(prompt, "Vérifie le lag Kafka sur node-3, puis dis-moi")
         self.assertEqual(start.call_count, 1)
+
+    def test_files_pasted_on_new_go_with_its_prompt(self):
+        import io
+
+        import sessions
+
+        def post():
+            return self.client.post("/api/sessions/new", content_type="multipart/form-data",
+                                    data={"prompt": "Regarde", "files": [(io.BytesIO(b"\x89PNG"), "shot.png")]})
+
+        with mock.patch("console.start", return_value={"ticket": "t"}) as start:
+            post()
+            with mock.patch.object(sessions, "PASTED_MAX", 3):
+                too_big = post().get_data(as_text=True)
+        self.assertEqual(start.call_args.kwargs["files"], [{"name": "shot.png", "data": "iVBORw=="}])
+        self.assertEqual(start.call_count, 1)
+        self.assertIn("Files up to", too_big)
 
     def test_new_goes_under_the_run_unless_told_otherwise(self):
         import sessions

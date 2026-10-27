@@ -113,9 +113,9 @@ class SecondTest(SecondBase):
         import second
 
         healthz = lambda api: mock.Mock(ok=True, json=lambda: {"api": api})
-        with mock.patch("requests.get", return_value=healthz(7)):
-            self.assertFalse(PLAN_READY(), "a bridge without a fix's worktree")
         with mock.patch("requests.get", return_value=healthz(8)):
+            self.assertFalse(PLAN_READY(), "an older bridge")
+        with mock.patch("requests.get", return_value=healthz(9)):
             self.assertTrue(PLAN_READY())
         with mock.patch("requests.get", side_effect=second.requests.ConnectionError("down")):
             self.assertFalse(PLAN_READY())

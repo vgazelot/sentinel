@@ -7,6 +7,7 @@ belongs to which big rock. A session started here runs in a console the board sh
 one started in another terminal is listed, read-only. A ticket without a session is picked up by a fresh one that reads the ticket first:
 the ticket is the memory, a session a worker you replace when its context grows.
 """
+import base64
 import json
 import math
 import re
@@ -43,6 +44,7 @@ STATES = {
 ORDER = ("waiting", "working", "starting", "done", "idle")
 ALERT = re.compile(r"zabbix-\d+")  # Watch's consoles (watch_views.api_zabbix_console): run work, a ticket or not
 _layout_lock = threading.Lock()
+PASTED_MAX = 20 * 1024 * 1024  # the files pasted on New, in all
 FILED_KEEP = 200  # moves kept, the latest: a console picked up again (sc-N) goes back where you put it
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _live: dict = {"at": 0.0, "rows": [], "error": ""}
@@ -316,9 +318,9 @@ def _slug(text: str) -> str:
     return "-".join(words[:4])[:24].strip("-") or "session"
 
 
-def _start(name: str, prompt: str, fallback, story: str = "", group: str = ""):
+def _start(name: str, prompt: str, fallback, story: str = "", group: str = "", files: list[dict] = ()):
     try:
-        console.start(name, prompt, story)
+        console.start(name, prompt, story, files=files)
     except (requests.RequestException, RuntimeError, ValueError) as e:
         return fallback(f"the Claude bridge: {e}")
     if group:
@@ -394,9 +396,13 @@ def api_new():
     under = request.form.get("under", "")
     if not prompt:
         return _new(error="Say what Claude should work on first.", under=under)
+    files = [(f.filename, f.read()) for f in request.files.getlist("files") if f.filename]
+    if sum(len(data) for _, data in files) > PASTED_MAX:
+        return _new(prompt=prompt, under=under, error=f"Files up to {PASTED_MAX >> 20} MB in all.")
     groups = _groups(cycle.load() if cycle.enabled() else {}, _layout()[0])
     return _start(f"{_slug(prompt)}-{secrets.token_hex(2)}", prompt, lambda error: _new(prompt=prompt, under=under, error=error),
-                  group=under if under in groups and under != "off" else "")
+                  group=under if under in groups and under != "off" else "",
+                  files=[{"name": name, "data": base64.b64encode(data).decode()} for name, data in files])
 
 
 def _title(raw: str) -> str:

@@ -193,6 +193,42 @@
             .finally(() => closing(false));
     }, true);
 
+    // files pasted or dropped on New go with its prompt, held by the form's file input: the bridge writes them out, Claude
+    // gets each as an @-mention
+    function setFiles(form, files) {
+        const dt = new DataTransfer();
+        files.forEach((f) => dt.items.add(f));
+        form.querySelector('input[name=files]').files = dt.files;
+        form.querySelector('.s-files').replaceChildren(...files.map((f, i) => {
+            const chip = Object.assign(document.createElement('span'), { className: 's-file' });
+            const size = f.size < 1048576 ? `${Math.ceil(f.size / 1024)} KB` : `${(f.size / 1048576).toFixed(1)} MB`;
+            chip.append(Object.assign(document.createElement('span'), { textContent: f.name, title: f.name }),
+                Object.assign(document.createElement('small'), { textContent: size }));
+            chip.insertAdjacentHTML('beforeend', `<button type="button" class="x" data-unfile="${i}" title="Remove"><svg><use href="#i-close"/></svg></button>`);
+            return chip;
+        }));
+    }
+    const filesOf = (form) => [...form.querySelector('input[name=files]').files];
+    document.addEventListener('paste', (e) => {
+        const form = e.target.closest('[data-files]');
+        if (!form || !e.clipboardData.files.length) return;
+        e.preventDefault();
+        setFiles(form, [...filesOf(form), ...e.clipboardData.files]);
+    });
+    document.addEventListener('dragover', (e) => {
+        if (e.target.closest('[data-files]') && e.dataTransfer.types.includes('Files')) e.preventDefault();
+    });
+    document.addEventListener('drop', (e) => {
+        const form = e.target.closest('[data-files]');
+        if (!form || !e.dataTransfer.files.length) return;
+        e.preventDefault();
+        setFiles(form, [...filesOf(form), ...e.dataTransfer.files]);
+    });
+    document.addEventListener('click', (e) => {
+        const x = e.target.closest('[data-unfile]');
+        if (x) setFiles(x.form, filesOf(x.form).filter((_, i) => i !== +x.dataset.unfile));
+    });
+
     // ⌥0 works in a terminal too: taken before xterm sees it (⌥1–4 are the board's)
     document.addEventListener('keydown', (e) => {
         if (e.target.closest('#console')) return;

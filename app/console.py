@@ -39,11 +39,12 @@ def _bridge(path: str, payload: dict) -> dict:
     return data
 
 
-def start(name: str, prompt: str = "", story: str = "", second: dict | None = None) -> dict:
+def start(name: str, prompt: str = "", story: str = "", second: dict | None = None, files: list[dict] = ()) -> dict:
     """Start the session unless it runs (no prompt = reopen only), linked to `story` if given: the bridge's answer, a
-    ticket in it. `second` ({ssh_hosts, curl_hosts}): an unattended job's console, read-only (second.py)."""
+    ticket in it. `second` ({ssh_hosts, curl_hosts}): an unattended job's console, read-only (second.py); `files`
+    ([{name, data: base64}]): read with the prompt."""
     data = _bridge("/console", {"name": name, "prompt": prompt, **({"story": story} if story else {}),
-                                **({"second": second} if second is not None else {})})
+                                **({"second": second} if second is not None else {}), **({"files": files} if files else {})})
     _alive["at"] = 0.0
     return data
 
