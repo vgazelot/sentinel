@@ -1,4 +1,4 @@
-"""Shortcut epics: progress, open stories, last activity. Read-only."""
+"""Shortcut epics: progress, open stories, last activity. Writes only on your stories: a comment, a Run ticket for an alert."""
 import logging
 import re
 from functools import lru_cache
@@ -66,6 +66,27 @@ def comment(story_id: int, text: str, owner_id: str) -> str:
                       headers={"Shortcut-Token": config.SHORTCUT_API_TOKEN}, timeout=25)
     r.raise_for_status()
     return _get(f"/stories/{story_id}")["updated_at"][:19] + "Z"
+
+
+def open_story(epic_id: int, name: str, description: str, owner_id: str, label: str = "") -> dict:
+    """Your open story of that name in the epic, else a new one, started and yours, in its team's workflow: an alert
+    that comes back lands on the ticket it already has. {id, url}"""
+    if not owner_id:
+        raise PermissionError("no Shortcut member to own the ticket")
+    name = name[:512]
+    types = _states()
+    for s in _get(f"/epics/{epic_id}/stories"):
+        if (s["name"] == name and owner_id in (s.get("owner_ids") or []) and not s.get("archived")
+                and types.get(s["workflow_state_id"]) not in DONE_TYPES):
+            return {"id": s["id"], "url": s["app_url"]}
+    team = _get(f"/epics/{epic_id}")["group_id"]
+    flow = next(w for w in _get("/workflows") if w["id"] == _get(f"/groups/{team}")["default_workflow_id"])
+    started = min((s for s in flow["states"] if s["type"] == "started"), key=lambda s: s["position"])
+    r = requests.post(f"{API}/stories", headers={"Shortcut-Token": config.SHORTCUT_API_TOKEN}, timeout=25, json={
+        "name": name, "description": description, "epic_id": epic_id, "group_id": team, "owner_ids": [owner_id],
+        "workflow_state_id": started["id"], "labels": [{"name": label}] if label else []})
+    r.raise_for_status()
+    return {"id": r.json()["id"], "url": r.json()["app_url"]}
 
 
 def member_id(mention_name: str) -> str:

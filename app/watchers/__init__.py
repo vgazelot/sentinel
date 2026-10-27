@@ -28,7 +28,7 @@ class Watcher(ABC):
 
 def build_watchers(cfg: dict) -> dict[str, Watcher]:
     from watchers.github_reviews import GithubReviewsWatcher
-    from watchers.grafana import GrafanaWatcher
+    from watchers.grafana import GrafanaAlertsWatcher, GrafanaWatcher
     from watchers.statuspage import StatuspageWatcher
     from watchers.zabbix import ZabbixWatcher
 
@@ -53,8 +53,12 @@ def build_watchers(cfg: dict) -> dict[str, Watcher]:
 
     gf = wcfg.get("grafana", {})
     if gf.get("enabled"):
-        for order, link in enumerate(gf.get("dashboards") or []):
+        links = gf.get("dashboards") or []
+        for order, link in enumerate(links):
             w = GrafanaWatcher(gf, link, order)
+            watchers[w.name] = w
+        if gf.get("alerts", True):
+            w = GrafanaAlertsWatcher(gf, links)
             watchers[w.name] = w
 
     return watchers

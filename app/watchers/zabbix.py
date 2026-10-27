@@ -3,7 +3,9 @@
 Dependent problems are hidden the way the Zabbix front hides them (`skipDependent`), and so are the
 ones on disabled hosts or items; acknowledged ones are only counted: somebody holds them. Every open
 problem is listed on the Watch page; one at `push_severity` or above is also an inbox item (lane
-`watch`, pushed). One whose name matches `quiet` is known noise: listed apart, never an item.
+`watch`, pushed). One whose name matches `quiet` is known noise: listed apart, never an item. One
+whose name matches `push_always` is an item whatever its severity: the check that tells a quiet
+alarm is real, left at a low severity by whoever set it up.
 """
 import logging
 import os
@@ -32,6 +34,7 @@ class ZabbixWatcher(Watcher):
         self.min_severity = cfg.get("min_severity", 2)
         self.push_severity = cfg.get("push_severity", 4)
         self.quiet = [re.compile(q, re.IGNORECASE) for q in cfg.get("quiet") or []]
+        self.push_always = [re.compile(q, re.IGNORECASE) for q in cfg.get("push_always") or []]
 
     def _call(self, method: str, params: dict):
         # Zabbix 5.4 reads an API token from `auth`; the Authorization header came with 6.4
@@ -43,13 +46,16 @@ class ZabbixWatcher(Watcher):
             raise RuntimeError(f"{method}: {answer['error'].get('data') or answer['error'].get('message')}")
         return answer["result"]
 
+    def _always(self, name: str) -> bool:
+        return any(q.search(name) for q in self.push_always)
+
     def fetch(self) -> list[WatchedItem]:
-        problems = self._call("problem.get", {
+        problems = [p for p in self._call("problem.get", {
             "output": ["eventid", "objectid", "name", "severity", "clock", "acknowledged"],
             "recent": False,
             "suppressed": False,
-            "severities": list(range(self.min_severity, 6)),
-        })
+            "severities": list(range(0 if self.push_always else self.min_severity, 6)),
+        }) if int(p["severity"]) >= self.min_severity or self._always(p["name"])]
         ids = sorted({p["objectid"] for p in problems})
         monitored = {t["triggerid"] for t in self._call("trigger.get", {"triggerids": ids, "monitored": True, "output": ["triggerid"]})} if ids else set()
         triggers = self._call("trigger.get", {
@@ -74,10 +80,11 @@ class ZabbixWatcher(Watcher):
                 counts["acked"] += 1
                 continue
             level = int(p["severity"])
-            known = any(q.search(p["name"]) for q in self.quiet)
+            always = self._always(p["name"])
+            known = not always and any(q.search(p["name"]) for q in self.quiet)
             url = f"{self.web_url}/tr_events.php?triggerid={p['objectid']}&eventid={p['eventid']}" if self.web_url else ""
             row = {"eventid": p["eventid"], "host": hosts[p["objectid"]], "name": p["name"], "severity": SEVERITIES[level], "level": level,
-                   "since": int(p["clock"]), "known": known, "url": url, "item": not known and level >= self.push_severity}
+                   "since": int(p["clock"]), "known": known, "url": url, "item": always or (not known and level >= self.push_severity)}
             rows.append(row)
             if not row["item"]:
                 continue

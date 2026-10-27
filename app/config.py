@@ -61,6 +61,7 @@ SECOND_DEFAULTS = {
     "max_per_day": 40,          # consoles started per day
     "watch_minutes": 5,         # a monitoring alert unacknowledged this long: a diagnosis
     "watch_hours": 24,          # older alerts are left alone: no digging into last week's when it is turned on
+    "watch_per_day": 20,        # alerts taken up per day, within max_per_day: a storm leaves room for the rest
     "stuck_days": 2,            # a started ticket of yours untouched this long: what blocks it, in a comment
     "stuck_per_day": 3,         # stalled tickets taken up per day, the oldest first: a backlog goes over days
     "review_days": 1,           # a review asked of you by name, waiting this long: a devil's advocate read

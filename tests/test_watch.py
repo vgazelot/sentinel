@@ -85,12 +85,31 @@ def rpc(results):
 
 
 class ZabbixTest(SentinelTest):
-    def watcher(self):
+    def watcher(self, **cfg):
         from watchers.zabbix import ZabbixWatcher
 
         with mock.patch.dict("os.environ", {"ZABBIX_TOKEN": "tok"}):
             return ZabbixWatcher({"url": "https://zabbix.example.com/api_jsonrpc.php", "web_url": "https://zabbix.example.com",
-                                  "quiet": ["bandwidth usage"]})
+                                  "quiet": ["bandwidth usage"], **cfg})
+
+    def test_a_liveness_check_left_at_information_is_pushed_and_its_noisy_twin_is_not(self):
+        problems = [{"eventid": e, "objectid": t, "name": n, "severity": sev, "clock": "1700000000", "acknowledged": "0"}
+                    for e, t, n, sev in (("1", "t1", "Consumer ping has no activity for app_ping.events", "1"),
+                                         ("2", "t2", "Consumer has no activity for app.events", "4"),
+                                         ("3", "t3", "Disk inode usage 51 %", "1"))]
+        post = rpc({"problem.get": problems})
+        post.triggers = [[{"triggerid": t} for t in ("t1", "t2")], [{"triggerid": t, "hosts": [{"host": "kafka-1"}]} for t in ("t1", "t2")]]
+        w = self.watcher(quiet=["^Consumer has no activity"], push_always=["ping has no activity"])
+        with mock.patch("requests.post", side_effect=post):
+            items = w.fetch()
+        self.assertEqual(post.bodies[0]["params"]["severities"], [0, 1, 2, 3, 4, 5])
+        self.assertEqual([(i.external_id, i.severity) for i in items], [("1", "information")])
+        self.assertEqual(sorted(post.bodies[1]["params"]["triggerids"]), ["t1", "t2"], "below min_severity and not named: never read")
+        post = rpc({"problem.get": problems[:1]})
+        post.triggers = [[{"triggerid": "t1"}], [{"triggerid": "t1", "hosts": [{"host": "kafka-1"}]}]]
+        with mock.patch("requests.post", side_effect=post):
+            self.assertEqual(len(self.watcher(quiet=["has no activity"], push_always=["ping has no activity"]).fetch()), 1,
+                             "named both noise and push_always: pushed")
 
     def test_problems_at_push_severity_become_items(self):
         import quart
@@ -227,7 +246,7 @@ class GrafanaTest(SentinelTest):
 
         links = ["https://grafana.example.com/d/abc/pipeline?var-source=web", "https://grafana.example.com/d/abc/pipeline?var-source=api",
                  "https://grafana.example.com/d/abc/pipeline"]
-        names = list(build_watchers({"watchers": {"grafana": {**GRAFANA, "enabled": True, "dashboards": links}}}))
+        names = [n for n in build_watchers({"watchers": {"grafana": {**GRAFANA, "enabled": True, "dashboards": links}}}) if n.startswith("grafana:")]
         self.assertEqual(len(set(names)), 3)
         self.assertIn("grafana:abc", names)
 
@@ -286,6 +305,109 @@ class GrafanaTest(SentinelTest):
         self.assertEqual(self.watcher("https://grafana.example.com/d-solo/abc/x").name, "grafana:0")
 
 
+def alert(fingerprint, uid="abc", state="active", **labels):
+    return {"fingerprint": fingerprint, "startsAt": "2026-01-02T03:04:05.000Z", "status": {"state": state},
+            "annotations": {"__dashboardUid__": uid, "__panelId__": "1"}, "labels": {"alertname": "Pulled too low", **labels}}
+
+
+class GrafanaAlertsTest(SentinelTest):
+    def setUp(self):
+        super().setUp()
+        import quart
+
+        self.addCleanup(quart.publish, "alerts", {})
+        self.alerts = []
+        self.dashboard_down = False
+        self.dashboard_reads = 0
+        self.w = self.watcher()
+
+    def watcher(self, **cfg):
+        from watchers.grafana import GrafanaAlertsWatcher
+
+        with mock.patch.dict("os.environ", {"GRAFANA_TOKEN": "tok"}):
+            return GrafanaAlertsWatcher({**GRAFANA, **cfg}, GRAFANA["dashboards"] + ["https://elsewhere.example.net/d/far/x"])
+
+    def get(self, url, params=None, timeout=None):
+        resp = mock.Mock()
+        resp.raise_for_status = lambda: None
+        if url == "https://grafana.example.com/api/alertmanager/grafana/api/v2/alerts":
+            resp.json = lambda: self.alerts
+        elif url == "https://grafana.example.com/api/dashboards/uid/abc":
+            self.dashboard_reads += 1
+            if self.dashboard_down:
+                raise requests.ConnectionError("unreachable")
+            resp.json = lambda: DASHBOARD
+        else:
+            raise AssertionError(url)
+        return resp
+
+    def run_watcher(self):
+        import engine
+
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            engine.run_watcher(self.w)
+
+    def test_an_alert_on_a_watched_dashboard_is_pushed_until_grafana_resolves_it(self):
+        import db
+        import quart
+
+        self.seed(self.w.name)
+        # silenced or inhibited (it pages nobody), on a dashboard you do not watch, on a Grafana the token never goes to
+        self.alerts = [alert("f1"), alert("f2", state="suppressed"), alert("f3", uid="other"), alert("f4", uid="far")]
+        self.run_watcher()
+        [row] = db.items("watcher = ? AND state = 'pending'", self.w.name)
+        self.assertEqual((row["external_id"], row["title"], row["lane"], row["url"]),
+                         ("f1", "Pulled too low", "watch", GRAFANA["dashboards"][0]))
+        self.assertEqual(__import__("json").loads(row["payload"])["why"], "Pipeline · Pulled")
+        self.assertEqual(len(self.pushes), 1)
+        self.assertEqual([a["panel"] for a in quart.snapshot()["alerts"]["abc"]], ["Pulled"])
+        self.alerts = []
+        self.run_watcher()
+        self.run_watcher()
+        self.assertEqual(db.items("watcher = ? AND state = 'pending'", self.w.name), [])
+        self.assertEqual(quart.snapshot()["alerts"], {})
+
+    def test_the_series_that_fired_is_told_apart(self):
+        a = alert("f1", instance="db-2:9104", __legacy_c_x__="true")
+        a["annotations"] |= {"summary": "replication stopped"}
+        a["generatorURL"] = "https://grafana.example.com/alerting/grafana/r1/view"
+        self.alerts = [a]
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            [item] = self.w.fetch()
+        self.assertEqual(item.title, "Pulled too low · instance=db-2:9104")
+        self.assertEqual((item.payload["note"], item.payload["rule"]), ("replication stopped", a["generatorURL"]))
+
+    def test_a_rule_without_data_is_named_after_its_rule(self):
+        self.alerts = [alert("f1", alertname="DatasourceNoData", rulename="Pulled too low")]
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            [item] = self.w.fetch()
+            self.w.fetch()
+        self.assertEqual(item.title, "Pulled too low — no data")
+        self.assertEqual(self.dashboard_reads, 1, "the panels' titles are read once")
+        self.alerts[0]["annotations"]["__panelId__"] = "99"
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            self.w.fetch()
+            self.w.fetch()
+        self.assertEqual(self.dashboard_reads, 2, "a panel it does not have is looked for once")
+
+    def test_an_unreadable_dashboard_does_not_hold_the_alert_back(self):
+        self.dashboard_down = True
+        self.alerts = [alert("f1")]
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            [item] = self.w.fetch()
+        self.assertEqual((item.payload["dashboard"], item.payload["why"]), ("abc", "abc"))
+
+    def test_on_by_default_and_the_token_only_goes_over_https(self):
+        from watchers import build_watchers
+
+        grafana = {**GRAFANA, "enabled": True}
+        self.assertIn("grafana-alerts", build_watchers({"watchers": {"grafana": grafana}}))
+        self.assertNotIn("grafana-alerts", build_watchers({"watchers": {"grafana": {**grafana, "alerts": False}}}))
+        with mock.patch("requests.Session.get", side_effect=self.get) as get, self.assertRaises(ValueError):
+            self.watcher(url="http://grafana.example.com").fetch()
+        get.assert_not_called()
+
+
 class WatchPageTest(SentinelTest):
     def setUp(self):
         super().setUp()
@@ -317,11 +439,14 @@ class WatchPageTest(SentinelTest):
                                                    "panel_id": 1, "volume": True, "discrete": False, "confirmed": True, "item": True, "spark": spark}]})
         quart.publish_dashboard(1, {"uid": "other", "title": "Other", "link": "https://grafana.example.com/d/other/x", "error": None,
                                     "panels": 2, "series": 5, "unread": 0, "window_minutes": 360, "anomalies": []})
+        quart.publish("alerts", {"abc": [{"name": "Pulled too low", "panel": "Pulled", "since": now - 600,
+                                          "url": "https://grafana.example.com/d/abc/pipeline", "item": True}]})
+        self.addCleanup(quart.publish, "alerts", {})
         client = main.app.test_client()
         page = client.get("/watch").get_data(as_text=True)
         for text in ("Consumer delay above 1h", "1 known noise", "1 acknowledged · 2 hidden behind the problem they depend on",
                      "Zabbix read just now", "Pipeline", "stopped for 30 min", "nothing changed", 'href="/watch"',
-                     "1 to look at", "2 in the Inbox"):
+                     "1 to look at", "3 in the Inbox", "1 firing", "Pulled too low", "Pulled · firing for 10m"):
             self.assertIn(text, page)
         self.assertLess(page.index("Pipeline"), page.index("Other"), "dashboards in the order of the config")
         self.assertEqual(client.get("/partials/watch").status_code, 200)

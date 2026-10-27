@@ -18,8 +18,12 @@
     <section class="d-sec">
         <h3>The Second{% if job.state in ('queued', 'running') %} <span class="tag reading">reading, read-only</span>{% elif job.state == 'late' %} <span class="tag warn">no answer yet</span>{% elif job.state == 'failed' %} <span class="tag bad">stopped</span>{% endif %}</h3>
         {% if job.state == 'done' %}<div class="md d-second">{{ job.report | md | safe }}</div>
+        {% if job.story %}<p class="muted">{{ 'Posted on' if job.posted_at else 'Its Run ticket:' }} <a href="{{ job.story_url }}" target="_blank" rel="noopener">{{ job.story }}</a>
+            {% if not job.posted_at %}<button type="button" class="btn small" hx-post="/api/second/{{ job.id }}/post" hx-disabled-elt="this"
+                title="Its verdict and what it saw, up to the commands: those stay here — nobody on call runs what nobody read">Post on {{ job.story }}</button>{% endif %}</p>{% endif %}
+        {% if job.error %}<p class="muted">{{ job.error }}</p>{% endif %}
         {% elif job.state == 'failed' %}<p class="muted">{{ job.error }}</p>
-        {% else %}<p class="muted">Took it {{ (job.started_at or job.queued_at) | age }} ago, after {{ v.first_seen | age }} without an acknowledgement. Claude opens its session.</p>{% endif %}
+        {% else %}<p class="muted">Took it {{ (job.started_at or job.queued_at) | age }} ago. Claude opens its session.</p>{% endif %}
     </section>
     {% endif %}
     {% if v.lane == 'followup' and p.kind == 'failed' %}

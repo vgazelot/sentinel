@@ -530,6 +530,13 @@ def api_second_reply(job_id: int, index: int):
         return render_template("partials/second_reply.html", job_id=job_id, r=r | {"text": body or r["text"]}, error=f"Not posted: {e}")
 
 
+@app.post("/api/second/<int:job_id>/post")
+def api_second_post(job_id: int):
+    """Your click on a real alert's diagnosis: what it saw goes on its Run ticket, its commands stay here."""
+    second.post_alert(job_id)
+    return partial_item((second.job(job_id) or {}).get("item_id") or 0)
+
+
 @app.get("/partials/group")
 def partial_group():
     ids = [int(x) for x in request.args.get("ids", "").split(",") if x.isdigit()]

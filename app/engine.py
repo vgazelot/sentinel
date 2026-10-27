@@ -167,8 +167,8 @@ def wake_snoozed():
     _push([(r["id"], r["title"], "Snooze expired", r["url"]) for r in loud])
 
 
-# sources named from the config: one per status page, one per dashboard link
-CONFIGURED = ("statuspage:", "grafana:")
+# sources named from the config: one per status page, one per dashboard link, Grafana's alerts
+CONFIGURED = ("statuspage:", "grafana:", "grafana-alerts")
 
 
 def retire(current: set[str]):

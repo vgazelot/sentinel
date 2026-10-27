@@ -74,8 +74,9 @@ def context(buttons: bool = True) -> dict:
             "read": _read(now, z["read_at"]),
             "web_url": z["web_url"],
         }
+    alerts = {uid: [{**a, "age": duration(now - a["since"])} for a in rows] for uid, rows in snap["alerts"].items()}
     if g := snap["grafana"]:
-        cards = [g[k] for k in sorted(g)]
+        cards = [{**g[k], "alerts": alerts.get(g[k]["uid"], [])} for k in sorted(g)]
         grafana = {
             "cards": cards,
             "series": sum(c["series"] for c in cards),
@@ -84,7 +85,8 @@ def context(buttons: bool = True) -> dict:
             "read": _read(now, min(c["read_at"] for c in cards)),
         }
     # the Watch badge counts what only this page shows: what pushes is already in the inbox
-    entries = (zabbix["look"] if zabbix else []) + [a for c in (grafana["cards"] if grafana else []) for a in c["anomalies"]]
+    entries = ((zabbix["look"] if zabbix else []) + [a for c in (grafana["cards"] if grafana else []) for a in c["anomalies"]]
+               + [a for rows in alerts.values() for a in rows])
     to_look = sum(1 for e in entries if not e.get("item"))
     return {"zabbix": zabbix, "grafana": grafana, "to_look": to_look, "in_inbox": len(entries) - to_look}
 

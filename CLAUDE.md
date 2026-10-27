@@ -23,7 +23,7 @@ app/
 │   ├── github_reviews.py   # GraphQL: lanes you / team / deps, team+APPROVED dropped, `priority_teams` = team pushed at once, bump bodies cached
 │   ├── statuspage.py       # generic Atlassian Statuspage; every incident quiet (listed in Later, never pushed)
 │   ├── zabbix.py           # open problems as the front shows them (skipDependent, monitored); ≥ push_severity → items (lane watch)
-│   └── grafana.py          # one source per dashboard (grafana:<uid>, token pinned to `url`): confirmed stop / status change → items (lane watch)
+│   └── grafana.py          # one source per dashboard (grafana:<uid>, token pinned to `url`): confirmed stop / status change → items (lane watch); grafana-alerts: what its alertmanager sends for them, not silenced → items
 ├── quart.py          # Watch: stop / state / drift over the last 30 min vs the hours before + the snapshot the page reads
 ├── watch_views.py    # Watch page (blueprint); client certs for an mTLS proxy mounted on /certs (SENTINEL_CERTS); Claude button → POST /api/zabbix/<event>/console (prompt written here), then Sessions' board
 ├── console.py        # Claude consoles (blueprint): bridge client, start/end, attach/end routes, alive() for the buttons; the window is static/console.js, Sessions' board static/board.js (a console.js `Term` per terminal)
@@ -39,8 +39,8 @@ app/
 ├── lookout_sources.py   # HN, Lobsters, Reddit, GitHub trending (RSS mirror), RSS/Atom feeds, releases; public-only page reads
 ├── lookout_views.py  # Lookout page (blueprint): finds, to try, filtered out, failing sources
 ├── github_pr.py      # review detail data (numbered diff, checks, reviews) + submit_review, comment (a review thread or the conversation)
-├── second.py         # the Second: alerts left alone, your stalled tickets, the day's plan, reviews → read-only consoles, answers filed; fixes on your PRs in a worktree, pushed by Sentinel
-├── cycle.py · slite.py · shortcut.py   # Cycle tab; stalled big rocks → engine items (lane cycle); shortcut.comment on your stories only
+├── second.py         # the Second: alerts left alone (a real one → its Run ticket), your stalled tickets, the day's plan, reviews → read-only consoles, answers filed; fixes on your PRs in a worktree, pushed by Sentinel
+├── cycle.py · slite.py · shortcut.py   # Cycle tab; stalled big rocks → engine items (lane cycle); shortcut.comment on your stories only, open_story for an alert's Run ticket
 ├── md.py             # markdown → HTML + `path:line` → .fileref links
 └── templates/partials/  inbox_list · list_macros · detail_{review,item,group,dep,gone,fix} · detail_macros (reply, replies_section) · second_reply · agent_macro · cycle · watchers · watch · lookout · sessions_list · session_{detail,new}
 contrib/claude-bridge/   bridge.py (host, launchd) — modes, prompts, toolsets; consoles (tmux -L sentinel + tmux.conf, tickets, WebSocket); live sessions (claude agents + the advisor's files)
