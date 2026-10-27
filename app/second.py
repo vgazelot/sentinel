@@ -176,6 +176,8 @@ def _discover(cfg: dict, live: list[dict], now: datetime):
         if not db.ago(cfg["watch_hours"] * 60) <= row["first_seen"] <= db.ago(cfg["watch_minutes"]) or row["title"] in noise:
             continue
         name = f"{ALERTS[row['watcher']]}-{row['external_id']}"
+        if row["watcher"] != "zabbix":  # an event id is one occurrence, a Grafana fingerprint comes back with its alert
+            name += "-" + re.sub(r"\D", "", row["first_seen"])[4:12]
         if name not in alive:  # one you opened from Watch is yours
             others = [r["title"] for r in open_alerts if r["id"] != row["id"]]
             _queue("watch", row["external_id"], row["first_seen"], name, _watch_prompt(row, cfg, others), item_id=row["id"])

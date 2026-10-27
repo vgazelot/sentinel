@@ -154,11 +154,13 @@ class SecondTest(SecondBase):
             fingerprint="firing", severity="firing", lane="watch", urgency="now",
             payload={"source": "grafana", "name": "Pulled too low", "dashboard": "Pipeline", "panel": "Pulled",
                      "since": time.time() - 360, "why": "Pipeline · Pulled", "note": "", "rule": "https://grafana.example.net/alerting/grafana/r1/view"})])
+        seen = db.ago(6)
         with db.connect() as conn:
-            conn.execute("UPDATE items SET first_seen = ?", (db.ago(6),))
+            conn.execute("UPDATE items SET first_seen = ?", (seen,))
         second.tick()
         [run] = self.started
-        self.assertEqual(run["name"], "grafana-8cddd21bac679294")
+        self.assertEqual(run["name"], f"grafana-8cddd21bac679294-{seen[5:7]}{seen[8:10]}{seen[11:13]}{seen[14:16]}",
+                         "the alert back is another occurrence: another console")
         self.assertIn("Dashboard: Pipeline · Pulled", run["prompt"])
         self.assertIn("Grafana: https://grafana.example.net/d/abc/pipeline", run["prompt"])
         self.assertIn("Rule: https://grafana.example.net/alerting/grafana/r1/view", run["prompt"])
