@@ -39,7 +39,8 @@ watchers:
 
   # Zabbix: open problems, shown on the Watch page. Dependent problems are hidden the way Zabbix
   # hides them, acknowledged ones only counted. A problem at push_severity or above is also an inbox
-  # item (lane watch, pushed), unless its name matches one of `quiet` (known noise, listed apart).
+  # item (lane watch, pushed), unless its name matches one of `quiet` (known noise, listed apart);
+  # one matching `push_always` is an item whatever its severity.
   zabbix:
     enabled: false
     interval_seconds: 120
@@ -52,6 +53,7 @@ watchers:
     min_severity: 2                  # 0 not classified … 5 disaster
     push_severity: 4                 # high and above are pushed
     quiet: []                        # regexes on the problem name
+    push_always: []                  # regexes: pushed whatever their severity (a liveness check kept at "information")
     claude: false                    # a Claude button per problem: a console with Claude Code on it (needs the Claude bridge and tmux)
     # claude_prompt: |               # what Claude is told — {name} {host} {severity} {since} {age} (a duration) {url}
     #   Open a ticket for this Zabbix alert (or reuse the open one) and investigate, read-only until I say so.

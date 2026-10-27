@@ -85,12 +85,26 @@ def rpc(results):
 
 
 class ZabbixTest(SentinelTest):
-    def watcher(self):
+    def watcher(self, **cfg):
         from watchers.zabbix import ZabbixWatcher
 
         with mock.patch.dict("os.environ", {"ZABBIX_TOKEN": "tok"}):
             return ZabbixWatcher({"url": "https://zabbix.example.com/api_jsonrpc.php", "web_url": "https://zabbix.example.com",
-                                  "quiet": ["bandwidth usage"]})
+                                  "quiet": ["bandwidth usage"], **cfg})
+
+    def test_a_liveness_check_left_at_information_is_pushed_and_its_noisy_twin_is_not(self):
+        problems = [{"eventid": e, "objectid": t, "name": n, "severity": sev, "clock": "1700000000", "acknowledged": "0"}
+                    for e, t, n, sev in (("1", "t1", "Consumer ping has no activity for app_ping.events", "1"),
+                                         ("2", "t2", "Consumer has no activity for app.events", "4"),
+                                         ("3", "t3", "Disk inode usage 51 %", "1"))]
+        post = rpc({"problem.get": problems})
+        post.triggers = [[{"triggerid": t} for t in ("t1", "t2")], [{"triggerid": t, "hosts": [{"host": "kafka-1"}]} for t in ("t1", "t2")]]
+        w = self.watcher(quiet=["^Consumer has no activity"], push_always=["ping has no activity"])
+        with mock.patch("requests.post", side_effect=post):
+            items = w.fetch()
+        self.assertEqual(post.bodies[0]["params"]["severities"], [0, 1, 2, 3, 4, 5])
+        self.assertEqual([(i.external_id, i.severity) for i in items], [("1", "information")])
+        self.assertEqual(sorted(post.bodies[1]["params"]["triggerids"]), ["t1", "t2"], "below min_severity and not named: never read")
 
     def test_problems_at_push_severity_become_items(self):
         import quart
