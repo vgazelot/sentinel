@@ -333,8 +333,8 @@ class SessionsTest(SentinelTest):
         import sessions
 
         form = self.client.get("/partials/session?key=new").get_data(as_text=True)
-        self.assertIn('<input type="radio" name="under" value="run" checked>RUN', form, "the run by default")
-        self.assertIn('value="rock:Mesh">Mesh', form, "every group to choose from")
+        self.assertIn('<input type="radio" name="under" value="run" data-start="" checked>RUN', form, "the run by default")
+        self.assertIn('value="rock:Mesh" data-start="">Mesh', form, "every group to choose from")
         with mock.patch("console.start", return_value={"ticket": "t"}) as start:
             self.client.post("/api/sessions/new", data={"prompt": "Vérifie le lag Kafka", "under": "run"})
             run_name = start.call_args.args[0]
@@ -342,7 +342,7 @@ class SessionsTest(SentinelTest):
             off_name = start.call_args.args[0]
             self.client.post("/api/sessions/new", data={"prompt": "Ailleurs", "under": "own:abcdef"})
             again = self.client.post("/api/sessions/new", data={"prompt": " ", "under": "off"}).get_data(as_text=True)
-        self.assertIn('value="off" checked', again, "the choice survives an error")
+        self.assertIn('value="off" data-start="" checked', again, "the choice survives an error")
         self.sessions = [session("r", "busy", console=run_name), session("o", "busy", console=off_name)]
         groups = {g["key"]: [r["key"] for r in g["rows"]] for g in sessions.board()["groups"]}
         self.assertIn(f"console:{run_name}", groups["run"])
@@ -350,6 +350,25 @@ class SessionsTest(SentinelTest):
         self.assertEqual(set(sessions._layout()[1]), {f"console:{run_name}"}, "a group that does not exist is not filed")
         with mock.patch("cycle.enabled", return_value=False):
             self.assertNotIn('name="under"', self.client.get("/partials/session?key=new").get_data(as_text=True), "no cycle, no choice")
+
+    def test_new_starts_the_task_with_its_groups_words(self):
+        import yaml
+
+        with open(self.cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["sessions"] = {"new_prompts": {"run": "Ouvre un ticket run sur : ", "Mesh": "<b>Mesh</b> : "}}
+        with open(self.cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+        form = self.client.get("/partials/session?key=new").get_data(as_text=True)
+        self.assertIn(">Ouvre un ticket run sur : </textarea>", form, "the group checked starts the task")
+        self.assertIn('value="rock:Mesh" data-start="&lt;b&gt;Mesh&lt;/b&gt; : "', form, "by title too, escaped")
+        self.assertIn('value="off" data-start=""', form)
+        again = self.client.post("/api/sessions/new", data={"prompt": " ", "under": "off"}).get_data(as_text=True)
+        self.assertIn("></textarea>", again, "the group picked, not the run's words")
+        cfg["sessions"] = {"new_prompts": "run"}
+        with open(self.cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+        self.assertIn('value="run" data-start=""', self.client.get("/partials/session?key=new").get_data(as_text=True), "not a mapping: ignored")
 
     def test_a_session_goes_where_you_put_it(self):
         import sessions

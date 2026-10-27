@@ -157,6 +157,24 @@
         }
     });
 
+    // New: a group with words of its own starts the task with them (`sessions.new_prompts`), never over yours; the caret
+    // after them
+    const begin = (text, words) => {
+        text.value = words;
+        text.focus();
+        text.setSelectionRange(words.length, words.length);
+    };
+    document.addEventListener('change', (e) => {
+        const radio = e.target.closest('#detail input[name=under]');
+        if (!radio) return;
+        const text = radio.form.elements.prompt;
+        if (!text.value.trim() || [...radio.form.elements.under].some((r) => r.dataset.start === text.value)) begin(text, radio.dataset.start);
+    });
+    document.addEventListener('htmx:load', (e) => {
+        const text = e.detail.elt.querySelector?.('form[hx-post="/api/sessions/new"] textarea[name=prompt]');
+        if (text) begin(text, text.value);
+    });
+
     // a session's × or its End on the board, before its row sees the click: a session of another terminal shown in the
     // pane ends there, like its End button; a console or another session without a word — the list, fetched again,
     // drops it from the list and the board, or, if it failed, gives it back

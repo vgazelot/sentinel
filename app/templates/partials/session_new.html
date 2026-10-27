@@ -9,7 +9,7 @@
         {% if groups | length > 1 %}
         <div class="s-under"><span class="muted">Goes under</span>
             <div class="seg" role="radiogroup" aria-label="Goes under">
-                {% for g in groups %}<label title="{{ g.title }}"><input type="radio" name="under" value="{{ g.key }}"{% if g.key == under %} checked{% endif %}>{{ g.title }}</label>{% endfor %}
+                {% for g in groups %}<label title="{{ g.title }}"><input type="radio" name="under" value="{{ g.key }}" data-start="{{ starts[g.key] }}"{% if g.key == under %} checked{% endif %}>{{ g.title }}</label>{% endfor %}
             </div>
         </div>
         {% endif %}

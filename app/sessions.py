@@ -374,12 +374,17 @@ def api_start():
 
 
 def _new(**ctx):
-    """New: the task, and where it goes — the run by default when the cycle has one."""
+    """New: the task, and where it goes — the run by default when the cycle has one. A group may start the task with
+    its own words (`sessions.new_prompts`, by group key or title)."""
     groups = _groups(cycle.load() if cycle.enabled() else {}, _layout()[0])
     under = ctx.pop("under", "")
     if under not in groups:
         under = "run" if "run" in groups else "off"
-    return _detail("partials/session_new.html", groups=list(groups.values()), under=under, **ctx)
+    starts = (config.load().get("sessions") or {}).get("new_prompts")
+    starts = starts if isinstance(starts, dict) else {}
+    starts = {key: str(starts.get(key) or starts.get(g["title"]) or "") for key, g in groups.items()}
+    ctx.setdefault("prompt", starts[under])
+    return _detail("partials/session_new.html", groups=list(groups.values()), under=under, starts=starts, **ctx)
 
 
 @bp.post("/api/sessions/new")
