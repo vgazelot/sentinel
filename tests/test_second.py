@@ -294,7 +294,9 @@ class SecondTest(SecondBase):
         plan = next(i for i in self.client.get("/api/summary").get_json()["items"] if i["lane"] == "plan")
         detail = self.client.get(f"/partials/item/{plan['id']}").get_data(as_text=True)
         self.assertEqual(detail.count(f'hx-post="/api/second/{job["id"]}/reply/'), 2)
-        self.assertIn("evil/elsewhere/pull/1, not postable from here", detail, "left out, never lost")
+        self.assertRegex(detail, r'href="https://github\.com/evil/elsewhere/pull/1"[^>]*>elsewhere#1</a>, not postable from here',
+                         "left out, never lost")
+        self.assertNotIn('class="mono" href="https://github.com/evil/', detail, "no reply form for another repository")
         self.assertEqual(second.text(job["report"]), "- Answer the port question on #7: done below")
 
     def test_plan_time_is_local_and_on_weekdays(self):
