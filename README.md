@@ -187,7 +187,7 @@ The Claude Code sessions running on your machine, filed under the tickets they w
 
 Claude takes up, on its own and read-only, what waits on you too long, in a console of its own you can open from Sessions at any time:
 
-- **A monitoring alert nobody acknowledged** for `watch_minutes` (5; 0 = at once) — a Zabbix problem or an alert Grafana sent: a diagnosis on the alert — a verdict first (real, noise, resolved), what it saw, with the command that showed it, and the commands for you to run, each with its check. A real one goes on a Run ticket (with the `cycle:` block): your open story of that alert in the cycle's Run epic, else a new one, started and yours, the diagnosis as its comment; no verdict read counts as real. A Zabbix alert's console is the one Watch's Claude button opens: clicking lands on its work; an alert you opened yourself is left to you.
+- **A monitoring alert nobody acknowledged** for `watch_minutes` (5; 0 = at once) — a Zabbix problem or an alert Grafana sent: a diagnosis on the alert — a verdict first (real, noise, resolved), what it saw, with the command that showed it, and the commands for you to run, each with its check. A real one goes on a Run ticket (with the `cycle:` block): your open story of that alert in the cycle's Run epic, else a new one, started and yours, the diagnosis as its comment; noise, over by itself or no verdict read: it stays on the alert. At most `watch_per_day` (20) alerts a day; one closed before its turn is dropped, one called noise is not read again for `watch_hours`. A Zabbix alert's console is the one Watch's Claude button opens: clicking lands on its work; an alert you opened yourself is left to you.
 - **A started ticket of yours untouched** for `stuck_days` (2), no session on it: what blocks it and the next step, posted as a comment on the ticket (yours only — Sentinel checks the owner), once per stall, at most `stuck_per_day` (3) a day, the longest stalled first.
 - **Your day**, weekdays at `plan_at` (09:00): three things, in order, from what Sentinel knows — a row on top of Priority, pushed once.
 - **A review asked of you by name** for `review_days` (1): the devil's advocate reads it first (the `deep` agent run).
@@ -203,7 +203,7 @@ second:
   lang: English            # what it answers in
   ssh_hosts: ["web-*", "*.internal.example"]   # where ssh may read; none: every ssh asks
   curl_hosts: []           # where curl may GET (localhost always)
-  # concurrency: 2, max_per_day: 40, watch_minutes: 5, watch_hours: 24, stuck_days: 2, stuck_per_day: 3, review_days: 1, plan_at: "09:00", timeout_minutes: 60
+  # concurrency: 2, max_per_day: 40, watch_minutes: 5, watch_hours: 24, watch_per_day: 20, stuck_days: 2, stuck_per_day: 3, review_days: 1, plan_at: "09:00", timeout_minutes: 60
   # fix_minutes: 5 (0 = no fixes), fix_per_pr: 3
   # fix_review: "read ~/.claude/skills/my-review/SKILL.md (cat) and follow it on your diff"   # how it reads its own diff:
   #   --restricted loads none of your skills, its guard lets it read their texts (~/.claude/skills/<name>/<file>.md)

@@ -147,6 +147,8 @@ class GrafanaWatcher(_Grafana):
 
 # a rule whose query returns nothing, or fails, fires under these names, its own in `rulename`
 NO_RESULT = {"DatasourceNoData": "no data", "DatasourceError": "query failed"}
+# labels every alert carries: the others tell apart the series of one rule firing on several
+SHARED = {"alertname", "rulename", "grafana_folder"}
 
 
 class GrafanaAlertsWatcher(_Grafana):
@@ -184,6 +186,9 @@ class GrafanaAlertsWatcher(_Grafana):
             panel = panels.get(notes.get("__panelId__"), "")
             alertname = labels.get("alertname", "")
             name = f"{labels.get('rulename', alertname)} — {NO_RESULT[alertname]}" if alertname in NO_RESULT else alertname
+            series = ", ".join(f"{k}={v}" for k, v in sorted(labels.items()) if k not in SHARED and not k.startswith("__"))
+            name += f" · {series}" if series else ""
+            note = " — ".join(v for v in (notes.get("summary"), notes.get("description"), notes.get("message")) if v)
             since = datetime.fromisoformat(a["startsAt"].replace("Z", "+00:00")).timestamp()
             rows.setdefault(uid, []).append({"name": name, "panel": panel, "since": since, "url": self.links[uid], "item": True})
             items.append(WatchedItem(
@@ -193,7 +198,7 @@ class GrafanaAlertsWatcher(_Grafana):
                 fingerprint="firing",
                 severity=labels.get("severity") or "firing",
                 payload={"source": "grafana", "name": name, "dashboard": title, "panel": panel, "since": since,
-                         "why": f"{title} · {panel}" if panel else title},
+                         "why": f"{title} · {panel}" if panel else title, "note": note[:500], "rule": a.get("generatorURL", "")},
                 lane="watch",
                 urgency="now",
             ))

@@ -5,7 +5,8 @@ a push after a few minutes). Sentinel decides what to take up and when, and file
 
   watch   a monitoring alert (Zabbix, Grafana) nobody acknowledged for `watch_minutes` (0: at once) → a diagnosis on
           the alert, opening with a verdict; a real one goes on a Run ticket: the open one of that alert, else a new one
-          in the cycle's Run epic, started and yours. A Zabbix alert's console is the one Watch's Claude button opens
+          in the cycle's Run epic, started and yours. At most `watch_per_day`; one closed before its turn is dropped, one
+          called noise is not read again within `watch_hours`. A Zabbix alert's console is the one Watch's Claude button opens
           (`zabbix-<event>`): clicking it lands on the Second's work, and an alert you opened yourself is left to you
   stuck   a started ticket of yours untouched for `stuck_days`, no session on it → what blocks it, commented on the
           ticket (yours only); once per stall: the Second's own comment does not count as activity
@@ -78,7 +79,7 @@ READ_ONLY = ("You are the Second, working unattended for {who}: read-only. You m
 
 # the sources whose alerts it takes up → their consoles' prefix
 ALERTS = {"zabbix": "zabbix", "grafana-alerts": "grafana"}
-VERDICT = re.compile(r"\W*verdict\W*(real|noise|resolved)\b", re.I)
+VERDICT = re.compile(r"^\W*verdict\W*(real|noise|resolved)\b", re.I | re.M)
 
 PROMPTS = {
     "watch": """{read_only}
@@ -88,8 +89,8 @@ host, its logs, what changed lately (deploys, maintenance announced, configurati
 (tickets, notes, memory). A real one's answer is posted as is on a ticket the team reads: never quote or link a private
 message (a direct message, an email), say "a conversation with <name>" instead. Then answer:
 - first line: `Verdict: real` (something is broken or breaking), `Verdict: noise` (a false alarm, nothing broke) or
-  `Verdict: resolved` (it recovered by itself, nothing left to do), then the cause in one sentence, or what you could
-  not establish
+  `Verdict: resolved` (it recovered by itself, nothing left to do) — these words in English whatever your language —,
+  then the cause in one sentence, or what you could not establish
 - what you saw, each with the command or query that showed it
 - the commands for them to run, in order, each followed by the check that tells it worked
 - what to watch after
@@ -168,13 +169,16 @@ def tick():
 # --- What to take up --------------------------------------------------------------------------------------------
 def _discover(cfg: dict, live: list[dict], now: datetime):
     alive = console.alive()
+    open_alerts = db.items(f"state = 'pending' AND lane = 'watch' AND watcher IN ({','.join('?' * len(ALERTS))})", *ALERTS)
+    noise = _noise(cfg)
     # the oldest alert first
-    for row in reversed(db.items(f"state = 'pending' AND lane = 'watch' AND watcher IN ({','.join('?' * len(ALERTS))}) "
-                                 "AND first_seen <= ? AND first_seen >= ?",
-                                 *ALERTS, db.ago(cfg["watch_minutes"]), db.ago(cfg["watch_hours"] * 60))):
+    for row in reversed(open_alerts):
+        if not db.ago(cfg["watch_hours"] * 60) <= row["first_seen"] <= db.ago(cfg["watch_minutes"]) or row["title"] in noise:
+            continue
         name = f"{ALERTS[row['watcher']]}-{row['external_id']}"
         if name not in alive:  # one you opened from Watch is yours
-            _queue("watch", row["external_id"], row["first_seen"], name, _watch_prompt(row, cfg), item_id=row["id"])
+            others = [r["title"] for r in open_alerts if r["id"] != row["id"]]
+            _queue("watch", row["external_id"], row["first_seen"], name, _watch_prompt(row, cfg, others), item_id=row["id"])
     data = cycle.load() if cycle.enabled() else {}
     at_work = sessions.stories_at_work(live)
     cutoff = (now - timedelta(days=cfg["stuck_days"])).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -192,6 +196,21 @@ def _discover(cfg: dict, live: list[dict], now: datetime):
     day = _plan_day(cfg, now)
     if day:
         _queue("plan", day, day, f"second-plan-{day.replace('-', '')}", _plan_prompt(data, cfg, day))
+
+
+def _noise(cfg: dict) -> set[str]:
+    """Alerts the Second called noise within `watch_hours`: the same one back is not read again."""
+    with db.connect() as conn:
+        rows = conn.execute("""SELECT i.title, j.report FROM second_jobs j JOIN items i ON i.id = j.item_id
+                               WHERE j.kind = 'watch' AND j.report IS NOT NULL AND j.queued_at >= ?""",
+                            (db.ago(cfg["watch_hours"] * 60),)).fetchall()
+    return {r["title"] for r in rows if (_verdict(r["report"]) or "") == "noise"}
+
+
+def _verdict(report: str) -> str | None:
+    """real, noise or resolved, as the first lines of a diagnosis say it."""
+    m = VERDICT.search("\n".join(report.strip().splitlines()[:3]))
+    return m.group(1).lower() if m else None
 
 
 def _mine_started(data: dict) -> list[dict]:
@@ -345,14 +364,16 @@ def _fence(text: str) -> str:
             f"BEGIN DATA {nonce}\n{text}\nEND DATA {nonce}")
 
 
-def _watch_prompt(row, cfg: dict) -> str:
+def _watch_prompt(row, cfg: dict, others: list[str]) -> str:
     p = json.loads(row["payload"] or "{}")
     since = float(p.get("since") or 0)
     age = duration(time.time() - since) if since else "a while"
     at = datetime.fromtimestamp(since, ZoneInfo(config.TZ)).strftime("%d/%m %H:%M") if since else "?"
     where = f"Host: {_field(p.get('host'))}" if p.get("host") else f"Dashboard: {_field(p.get('why'))}"
     data = (f"Problem: {_field(p.get('name'))}\n{where}\nSeverity: {_field(row['severity'])}\n"
-            f"Since: {at}\n{_field(p.get('source')).capitalize()}: {_field(row['url'])}")
+            f"Since: {at}\n{_field(p.get('source')).capitalize()}: {_field(row['url'])}"
+            + "".join(f"\n{label}: {_field(p[k])}" for label, k in (("Note", "note"), ("Rule", "rule")) if p.get(k))
+            + "".join(f"\nAlso open: {_field(t)}" for t in others[:5]))
     return _prompt("watch", cfg, data, age=age)
 
 
@@ -424,10 +445,21 @@ def _start(cfg: dict, now: datetime):
     for job in _jobs("state = 'preparing'"):  # its thread died with Sentinel
         if (_meta(job).get("preparing_at") or "") <= db.ago(PREPARE_MINUTES):
             _set(job["id"], state="failed", error="its worktree was never ready", finished_at=db.now())
+    for job in _jobs("state = 'queued' AND kind = 'watch'"):
+        if not db.items("id = ? AND state = 'pending'", job["item_id"]):
+            _set(job["id"], state="failed", error="the alert closed before its turn", finished_at=db.now())
     room = int(cfg["concurrency"]) - len(_jobs("state IN ('running', 'preparing')"))
     left = int(cfg["max_per_day"]) - len(_jobs("started_at >= ?", _day_start(now)))
+    alerts = int(cfg["watch_per_day"]) - len(_jobs("kind = 'watch' AND started_at >= ?", _day_start(now)))
     hosts = {"ssh_hosts": list(cfg["ssh_hosts"] or []), "curl_hosts": list(cfg["curl_hosts"] or [])}
-    queued = _jobs("state = 'queued' ORDER BY id")[:max(min(room, left), 0)]
+    queued = []
+    for job in _jobs("state = 'queued' ORDER BY id"):
+        if job["kind"] == "watch":
+            if alerts <= 0:
+                continue
+            alerts -= 1
+        queued.append(job)
+    queued = queued[:max(min(room, left), 0)]
     if queued and not _bridge_ready():
         log.warning("second: the bridge is older than the Second or away, %d job(s) wait", len(queued))
         return
@@ -530,10 +562,13 @@ def _deliver(job: dict):
 
 
 def _file_alert(job: dict):
-    """A real alert's diagnosis goes on its Run ticket. Noise, or over by itself: it stays on the alert. No verdict read
-    counts as real: a ticket too many beats an outage without one."""
-    m = VERDICT.match(job["report"])
-    if m and m.group(1).lower() != "real":
+    """A real alert's diagnosis goes on its Run ticket. Noise, over by itself, or no verdict read: it stays on the alert,
+    already in your inbox."""
+    verdict = _verdict(job["report"])
+    if not verdict:
+        _set(job["id"], error="no verdict read: no Run ticket")
+        return
+    if verdict != "real":
         return
     held = _unpostable(job["report"])
     if held:

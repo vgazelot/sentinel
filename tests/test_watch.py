@@ -362,6 +362,16 @@ class GrafanaAlertsTest(SentinelTest):
         self.assertEqual(db.items("watcher = ? AND state = 'pending'", self.w.name), [])
         self.assertEqual(quart.snapshot()["alerts"], {})
 
+    def test_the_series_that_fired_is_told_apart(self):
+        a = alert("f1", instance="db-2:9104", __legacy_c_x__="true")
+        a["annotations"] |= {"summary": "replication stopped"}
+        a["generatorURL"] = "https://grafana.example.com/alerting/grafana/r1/view"
+        self.alerts = [a]
+        with mock.patch("requests.Session.get", side_effect=self.get):
+            [item] = self.w.fetch()
+        self.assertEqual(item.title, "Pulled too low · instance=db-2:9104")
+        self.assertEqual((item.payload["note"], item.payload["rule"]), ("replication stopped", a["generatorURL"]))
+
     def test_a_rule_without_data_is_named_after_its_rule(self):
         self.alerts = [alert("f1", alertname="DatasourceNoData", rulename="Pulled too low")]
         with mock.patch("requests.Session.get", side_effect=self.get):
