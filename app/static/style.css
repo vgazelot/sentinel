@@ -214,7 +214,7 @@ a.fileref:hover { color: var(--blue); }
 .agent-verdict > summary .muted { flex: none; font-size: 12px; }
 .spinner { width: 11px; height: 11px; border: 1.5px solid var(--line-2); border-top-color: var(--claude); border-radius: 50%; animation: spin 0.9s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.md { margin-top: 10px; font-size: 13.5px; line-height: 1.6; color: var(--text-2); max-height: 560px; overflow: auto; }
+.md { margin-top: 10px; font-size: 13.5px; line-height: 1.6; color: var(--text-2); max-height: 560px; overflow: auto; overflow-wrap: anywhere; }
 .md strong { color: var(--text); font-weight: 600; }
 .md h1, .md h2, .md h3 { font-size: 14px; color: var(--text); margin: 14px 0 6px; }
 .md p, .md ul, .md ol { margin: 0 0 8px; }

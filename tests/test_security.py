@@ -17,6 +17,17 @@ class SecurityTest(SentinelTest):
         self.assertNotIn("javascript:", html)
         self.assertIn('class="fileref"', html, "file refs are linked after the cleaning")
 
+    def test_bare_addresses_are_links_pull_requests_and_stories_read_short(self):
+        import agents
+
+        html = agents.render("Merge https://github.com/acme/infra/pull/3500, then <https://app.shortcut.com/acme/story/12345/a-title>."
+                             " [the fix](https://github.com/acme/infra/pull/9) https://example.com/a?b=1&c=2 https://x.io\"onmouseover=alert(1)")
+        self.assertIn('<a href="https://github.com/acme/infra/pull/3500" target="_blank" rel="noopener noreferrer">infra#3500</a>,', html)
+        self.assertIn('<a href="https://app.shortcut.com/acme/story/12345/a-title" target="_blank" rel="noopener noreferrer">sc-12345</a>.', html)
+        self.assertIn(">the fix</a>", html, "a link's own words stay")
+        self.assertIn('href="https://example.com/a?b=1&amp;c=2"', html)
+        self.assertNotIn('onmouseover="', html, "an address ends at a quote")
+
     def test_other_sites_cannot_post_through_the_browser(self):
         for headers in ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
                         {"Sec-Fetch-Site": "same-site"}):
