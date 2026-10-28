@@ -622,6 +622,7 @@ class FixTest(SecondBase):
         self.assertEqual((row["urgency"], row["p"]["step"]), ("now", "ready"))
         detail = self.client.get(f"/partials/item/{row['id']}").get_data(as_text=True)
         self.assertIn(f'hx-post="/api/second/{row["p"]["job"]}/push"', detail)
+        self.assertIn(f'data-session="/api/console/{self.started[0]["name"]}/attach"', detail, "its session, opened in Sessions")
         with mock.patch("shortcut.comment", return_value="2026-10-26T10:00:00Z"):
             answer = self.client.post(f"/api/second/{row['p']['job']}/push", headers={"Host": "localhost:8300", "Origin": "http://localhost:8300"})
         self.assertIn("Pushed", answer.get_data(as_text=True))

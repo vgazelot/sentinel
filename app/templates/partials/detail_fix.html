@@ -23,7 +23,7 @@
     <div class="bar">
         {% if ready %}<button type="button" class="btn primary" hx-post="/api/second/{{ job.id }}/push" hx-disabled-elt="this"
                 title="Pushes its commits onto {{ meta.branch }}, leased on {{ meta.head[:12] }}: a push of anyone's since and nothing goes{{ ' — a rebase, so a forced push' if not result.ff }}">Push{% if not result.ff %} (rebased){% endif %}</button>{% endif %}
-        {% if job and console_alive %}<button type="button" class="btn claude" data-session="{{ job.console }}" title="Its session, in Sessions: go on where it stopped">Session</button>{% endif %}
+        {% if job and console_alive %}<button type="button" class="btn claude" data-session="/api/console/{{ job.console }}/attach" title="Its session, in Sessions: go on where it stopped">Session</button>{% endif %}
         <a class="btn" href="{{ v.url }}" target="_blank" rel="noopener">Open the PR</a>
         <span class="spacer"></span>
         {{ triage(v) }}

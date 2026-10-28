@@ -1,11 +1,10 @@
 // Sessions' board: up to four consoles side by side — two columns, either one split in two —, and as many boards as you
 // need, one shown at a time (their numbers above it, ⌥⇧← ⌥⇧→). A live session dragged from the list lands where the box
 // under the pointer says (dropped on a terminal, it splits it while there is room, else takes its place); a terminal's
-// head dragged onto another swaps them, back onto the list takes it off, like its ×. A session selected in the list
-// takes the active terminal's place — one on another board brings that board —, and so does the pane (a ticket, New, a
-// session of another terminal) — the other terminals stay in view. A session just started (New, Pick up, Watch's Claude
-// button: `/sessions?open=<console>`) goes beside the active terminal, or onto a board of its own when this one is full:
-// nothing leaves for it. A live row dropped on another group of the list goes there (yours, made on the spot by New
+// head dragged onto another swaps them, back onto the list takes it off, like its ×. The pane (a ticket, New, a session
+// of another terminal) takes the active terminal's place — the other terminals stay in view. A session selected in the
+// list, like one just started (New, Pick up, Watch's Claude button: `/sessions?open=<console>`), goes beside the active
+// terminal, or onto a board of its own when this one is full: nothing leaves for it; one on a board brings that board. A live row dropped on another group of the list goes there (yours, made on the spot by New
 // section, a big rock, the run, off cycle), whatever its ticket says. The boards are this browser's (localStorage): the
 // sessions run on the host whatever they show. Each terminal is a `Term` (static/console.js) attached from the first
 // time its board shows until the page goes; the rows say where theirs is.
@@ -254,9 +253,8 @@
         if (keys && t) t.term.focus();
     }
 
-    // a session selected in the list: on a board, its terminal; else it takes the active one's place — one just started
-    // joins. A poll selecting again a session you took off, or one on another board, leaves the board alone; a click on
-    // it brings it.
+    // a session selected in the list: on a board, its terminal; else it joins, like one just started. A poll selecting
+    // again a session you took off, or one on another board, leaves the board alone; a click on it brings it.
     document.addEventListener('click', (e) => {
         const r = e.target.closest('#rows .it[data-term]');
         if (r) asked = r.dataset.key;
@@ -280,9 +278,7 @@
             activate(key);
             return;
         }
-        if (!slots.length) slots.push({ key, r: 'F' });
-        else (slotOf(active) || slots[0]).key = key;
-        active = key;
+        join(key);
         render();
     });
 
