@@ -1,11 +1,15 @@
 // Sessions' board: up to four consoles side by side — two columns, either one split in two —, and as many boards as you
 // need, one shown at a time (their numbers above it, ⌥⇧← ⌥⇧→). A live session dragged from the list lands where the box
 // under the pointer says (dropped on a terminal, it splits it while there is room, else takes its place); a terminal's
-// head dragged onto another swaps them, back onto the list takes it off, like its ×. The pane (a ticket, New, a session
-// of another terminal) takes the active terminal's place — the other terminals stay in view. A session selected in the
-// list, like one just started (New, Pick up, Watch's Claude button: `/sessions?open=<console>`), goes beside the active
-// terminal, or onto a board of its own when this one is full: nothing leaves for it; one on a board brings that board. A live row dropped on another group of the list goes there (yours, made on the spot by New
-// section, a big rock, the run, off cycle), whatever its ticket says. The boards are this browser's (localStorage): the
+// head dragged onto another swaps them, back onto the list takes it off, like its ×. A console dragged onto a board's
+// number goes to that board, beside its active terminal (+: a new board); held on a number, or on the board's left or
+// right side, it turns to that board — past the last one, a new one —, and dropped on that side it goes there at once;
+// a full board takes nothing that way. The pane (a ticket, New, a session of another terminal) takes the active
+// terminal's place — the other terminals stay in view. A session selected in the list, like one just started (New, Pick
+// up, Watch's Claude button: `/sessions?open=<console>`), goes beside the active terminal, or onto a board of its own
+// when this one is full: nothing leaves for it; one on a board brings that board. A live row dropped on another group
+// of the list goes there (yours, made on the spot by New section, a big rock, the run, off cycle), whatever its ticket
+// says. The boards are this browser's (localStorage): the
 // sessions run on the host whatever they show. Each terminal is a `Term` (static/console.js) attached from the first
 // time its board shows until the page goes; the rows say where theirs is.
 (() => {
@@ -21,8 +25,11 @@
     const LAYOUTS = new Set(['F', 'L R', 'BR L TR', 'BL R TL', 'BL BR TL TR']);
     const READING = { F: 0, L: 0, TL: 0, TR: 1, R: 1, BL: 2, BR: 3 };  // ⌥1–4
     const GAP = 8;
+    const EDGE = 28;  // px: a drag on the board's side, held HOLD ms, turns to the board on that side
+    const HOLD = 600;
     const ENDED = 'this session has ended';
     const drop = board.querySelector('.b-drop');
+    const edge = board.querySelector('.b-edge');
     const shown = new Map();  // key → {el, term, head, down}, whichever board it is on
     let boards = [{ slots: [], active: null }];
     let cur = 0;
@@ -226,6 +233,19 @@
         view(true);
     }
 
+    // to board i (past the last one: a new one), beside its active terminal; from another board it leaves that one
+    function send(key, i) {
+        const on = boardOf(key);
+        if (on >= 0 && on !== i) {
+            keep();
+            leave(boards[on], key);
+            active = boards[cur].active;
+        }
+        if (i >= boards.length) boards.push({ slots: [], active: null });
+        turn(i);
+        join(key);
+    }
+
     // the list's selection follows the active terminal (app.js `select`, without loading the pane)
     function follow(key) {
         const r = key && row(key);
@@ -317,7 +337,7 @@
     const chip = document.createElement('div');
     chip.className = 'b-chip';
     chip.hidden = true;
-    chip.innerHTML = '<svg class="ic"><use href=""/></svg><span></span>';
+    chip.innerHTML = '<svg class="ic"><use href=""/></svg><span></span><em></em>';  // em: a number's answer
     document.body.appendChild(chip);
     let drag = null;
     // the click that ends a drag — dropped or called off — is not a click on the row it started from
@@ -330,6 +350,21 @@
         return text.length > 28 ? `${text.slice(0, 27)}…` : text;
     };
 
+    // the board's side under (x, y): -1 left, 1 right (on to the window's edge), 0 neither
+    function side(x, y) {
+        const B = board.getBoundingClientRect();
+        if (y < B.top || y > B.bottom) return 0;
+        return x >= B.left - GAP && x <= B.left + EDGE ? -1 : x >= B.right - EDGE ? 1 : 0;
+    }
+    // the board a new one would be: the last one itself while it is empty (only the board shown can be)
+    const fresh = () => (boards[boards.length - 1].slots.length ? boards.length : boards.length - 1);
+    // a board as the target — a number, a side: what a drop there does
+    function aim(i, more) {
+        const b = boards[i];
+        const full = !!b && b.slots.length >= 4 && !b.slots.some((s) => s.key === drag.key);
+        return { type: 'board', i, full, label: full ? `Board ${i + 1} is full` : b ? `To board ${i + 1}` : 'To a new board', ...more };
+    }
+
     // what a drop at (x, y) does, and the box it fills
     function zone(x, y) {
         if (!drag.head) {  // a row over the list: another group, or a new one
@@ -338,14 +373,21 @@
             if (over) return over === drag.handle.closest('.proj') ? null : { type: 'file', group: over.dataset.group, el: over };
             if (!drag.term) return null;  // a session of another terminal never goes on the board
         }
+        const page = document.elementFromPoint(x, y)?.closest('#boards [data-board]');
+        if (page) return aim(page.dataset.board === 'new' ? fresh() : Number(page.dataset.board), { btn: page });
         if (drag.head && inside(list.getBoundingClientRect(), x, y)) return { type: 'off' };
+        // a side once the pointer has left them (a head grabbed near one would turn the board at once); past the last
+        // board, a new one — not from an empty one
+        const s = drag.free && side(x, y);
+        const to = s < 0 ? cur - 1 : s > 0 ? Math.min(cur + 1, fresh()) : -1;
+        if (to >= 0 && to !== cur) return aim(to, { side: s });
         const B = board.getBoundingClientRect();
         if (!inside(B, x, y)) return null;
         if (!slots.length) return { type: 'place', r: 'F', label: 'Here' };
         const lx = x - B.left, ly = y - B.top;
         const t = slots.find((s) => { const b = box(s.r); return lx >= b.x && lx <= b.x + b.w && ly >= b.y && ly <= b.y + b.h; });
         if (!t || t.key === drag.key) return null;
-        if (drag.on) return { type: 'swap', t: t.key, r: t.r, label: `Swap with ${titled(t.key)}` };
+        if (slotOf(drag.key)) return { type: 'swap', t: t.key, r: t.r, label: `Swap with ${titled(t.key)}` };  // here, not on the board it left
         const b = box(t.r);
         if (t.r === 'F') return lx - b.x < b.w / 2 ? { type: 'split', t: t.key, r: 'L', other: 'R', label: 'Left half' } : { type: 'split', t: t.key, r: 'R', other: 'L', label: 'Right half' };
         if (t.r === 'L' || t.r === 'R') {
@@ -357,9 +399,18 @@
 
     function show(z) {
         list.classList.toggle('b-off-target', !!z && z.type === 'off');
-        list.querySelectorAll('.drop-on').forEach((el) => el.classList.toggle('drop-on', el === z?.el));
-        if (z?.el) z.el.classList.add('drop-on');
-        if (!z || z.type === 'off' || z.el) { drop.hidden = true; return; }
+        const on = z?.el || z?.btn;
+        document.querySelectorAll('.drop-on, .drop-full').forEach((el) => { if (el !== on) el.classList.remove('drop-on', 'drop-full'); });
+        if (on) { on.classList.toggle('drop-on', !z.full); on.classList.toggle('drop-full', !!z.full); }
+        chip.lastElementChild.textContent = z?.btn ? z.label : '';
+        chip.lastElementChild.classList.toggle('bad', !!z?.full);
+        edge.hidden = !z?.side;
+        if (z?.side) {
+            edge.classList.toggle('l', z.side < 0);
+            edge.classList.toggle('full', z.full);
+            edge.firstElementChild.textContent = z.label;
+        }
+        if (!z || z.type === 'off' || z.el || z.type === 'board') { drop.hidden = true; return; }
         drop.classList.toggle('fresh', drop.hidden);  // the first box appears in place, the next ones glide
         place(drop, z.r);
         drop.firstElementChild.textContent = z.label;
@@ -376,10 +427,38 @@
         if (made) document.dispatchEvent(new CustomEvent('section-made', { detail: { key: made } }));
     }
 
+    // held on a number or a side, the drag turns to that board after HOLD — a new one past the last —, and on a side
+    // goes on turning while held; the side shows the wait filling
+    function hold(z) {
+        const to = z?.type === 'board' && z.i !== cur ? z.i : -1;
+        if ((drag.hold?.to ?? -1) === to) return;
+        clearTimeout(drag.hold?.id);
+        edge.classList.remove('arming');
+        drag.hold = to < 0 ? null : { to, id: setTimeout(flip, HOLD, to) };
+        if (drag.hold && z.side) {
+            void edge.offsetWidth;  // the fill starts again
+            edge.classList.add('arming');
+        }
+    }
+
+    function flip(to) {
+        if (!drag?.started) return;
+        drag.hold = null;
+        if (to >= boards.length) boards.push({ slots: [], active: null });
+        turn(to);
+        render();  // the empty board just left goes
+        drag.z = zone(drag.px, drag.py);
+        show(drag.z);
+        hold(drag.z);
+    }
+
     function land(z, key) {
         if (z.el) { file(z, key); return; }
         if (z.type === 'off') remove(key);
-        else {
+        else if (z.type === 'board') {
+            send(key, z.i);
+            keyboard = key;
+        } else {
             const on = boardOf(key);
             if (on >= 0 && on !== cur) leave(boards[on], key);  // from another board: it moves here
             if (z.type === 'place') slots.push({ key, r: 'F' });
@@ -395,17 +474,25 @@
     }
 
     function end(z) {
-        const { key, board: was } = drag;
+        const { key, board: was, from } = drag;
+        clearTimeout(drag.hold?.id);
         drag = null;
         mute = true;
         chip.hidden = true;
         drop.hidden = true;
+        edge.hidden = true;
+        edge.classList.remove('arming');
         list.classList.remove('b-off-target');
-        list.querySelectorAll('.drop-on').forEach((el) => el.classList.remove('drop-on'));
+        document.querySelectorAll('.drop-on, .drop-full').forEach((el) => el.classList.remove('drop-on', 'drop-full'));
         document.body.classList.remove('s-dragging');
         document.querySelectorAll('.lifted').forEach((el) => el.classList.remove('lifted'));
-        if (z) land(z, key);
-        if (!z || z.el) view(was);  // filed in the list: the pane stays what it was
+        if (z && !z.full) land(z, key);
+        else {  // called off, or a full board: back on the board it started from, an empty one it turned to gone
+            const back = boards.indexOf(from);
+            if (back >= 0) turn(back);
+            render();
+        }
+        if (!z || z.full || z.el) view(was);  // filed in the list: the pane stays what it was
     }
 
     document.addEventListener('pointerdown', (e) => {
@@ -414,9 +501,9 @@
         const handle = e.target.closest('#rows .it[data-term], #rows .it[data-key^="session:"], .b-head');
         if (!handle || handle.closest('.leaving')) return;
         const key = handle.dataset.key || handle.closest('.b-slot').dataset.key;
-        drag = { key, handle, id: e.pointerId, x: e.clientX, y: e.clientY, started: false, z: null,
-                 on: !!slotOf(key), head: handle.classList.contains('b-head'), term: !handle.dataset.key?.startsWith('session:'),
-                 board: terminals() };
+        drag = { key, handle, id: e.pointerId, x: e.clientX, y: e.clientY, started: false, z: null, hold: null, from: boards[cur],
+                 head: handle.classList.contains('b-head'), term: !handle.dataset.key?.startsWith('session:'),
+                 board: terminals(), free: !side(e.clientX, e.clientY) };
     });
 
     document.addEventListener('pointermove', (e) => {
@@ -435,8 +522,11 @@
             if (drag.term) view(true);
         }
         chip.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 12}px)`;
+        [drag.px, drag.py] = [e.clientX, e.clientY];
+        if (!side(e.clientX, e.clientY)) drag.free = true;
         drag.z = zone(e.clientX, e.clientY);
         show(drag.z);
+        hold(drag.z);
     });
 
     document.addEventListener('pointerup', (e) => {
