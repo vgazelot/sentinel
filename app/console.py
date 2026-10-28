@@ -94,11 +94,19 @@ def stop(session_id: str):
     _bridge("/sessions/end", {"id": session_id})
 
 
+class ApiError(RuntimeError):
+    """The session's turn ended on an error of Claude's API (`authentication_failed`: its login expired): no answer."""
+
+
 def last_answer(session_id: str) -> str:
-    """What the session wrote last, after its last tool call ('' while a prompt waits for its answer)."""
+    """What the session wrote last, after its last tool call ('' while a prompt waits for its answer); a turn ended on
+    an error of Claude's API raises ApiError."""
     r = requests.get(f"{config.CLAUDE_BRIDGE_URL}/sessions/answer", params={"id": session_id}, headers=agents._auth(), timeout=10)
     r.raise_for_status()
-    return str(r.json().get("answer") or "")
+    data = r.json()
+    if data.get("api_error"):
+        raise ApiError(str(data["api_error"]))
+    return str(data.get("answer") or "")
 
 
 def answer(name: str, title: str, prompt: str = ""):

@@ -62,6 +62,8 @@ PREPARE_MINUTES = 30  # a worktree still not ready after this (Sentinel restarte
 STORY_IN_BRANCH = re.compile(r"(?<![a-z0-9])sc-(\d{3,7})(?![0-9])")
 HHMM = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
 DONE_KEEP_MINUTES = 60  # a console answered this long ago, nobody in it: ended
+API_RETRY_MINUTES = 30  # a session Claude's API turned away (login expired, quota) starts again after this
+CLAUDE_API = "claude-api"  # its failure streak: a health item once long enough, over at the next answer
 MAX_MATERIAL = 8000
 # what a token looks like: an answer holding one is not posted — a ticket comment is read by others, and a comment
 # planted in a ticket could have asked for it
@@ -526,12 +528,17 @@ def _start(cfg: dict, now: datetime):
     for job in _jobs("state = 'queued' AND kind = 'watch'"):
         if not db.items("id = ? AND state = 'pending'", job["item_id"]):
             _set(job["id"], state="failed", error="the alert closed before its turn", finished_at=db.now())
+    for job in _jobs("state = 'queued' AND kind = 'plan' AND json_extract(meta, '$.retry_at') IS NOT NULL AND subject < ?",
+                     now.astimezone(ZoneInfo(config.TZ)).strftime("%Y-%m-%d")):  # turned away by Claude's API until the next day
+        _set(job["id"], state="failed", error="its day is over", finished_at=db.now())
     room = int(cfg["concurrency"]) - len(_jobs("state IN ('running', 'preparing')"))
     left = int(cfg["max_per_day"]) - len(_jobs("started_at >= ?", _day_start(now)))
     alerts = int(cfg["watch_per_day"]) - len(_jobs("kind = 'watch' AND started_at >= ?", _day_start(now)))
     hosts = {"ssh_hosts": list(cfg["ssh_hosts"] or []), "curl_hosts": list(cfg["curl_hosts"] or [])}
     queued = []
     for job in _jobs("state = 'queued' ORDER BY id"):
+        if (_meta(job).get("retry_at") or "") > db.now():
+            continue
         if job["kind"] == "watch":
             if alerts <= 0:
                 continue
@@ -592,8 +599,13 @@ def _follow(cfg: dict, live: list[dict]):
         if s and s.get("id"):
             if s["id"] != job["session"]:
                 _set(job["id"], session=s["id"])
-            answer = console.last_answer(s["id"]) if s.get("status") == "idle" else ""
+            try:
+                answer = console.last_answer(s["id"]) if s.get("status") == "idle" else ""
+            except console.ApiError as e:
+                _turned_away(job, str(e))
+                continue
             if answer:
+                db.record_run(CLAUDE_API)
                 _set(job["id"], state="done", report=answer, finished_at=db.now())
                 _deliver(dict(job) | {"report": answer})
                 continue
@@ -603,6 +615,35 @@ def _follow(cfg: dict, live: list[dict]):
         if job["state"] == "running" and (job["started_at"] or "") <= db.ago(cfg["timeout_minutes"]):
             # its place goes to the next one; an answer coming later is still read
             _set(job["id"], state="late", error=f"no answer after {cfg['timeout_minutes']} min")
+
+
+def _turned_away(job: dict, error: str):
+    """Claude's API ended the session's turn: no answer, whatever Claude Code wrote in its place. A console you are in
+    is yours to log in and go on — its next answer is read then; any other ends, and its job starts again later: a fix
+    as a new attempt (`FIX_RETRY_MINUTES`), not counted in the day's."""
+    why = "its login expired: run /login in a terminal" if error == "authentication_failed" else error
+    db.record_run(CLAUDE_API, why)
+    if job["console"] in {c.get("name") for c in console.sessions() if c.get("attached")}:
+        return
+    try:
+        console.end(job["console"])
+    except (requests.RequestException, RuntimeError) as e:
+        log.warning("second: could not end %s: %s", job["console"], e)
+        return
+    log.warning("second: %s %s turned away by Claude's API: %s", job["kind"], job["subject"], error)
+    if job["kind"] == "fix":
+        _set(job["id"], state="failed", started_at=None, error=f"Claude's API: {why}", finished_at=db.now())
+    else:
+        _set(job["id"], state="queued", session=None, started_at=None, error=f"Claude's API: {why} — again in {API_RETRY_MINUTES} min",
+             meta=json.dumps(_meta(job) | {"retry_at": db.ago(-API_RETRY_MINUTES)}))
+
+
+def _said(session_id: str) -> str:
+    """Its last answer — none when Claude's API ended its turn."""
+    try:
+        return console.last_answer(session_id)
+    except console.ApiError:
+        return ""
 
 
 def _unpostable(text: str) -> str:
@@ -860,7 +901,7 @@ def _tidy(live: list[dict]):
         s = by_console.get(job["console"])
         gone = s is None and job["console"] not in console.alive()
         untouched = s is not None and s.get("status") == "idle" and job["console"] not in attached \
-            and console.last_answer(s["id"]) == job["report"]
+            and _said(s["id"]) == job["report"]
         if untouched:
             try:
                 console.end(job["console"])
@@ -869,7 +910,7 @@ def _tidy(live: list[dict]):
                 continue
         if gone or untouched:
             _set(job["id"], ended_at=db.now())
-        elif s is not None and console.last_answer(s["id"]) != job["report"]:
+        elif s is not None and _said(s["id"]) != job["report"]:
             _set(job["id"], ended_at="kept")  # you went on in it: yours now
 
 

@@ -41,7 +41,7 @@ class SecondBase(SentinelTest):
                   mock.patch("sessions.live", side_effect=lambda: (self.live, "")),
                   mock.patch("console.alive", side_effect=lambda: set(self.alive)),
                   mock.patch("console.start", side_effect=start),
-                  mock.patch("console.last_answer", side_effect=lambda sid: self.answers.get(sid, "")),
+                  mock.patch("console.last_answer", side_effect=self.said),
                   mock.patch("console.sessions", side_effect=lambda: [{"name": n, "attached": int(n in self.attached)} for n in self.alive]),
                   mock.patch("console.end", side_effect=lambda name: self.ended.append(name) or self.alive.discard(name)),
                   mock.patch("second._plan_day", return_value=""),
@@ -72,6 +72,12 @@ class SecondBase(SentinelTest):
         with db.connect() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM second_jobs ORDER BY id")]
 
+    def said(self, sid):
+        answer = self.answers.get(sid, "")
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
     def answered(self, name, text):
         self.live = [s for s in self.live if s.get("console") != name] + [
             {"id": SID, "name": "dev-x", "status": "idle", "waiting_for": "", "console": name, "title": "t", "context": {}}]
@@ -97,6 +103,56 @@ class SecondTest(SecondBase):
         second.tick()
         self.assertEqual(len(self.started), 1, "once per occurrence")
 
+    def test_a_turn_claudes_api_ended_is_no_answer_its_job_starts_again_later(self):
+        import console
+        import db
+        import second
+
+        self.alert(minutes=6)
+        second.tick()
+        [run] = self.started
+        self.answered(run["name"], console.ApiError("authentication_failed"))
+        second.tick()
+        [job] = self.jobs()
+        self.assertEqual((job["state"], job["report"], job["started_at"]), ("queued", None, None))
+        self.assertIn("run /login", job["error"])
+        self.assertEqual(self.ended, [run["name"]], "its console holds nothing")
+        self.assertIn("run /login", db.watcher_states()["claude-api"]["last_error"])
+        second.tick()
+        self.assertEqual(len(self.started), 1, "not before its retry")
+        with db.connect() as conn:
+            conn.execute("UPDATE second_jobs SET meta = json_set(meta, '$.retry_at', ?)", (db.ago(1),))
+        self.live = []
+        second.tick()
+        self.assertEqual(len(self.started), 2, "logged in or not, tried again")
+        self.answered(run["name"], "Verdict: noise — a blip.")
+        second.tick()
+        self.assertEqual(self.jobs()[0]["state"], "done")
+        self.assertEqual(db.watcher_states()["claude-api"]["last_error"], "", "an answer ends the streak")
+
+    def test_a_console_you_are_in_stays_yours_to_log_in_and_go_on(self):
+        import console
+        import second
+
+        self.alert(minutes=6)
+        second.tick()
+        [run] = self.started
+        self.attached.add(run["name"])
+        self.answered(run["name"], console.ApiError("authentication_failed"))
+        second.tick()
+        self.assertEqual((self.jobs()[0]["state"], self.ended), ("running", []))
+        self.answered(run["name"], "Verdict: noise — a blip.")
+        second.tick()
+        self.assertEqual(self.jobs()[0]["state"], "done", "its answer once logged in")
+
+    def test_a_plan_waiting_on_claudes_api_past_its_day_is_dropped(self):
+        import second
+
+        second._queue("plan", "2020-01-01", "2020-01-01", "second-plan-20200101", "plan", meta={"retry_at": "2020-01-01T09:00:00Z"})
+        second.tick()
+        [job] = self.jobs()
+        self.assertEqual((job["state"], job["error"], self.started), ("failed", "its day is over", []))
+
     def test_nothing_starts_on_a_bridge_older_than_the_second(self):
         import second
 
@@ -113,9 +169,9 @@ class SecondTest(SecondBase):
         import second
 
         healthz = lambda api: mock.Mock(ok=True, json=lambda: {"api": api})
-        with mock.patch("requests.get", return_value=healthz(8)):
-            self.assertFalse(PLAN_READY(), "an older bridge")
         with mock.patch("requests.get", return_value=healthz(9)):
+            self.assertFalse(PLAN_READY(), "an older bridge")
+        with mock.patch("requests.get", return_value=healthz(10)):
             self.assertTrue(PLAN_READY())
         with mock.patch("requests.get", side_effect=second.requests.ConnectionError("down")):
             self.assertFalse(PLAN_READY())
@@ -607,6 +663,25 @@ class FixTest(SecondBase):
         self.assertEqual((row["urgency"], row["p"]["step"]), ("quiet", "pushed"), "a draft pushed waits on nobody")
         second.tick()
         self.assertEqual(len(self.git_pushes), 1)
+
+    def test_a_fix_claudes_api_turned_away_is_tried_again_as_a_new_attempt(self):
+        import console
+        import db
+        import second
+
+        second.tick()
+        self.wait()
+        second.tick()
+        comment = self.fixed(report=console.ApiError("authentication_failed"))
+        comment.assert_not_called()
+        [job] = self.jobs()
+        self.assertEqual((job["state"], job["started_at"]), ("failed", None), "not one of the day's attempts")
+        self.assertEqual(self.rows(), [], "nothing to say about a PR it never looked at")
+        with db.connect() as conn:
+            conn.execute("UPDATE second_jobs SET finished_at = ?", (db.ago(second.FIX_RETRY_MINUTES + 1),))
+        self.wait()
+        second.tick()
+        self.assertEqual(len(self.started), 2)
 
     def test_a_pr_under_review_waits_for_your_click(self):
         import second

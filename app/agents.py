@@ -96,7 +96,7 @@ ON_FINISH: dict[str, Callable] = {}
 # (a log, a release note) must not stand for Claude's own
 VERDICT = re.compile(r"verdict\s*:\s*\**\s*([\w-]+)", re.I)
 MAX_ATTEMPTS = 3
-BRIDGE_API = 9  # what /healthz must report: material for every automatic run (brief/whyred/asks since 3), token required, Lookout modes (4), sessions (5), ending any (6), the Second's consoles and a session's last answer (7), a fix's worktree (8), files pasted on New (9)
+BRIDGE_API = 10  # what /healthz must report: material for every automatic run (brief/whyred/asks since 3), token required, Lookout modes (4), sessions (5), ending any (6), the Second's consoles and a session's last answer (7), a fix's worktree (8), files pasted on New (9), a turn ended on an API error (10)
 TONE = {"safe": "ok", "clean": "ok", "unrelated": "ok", "check": "warn", "unclear": "warn",
         "tidy-up": "warn", "risky": "bad", "caused-by-this-pr": "bad",
         "trivial": "ok", "routine": "neutral", "careful": "warn",

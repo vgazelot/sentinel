@@ -47,7 +47,8 @@ for, and only from an origin in BRIDGE_ORIGINS — any other page gets nothing, 
 Sessions — every Claude Code session running on this host, in a console or in any other terminal:
     GET  /sessions      → {"sessions": [{"id", "name", "status", "waiting_for", "console", "title", "context"}]}
     POST /sessions/end {"id"} → stops it, over when Claude has left → {"ended"}
-    GET  /sessions/answer?id=… → {"answer"}: what Claude wrote last, after its last tool call
+    GET  /sessions/answer?id=… → {"answer", "api_error"}: what Claude wrote last, after its last tool call — or the
+         kind of error Claude's API ended its turn on (`authentication_failed`: its login expired), no answer then
 From `claude agents --json` (Claude Code's own list), the console each one runs in, its title (the end of its
 transcript) and `context`: what contrib/claude-code-context publishes about it (<CLAUDE_CONFIG_DIR>/context-advisor/
 <session id>.json: story, context size, cold cache, advice) — the advisor owns a session's story, read here as is.
@@ -234,7 +235,7 @@ LOOKOUT_MODES = ("scout", "assess", "dig")
 MATERIAL_MODES = ("precheck", "followup", "brief", "whyred", "asks") + LOOKOUT_MODES
 TOOLSETS = {"deep": ("Bash,Read,Grep,Glob,Agent", DEEP_ALLOWED, DEEP_DENIED),
             **{mode: ("", [], []) for mode in MATERIAL_MODES}}
-API = 9  # what /healthz reports: Sentinel refuses an older bridge
+API = 10  # what /healthz reports: Sentinel refuses an older bridge
 
 TMUX = os.environ.get("TMUX_BIN") or shutil.which("tmux") or "tmux"
 TMUX_CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmux.conf")
@@ -570,9 +571,10 @@ def _tail(session_id: str, size: int) -> bytes:
         return b""
 
 
-def last_answer(session_id: str) -> str:
+def last_answer(session_id: str) -> tuple[str, str]:
     """What Claude wrote last in the session: the text after its last tool call, in its main loop (a subagent's
-    lines are not its answer)."""
+    lines are not its answer) — and '', or the kind of error Claude's API ended its turn on: Claude Code writes that
+    error as if Claude had said it ("Login expired · Please run /login"), never an answer."""
     texts: list[str] = []
     for line in reversed(_tail(session_id, ANSWER_TAIL).splitlines()):
         try:
@@ -582,15 +584,19 @@ def last_answer(session_id: str) -> str:
         content = (entry.get("message") or {}).get("content") if isinstance(entry, dict) else None
         if entry.get("isSidechain") or entry.get("type") not in ("assistant", "user") or not isinstance(content, list):
             continue
+        if entry.get("isApiErrorMessage"):
+            if not texts:
+                return "", str(entry.get("error") or "api_error")
+            continue
         blocks = [b for b in content if isinstance(b, dict)]
         if entry["type"] == "user" or any(b.get("type") == "tool_use" for b in blocks):
             if texts:
                 break
             if entry["type"] == "user" and not all(b.get("type") == "tool_result" for b in blocks):
-                return ""  # a prompt not answered yet
+                return "", ""  # a prompt not answered yet
             continue
         texts += [str(b.get("text") or "") for b in reversed(blocks) if b.get("type") == "text"]
-    return "\n\n".join(t for t in reversed(texts) if t.strip())[:MAX_ANSWER]
+    return "\n\n".join(t for t in reversed(texts) if t.strip())[:MAX_ANSWER], ""
 
 
 def _title(session_id: str) -> str:
@@ -891,7 +897,8 @@ class Handler(BaseHTTPRequestHandler):
             sid = parse_qs(query).get("id", [""])[0]
             if not SESSION_ID.fullmatch(sid):
                 return self._json(400, {"error": "id: a session id"})
-            return self._json(200, {"answer": last_answer(sid)})
+            answer, api_error = last_answer(sid)
+            return self._json(200, {"answer": answer, "api_error": api_error})
         if path == "/second/fix":
             name = parse_qs(query).get("name", [""])[0]
             if not CONSOLE_NAME.fullmatch(name):

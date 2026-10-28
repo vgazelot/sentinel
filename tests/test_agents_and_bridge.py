@@ -53,8 +53,8 @@ class AgentsTest(SentinelTest):
         import agents
         import db
 
-        for info, expected in (({"api": 8, "token": True}, "older version"), ({"api": 9, "token": False}, "BRIDGE_TOKEN"),
-                               ({"api": 9, "token": True}, "")):
+        for info, expected in (({"api": 9, "token": True}, "older version"), ({"api": 10, "token": False}, "BRIDGE_TOKEN"),
+                               ({"api": 10, "token": True}, "")):
             with mock.patch("requests.get", return_value=mock.Mock(json=lambda info=info: info, raise_for_status=lambda: None)), \
                     mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
                 agents.check_bridge()
@@ -67,7 +67,7 @@ class AgentsTest(SentinelTest):
         cfg["watchers"]["zabbix"] = {"enabled": True, "url": "https://z", "claude": True}
         with open(self.cfg_path, "w") as f:
             yaml.safe_dump(cfg, f)
-        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 9, "token": True}, raise_for_status=lambda: None)), \
+        with mock.patch("requests.get", return_value=mock.Mock(json=lambda: {"api": 10, "token": True}, raise_for_status=lambda: None)), \
                 mock.patch("config.CLAUDE_BRIDGE_URL", "http://bridge"):
             agents.check_bridge()
         self.assertIn("no console", db.watcher_states()["claude-bridge"]["last_error"], "the Claude button needs a bridge with consoles")
@@ -235,10 +235,15 @@ class ConsoleBridgeTest(SentinelTest):
               said("assistant", {"type": "tool_use", "id": "1"}), said("user", {"type": "tool_result", "tool_use_id": "1"}),
               said("assistant", text("intermediate"), isSidechain=True),
               said("assistant", {"type": "thinking"}), said("assistant", text("Verdict: disk full.")), said("assistant", text("Run df -h.")))
-        self.assertEqual(b.last_answer(sid), "Verdict: disk full.\n\nRun df -h.")
+        self.assertEqual(b.last_answer(sid), ("Verdict: disk full.\n\nRun df -h.", ""))
         write(said("user", text("look")), said("assistant", text("old")), said("user", text("and now?")))
-        self.assertEqual(b.last_answer(sid), "", "a prompt not answered yet")
-        self.assertEqual(b.last_answer("00000000-0000-4000-8000-000000000000"), "")
+        self.assertEqual(b.last_answer(sid), ("", ""), "a prompt not answered yet")
+        self.assertEqual(b.last_answer("00000000-0000-4000-8000-000000000000"), ("", ""))
+        expired = said("assistant", text("Login expired · Please run /login"), isApiErrorMessage=True, error="authentication_failed")
+        write(said("user", text("look")), expired)
+        self.assertEqual(b.last_answer(sid), ("", "authentication_failed"), "Claude Code's words for an API error are no answer")
+        write(said("user", text("look")), expired, said("user", text("/login done, go on")), said("assistant", text("Verdict: disk full.")))
+        self.assertEqual(b.last_answer(sid), ("Verdict: disk full.", ""), "logged in again: its next answer")
 
     def test_the_websocket_wants_sentinel_origin_and_a_ticket(self):
         import http.client
