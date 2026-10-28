@@ -364,7 +364,11 @@ def _files(raw) -> list[tuple[str, bytes]]:
 
 
 def _mentions(name: str, files: list[tuple[str, bytes]]) -> str:
-    folder = tempfile.mkdtemp(prefix=f"sentinel-{name}-")
+    """Claude reads them with its first message: older folders go, a week on."""
+    for old in glob.glob(os.path.join(tempfile.gettempdir(), "sentinel-pasted-*")):
+        if os.path.isdir(old) and os.path.getmtime(old) < time.time() - 7 * 86400:
+            shutil.rmtree(old, ignore_errors=True)
+    folder = tempfile.mkdtemp(prefix=f"sentinel-pasted-{name}-")
     paths = [os.path.join(folder, f"{i}-{filename}") for i, (filename, _) in enumerate(files, 1)]
     for path, (_, data) in zip(paths, files):
         with open(path, "wb") as f:

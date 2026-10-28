@@ -7,7 +7,8 @@
 // a full board takes nothing that way. The pane (a ticket, New, a session of another terminal) takes the active
 // terminal's place — the other terminals stay in view. A session selected in the list, like one just started (New, Pick
 // up, Watch's Claude button: `/sessions?open=<console>`), goes beside the active terminal, or onto a board of its own
-// when this one is full: nothing leaves for it; one on a board brings that board. A live row dropped on another group
+// when this one is full: nothing leaves for it — the arrows' one is a preview the next arrow replaces until you use
+// it —; one on a board brings that board. A live row dropped on another group
 // of the list goes there (yours, made on the spot by New section, a big rock, the run, off cycle), whatever its ticket
 // says. The boards are this browser's (localStorage): the
 // sessions run on the host whatever they show. Each terminal is a `Term` (static/console.js) attached from the first
@@ -39,6 +40,7 @@
     let keyboard = null;  // the terminal a drop opens takes the keys
     let last = null;
     let asked = null;
+    let preview = null;  // a terminal the arrows put on the board: the next arrow takes its place, until you use it
     let stored = null;
     let opening = null;  // a console just started (New, Pick up, `?open=`), until it is on a board
 
@@ -273,7 +275,8 @@
         if (keys && t) t.term.focus();
     }
 
-    // a session selected in the list: on a board, its terminal; else it joins, like one just started. A poll selecting
+    // a session selected in the list: on a board, its terminal; else it joins, like one just started — the arrows' one
+    // as a preview, the next arrow in its place until you use it (a click in it or on its row, ⌥1–4). A poll selecting
     // again a session you took off, or one on another board, leaves the board alone; a click on it brings it.
     document.addEventListener('click', (e) => {
         const r = e.target.closest('#rows .it[data-term]');
@@ -284,7 +287,8 @@
     document.addEventListener('select-key', (e) => { opening = e.detail.key; }, true);  // before app.js selects it
     document.addEventListener('row-selected', (e) => {
         const key = e.detail.key;
-        const again = key === last && key !== asked;
+        const clicked = key === asked;
+        const again = key === last && !clicked;
         last = key;
         asked = null;
         if (!row(key)) { view(false); return; }
@@ -295,10 +299,14 @@
         view(true);
         if (on >= 0) {
             if (on !== cur) { turn(on); render(); }
+            if (clicked && key === preview) preview = null;
             activate(key);
             return;
         }
-        join(key);
+        const p = !clicked && preview && slotOf(preview);
+        if (p) { p.key = key; active = key; }
+        else join(key);
+        preview = clicked ? null : key;
         render();
     });
 
@@ -306,6 +314,7 @@
         const slot = e.target.closest('.b-slot');
         if (slot && !slot.classList.contains('leaving') && !e.target.closest('button, a')) {
             view(true);
+            if (slot.dataset.key === preview) preview = null;
             activate(slot.dataset.key);
             follow(slot.dataset.key);
             if (e.button === 0 && !e.target.closest('.b-head')) chosen();  // a head waits: it may be a drag
@@ -560,6 +569,7 @@
         const s = ordered()[Number(e.code.slice(5)) - 1];
         if (!s) return;
         view(true);
+        if (s.key === preview) preview = null;
         activate(s.key, true);
         follow(s.key);
         chosen();

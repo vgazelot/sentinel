@@ -120,8 +120,7 @@ class SecondTest(SecondBase):
         self.assertIn("run /login", db.watcher_states()["claude-api"]["last_error"])
         second.tick()
         self.assertEqual(len(self.started), 1, "not before its retry")
-        with db.connect() as conn:
-            conn.execute("UPDATE second_jobs SET meta = json_set(meta, '$.retry_at', ?)", (db.ago(1),))
+        self.later()
         self.live = []
         second.tick()
         self.assertEqual(len(self.started), 2, "logged in or not, tried again")
@@ -140,10 +139,84 @@ class SecondTest(SecondBase):
         self.attached.add(run["name"])
         self.answered(run["name"], console.ApiError("authentication_failed"))
         second.tick()
-        self.assertEqual((self.jobs()[0]["state"], self.ended), ("running", []))
+        self.assertEqual((self.jobs()[0]["state"], self.ended), ("late", []), "its place freed")
+        second.tick()
+        self.assertEqual(self.jobs()[0]["state"], "late")
         self.answered(run["name"], "Verdict: noise — a blip.")
         second.tick()
         self.assertEqual(self.jobs()[0]["state"], "done", "its answer once logged in")
+
+    def later(self):
+        """Past API_RETRY_MINUTES: every job turned away is due, the login's last failure that old."""
+        import db
+        import second
+
+        with db.connect() as conn:
+            conn.execute("UPDATE second_jobs SET meta = json_set(meta, '$.retry_at', ?) WHERE state = 'queued'", (db.ago(1),))
+        db.set_watcher_state(second.CLAUDE_API, "last_run", db.ago(second.API_RETRY_MINUTES + 1))
+
+    def test_while_the_login_is_out_one_job_tries_it_for_all(self):
+        import console
+        import db
+        import second
+
+        self.alert("1", minutes=6)
+        self.alert("2", minutes=6)
+        second.tick()
+        self.assertEqual(len(self.started), 2)
+        for i, name in enumerate(("zabbix-1", "zabbix-2")):
+            self.live = [s for s in self.live if s["console"] != name] + [
+                {"id": f"{SID[:-1]}{i}", "name": "x", "status": "idle", "waiting_for": "", "console": name, "title": "t", "context": {}}]
+            self.answers[f"{SID[:-1]}{i}"] = console.ApiError("authentication_failed")
+        second.tick()
+        self.assertEqual([j["state"] for j in self.jobs()], ["queued", "queued"])
+        self.alert("3", minutes=6)
+        self.later()
+        self.live = []
+        second.tick()
+        self.assertEqual(len(self.started), 3, "one probe, the others wait on it")
+        self.assertNotEqual(db.watcher_states()[second.CLAUDE_API]["last_error"], "")
+
+    def test_another_api_error_ends_its_job(self):
+        import console
+        import db
+        import second
+
+        self.alert(minutes=6)
+        second.tick()
+        self.answered(self.started[0]["name"], console.ApiError("invalid_request"))
+        second.tick()
+        [job] = self.jobs()
+        self.assertEqual((job["state"], job["error"]), ("failed", "Claude's API: invalid_request"))
+        self.assertNotIn(second.CLAUDE_API, db.watcher_states(), "no login to wait for")
+
+    def test_the_logins_streak_ends_once_nothing_was_turned_away_for_an_hour(self):
+        import db
+        import second
+
+        db.record_run(second.CLAUDE_API, "its login expired")
+        db.set_watcher_state(second.CLAUDE_API, "last_run", db.ago(2 * second.API_RETRY_MINUTES + 1))
+        second.tick()
+        self.assertEqual(db.watcher_states()[second.CLAUDE_API]["last_error"], "")
+
+    def test_a_stalled_ticket_waiting_on_the_login_is_dropped_once_it_moved(self):
+        import console
+        import db
+        import second
+
+        db.set_watcher_state("cycle", "data", json.dumps({"big_rocks": [], "run": {"label": "RUN", "epics": [{"stories": [
+            story(1234, "2026-10-20T08:00:00Z")]}]}}))
+        second.tick()
+        self.answered("second-sc-1234", console.ApiError("authentication_failed"))
+        second.tick()
+        self.assertEqual(self.jobs()[0]["state"], "queued")
+        db.set_watcher_state("cycle", "data", json.dumps({"big_rocks": [], "run": {"label": "RUN", "epics": [{"stories": [
+            story(1234, db.now())]}]}}))
+        self.later()
+        self.live = []
+        second.tick()
+        [job] = self.jobs()
+        self.assertEqual((job["state"], len(self.started)), ("failed", 1), "you went back to it meanwhile")
 
     def test_a_plan_waiting_on_claudes_api_past_its_day_is_dropped(self):
         import second
@@ -679,6 +752,7 @@ class FixTest(SecondBase):
         self.assertEqual(self.rows(), [], "nothing to say about a PR it never looked at")
         with db.connect() as conn:
             conn.execute("UPDATE second_jobs SET finished_at = ?", (db.ago(second.FIX_RETRY_MINUTES + 1),))
+        db.set_watcher_state(second.CLAUDE_API, "last_run", db.ago(second.API_RETRY_MINUTES + 1))  # the login's probe is due
         self.wait()
         second.tick()
         self.assertEqual(len(self.started), 2)

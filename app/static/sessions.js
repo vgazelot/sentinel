@@ -215,14 +215,15 @@
         e.preventDefault();
         setFiles(form, [...filesOf(form), ...e.clipboardData.files]);
     });
+    // a file dropped beside the form is ignored: the browser would open it in Sentinel's place
     document.addEventListener('dragover', (e) => {
-        if (e.target.closest('[data-files]') && e.dataTransfer.types.includes('Files')) e.preventDefault();
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
     });
     document.addEventListener('drop', (e) => {
-        const form = e.target.closest('[data-files]');
-        if (!form || !e.dataTransfer.files.length) return;
+        if (!e.dataTransfer.types.includes('Files')) return;
         e.preventDefault();
-        setFiles(form, [...filesOf(form), ...e.dataTransfer.files]);
+        const form = e.target.closest('[data-files]');
+        if (form) setFiles(form, [...filesOf(form), ...e.dataTransfer.files]);
     });
     document.addEventListener('click', (e) => {
         const x = e.target.closest('[data-unfile]');

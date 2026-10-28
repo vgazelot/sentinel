@@ -194,7 +194,7 @@ def tick():
     _discover(cfg, live, now)
     _fixes(cfg, live, now)
     _follow(cfg, live)
-    _start(cfg, now)
+    _start(cfg, now, live)
     _tidy(live)
     _review(cfg)
     _prune()
@@ -521,7 +521,7 @@ def _bridge_ready() -> bool:
         return False
 
 
-def _start(cfg: dict, now: datetime):
+def _start(cfg: dict, now: datetime, live: list[dict]):
     for job in _jobs("state = 'preparing'"):  # its thread died with Sentinel
         if (_meta(job).get("preparing_at") or "") <= db.ago(PREPARE_MINUTES):
             _set(job["id"], state="failed", error="its worktree was never ready", finished_at=db.now())
@@ -531,6 +531,17 @@ def _start(cfg: dict, now: datetime):
     for job in _jobs("state = 'queued' AND kind = 'plan' AND json_extract(meta, '$.retry_at') IS NOT NULL AND subject < ?",
                      now.astimezone(ZoneInfo(config.TZ)).strftime("%Y-%m-%d")):  # turned away by Claude's API until the next day
         _set(job["id"], state="failed", error="its day is over", finished_at=db.now())
+    retried = _jobs("state = 'queued' AND kind = 'stuck' AND json_extract(meta, '$.retry_at') IS NOT NULL")
+    if retried:  # waited out the login: still stalled, and nobody on it?
+        at_work = sessions.stories_at_work(live)
+        updated = {f"sc-{st['id']}": st["updated_at"] for st in _mine_started(cycle.load() if cycle.enabled() else {})}
+        for job in retried:
+            if job["subject"] in at_work or updated.get(job["subject"]) != job["fingerprint"]:
+                _set(job["id"], state="failed", error="the ticket moved while Claude's API was away", finished_at=db.now())
+    streak = db.watcher_states().get(CLAUDE_API, {})
+    if streak.get("last_error") and (streak.get("last_run") or "") <= db.ago(2 * API_RETRY_MINUTES):
+        db.record_run(CLAUDE_API)  # nothing turned away for that long: nothing waits on the login
+        streak = {}
     room = int(cfg["concurrency"]) - len(_jobs("state IN ('running', 'preparing')"))
     left = int(cfg["max_per_day"]) - len(_jobs("started_at >= ?", _day_start(now)))
     alerts = int(cfg["watch_per_day"]) - len(_jobs("kind = 'watch' AND started_at >= ?", _day_start(now)))
@@ -545,6 +556,8 @@ def _start(cfg: dict, now: datetime):
             alerts -= 1
         queued.append(job)
     queued = queued[:max(min(room, left), 0)]
+    if streak.get("last_error"):  # the login is everyone's: one job tries it every API_RETRY_MINUTES, the others wait
+        queued = queued[:1] if (streak.get("last_run") or "") <= db.ago(API_RETRY_MINUTES) else []
     if queued and not _bridge_ready():
         log.warning("second: the bridge is older than the Second or away, %d job(s) wait", len(queued))
         return
@@ -570,7 +583,7 @@ def _open(job: dict, second: dict):
     if not started:  # opened meanwhile, from Watch or Sessions: yours
         _set(job["id"], state="failed", error="a console of that name was already open", finished_at=db.now())
     else:
-        _set(job["id"], state="running", started_at=db.now())
+        _set(job["id"], state="running", started_at=db.now(), error=None)
         log.info("second: %s %s started in %s", job["kind"], job["subject"], job["console"])
 
 
@@ -619,11 +632,17 @@ def _follow(cfg: dict, live: list[dict]):
 
 def _turned_away(job: dict, error: str):
     """Claude's API ended the session's turn: no answer, whatever Claude Code wrote in its place. A console you are in
-    is yours to log in and go on — its next answer is read then; any other ends, and its job starts again later: a fix
-    as a new attempt (`FIX_RETRY_MINUTES`), not counted in the day's."""
-    why = "its login expired: run /login in a terminal" if error == "authentication_failed" else error
-    db.record_run(CLAUDE_API, why)
+    is yours to log in and go on: its job goes `late` (its place freed, its next answer read). Any other ends; only an
+    expired login is waited out — its job starts again later (a fix as a new attempt, `FIX_RETRY_MINUTES`), not counted
+    in the day's —, any other error ends the job."""
+    login = error == "authentication_failed"
+    why = "its login expired: run /login in a terminal" if login else error
+    meta = _meta(job)
     if job["console"] in {c.get("name") for c in console.sessions() if c.get("attached")}:
+        if not meta.get("turned_away"):  # once: the streak is the login's, not each tick's
+            if login:
+                db.record_run(CLAUDE_API, why)
+            _set(job["id"], state="late", error=f"Claude's API: {why}", meta=json.dumps(meta | {"turned_away": True}))
         return
     try:
         console.end(job["console"])
@@ -631,11 +650,16 @@ def _turned_away(job: dict, error: str):
         log.warning("second: could not end %s: %s", job["console"], e)
         return
     log.warning("second: %s %s turned away by Claude's API: %s", job["kind"], job["subject"], error)
+    if not login:
+        _set(job["id"], state="failed", error=f"Claude's API: {why}", finished_at=db.now())
+        return
+    db.record_run(CLAUDE_API, why)
     if job["kind"] == "fix":
         _set(job["id"], state="failed", started_at=None, error=f"Claude's API: {why}", finished_at=db.now())
     else:
-        _set(job["id"], state="queued", session=None, started_at=None, error=f"Claude's API: {why} — again in {API_RETRY_MINUTES} min",
-             meta=json.dumps(_meta(job) | {"retry_at": db.ago(-API_RETRY_MINUTES)}))
+        meta.pop("turned_away", None)
+        _set(job["id"], state="queued", session=None, started_at=None, error=f"Claude's API: {why}",
+             meta=json.dumps(meta | {"retry_at": db.ago(-API_RETRY_MINUTES)}))
 
 
 def _said(session_id: str) -> str:
